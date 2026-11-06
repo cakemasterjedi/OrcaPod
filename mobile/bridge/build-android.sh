@@ -13,6 +13,10 @@
 #                                        statically so it also runs under
 #                                        qemu-user on a Linux host
 #
+# The engine runs multithreaded on oneTBB, cross-built with its own CMake
+# project and the NDK's toolchain file; ORCAPOD_TBB=serial swaps in the
+# single-threaded stand-in from shim-tbb-serial/ instead.
+#
 # GMP and MPFR (needed by CGAL) are built from source for the target. Boost,
 # CGAL, Eigen and the other build-only sources are shared with the host build
 # in mobile/bridge/cache/.
@@ -25,6 +29,7 @@
 #   ORCAPOD_ANDROID_ABI    arm64-v8a (default) or x86_64
 #   ORCAPOD_ANDROID_API    minimum API level (default 26)
 #   ORCAPOD_JOBS           parallel compile jobs (default 6)
+#   ORCAPOD_TBB            real (default, oneTBB) or serial
 #   GMP_URL, MPFR_URL      override the source download (for mirrors); the
 #                          SHA-256 check applies only to the default URLs
 set -euo pipefail
@@ -98,6 +103,25 @@ MPFR_SHA=9ad62c7dc910303cd384ff8f1f4767a655124980bb6d8650fe62c815a231bb7b
 build_autotools_dep gmp "${GMP_URL:-$DEFAULT_GMP_URL}" "$GMP_SHA" libgmp.a
 build_autotools_dep mpfr "${MPFR_URL:-$DEFAULT_MPFR_URL}" "$MPFR_SHA" libmpfr.a --with-gmp="$PREFIX"
 
+case "${ORCAPOD_TBB:-real}" in
+    real)
+        # oneTBB 2021.5 strips "-Werror" from the compile flags when not
+        # strict, which mangles the NDK's -Werror=format-security; the NDK
+        # option turns that flag into -Wno-error=format-security instead.
+        TBB_PREFIX="$(engine_build_tbb "$BUILD" \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="$ABI" -DANDROID_PLATFORM="android-$API" -DANDROID_STL=c++_static \
+            -DANDROID_DISABLE_FORMAT_STRING_CHECKS=ON)"
+        TBB_FLAGS=(-isystem "$TBB_PREFIX/include")
+        TBB_LIBS=("$TBB_PREFIX/lib/libtbb.a" "$TBB_PREFIX/lib/libtbbmalloc.a")
+        ;;
+    serial)
+        TBB_FLAGS=(-I"$BRIDGE/shim-tbb-serial")
+        TBB_LIBS=()
+        ;;
+    *) echo "FATAL: ORCAPOD_TBB must be real or serial" >&2; exit 1 ;;
+esac
+
 # --- compile flags: the host build's, plus the target's GMP/MPFR ---
 # -fsigned-char: char is unsigned on Arm Linux/Android but upstream assumes
 # signed (BuildVolume_Type : char holds -1); OrcaSlicer's own CMake build passes
@@ -108,10 +132,11 @@ CFLAGS=(
     -std=c++17 -O2 -DNDEBUG -fPIC -fsigned-char -Wno-deprecated-declarations
     -DBOOST_FILESYSTEM_NO_CXX20_ATOMIC_REF
     # ORDER MATTERS: the portable md5 shim (shim-host) first, then the shared
-    # platform shims (boost/log, boost/nowide, tbb, occt stub), and only then
-    # the real Boost headers.
+    # platform shims (boost/log, boost/nowide, occt stub) and TBB, and only
+    # then the real Boost headers.
     -I"$BRIDGE/shim-host"
     -I"$BRIDGE/shim" -I"$BRIDGE/shim/occt-stub"
+    "${TBB_FLAGS[@]}"
     -I"$SRC" -I"$SRC/libslic3r" -I"$BUILD/gen"
     -I"$DEPS" -I"$DEPS/admesh"
     -I"$DEPS/qhull/src"
@@ -162,7 +187,7 @@ mapfile -t OBJS < <(grep -v -e 'orcapod_slice\.o$' "$MANIFEST")
 ARCHIVE="$BUILD/libengine.a"
 rm -f "$ARCHIVE"
 "$AR" rcs "$ARCHIVE" "${OBJS[@]}"
-LIBS=("$PREFIX/lib/libmpfr.a" "$PREFIX/lib/libgmp.a" -lm)
+LIBS=("${TBB_LIBS[@]}" "$PREFIX/lib/libmpfr.a" "$PREFIX/lib/libgmp.a" -ldl -lm)
 
 # The app loads one self-contained library: libc++ is linked in statically and
 # only the bridge's C API is exported. --whole-archive keeps every orca_*

@@ -60,7 +60,9 @@ it, as on the desktop.
 `build-android.sh` cross-compiles the same closure with the NDK's clang for
 one ABI (`arm64-v8a` by default) and a minimum API level (26 by default).
 GMP and MPFR have no Android packages, so it builds them from source as
-static libraries at OrcaSlicer's `deps/` pins. The result is one
+static libraries at OrcaSlicer's `deps/` pins. oneTBB is cross-built through
+the same `engine_build_tbb` as the host, with the NDK's CMake toolchain file,
+so the engine runs on all cores on the phone too. The result is one
 self-contained `liborcapod.so` for the app's `jniLibs/`: libc++ is linked in
 statically, so the app needs no `libc++_shared.so`, the only exported symbols
 are the `orca_*` C API (`android/exports.map`), and its segments are aligned to

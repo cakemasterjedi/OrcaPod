@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# The variables set here are read by the scripts that source this file.
+# shellcheck disable=SC2034
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 OrcaPad contributors
 # Copyright (c) 2026 OrcaPod contributors
@@ -52,7 +54,7 @@ engine_sources() {
 
     # libslic3r geometry subset (grows link-error-driven)
     for f in libslic3r.cpp Point.cpp Line.cpp MultiPoint.cpp Polygon.cpp Polyline.cpp \
-             BoundingBox.cpp ExPolygon.cpp ClipperUtils.cpp clipper.cpp \
+             BoundingBox.cpp ExPolygon.cpp ClipperUtils.cpp ClipperZUtils.cpp \
              Circle.cpp ArcFitter.cpp Geometry.cpp Geometry/ConvexHull.cpp \
              Geometry/MedialAxis.cpp Geometry/Voronoi.cpp Geometry/VoronoiUtils.cpp \
              Geometry/VoronoiUtilsCgal.cpp Geometry/VoronoiOffset.cpp ShortestPath.cpp \
@@ -90,11 +92,28 @@ engine_sources() {
              Algorithm/LineSplit.cpp Algorithm/RegionExpansion.cpp \
              SLA/IndexedMesh.cpp SVG.cpp \
              FilamentGroupUtils.cpp ParameterUtils.cpp ShortEdgeCollapse.cpp \
-             IntersectionPoints.cpp FlushVolPredictor.cpp Geometry/Circle.cpp Clipper2Utils.cpp TriangleSetSampling.cpp FaceDetector.cpp TriangleSelector.cpp BuildVolume.cpp Extruder.cpp PrincipalComponents2D.cpp MultiMaterialSegmentation.cpp FilamentGroup.cpp ContourZ.cpp Feature/Interlocking/InterlockingGenerator.cpp Feature/Interlocking/VoxelUtils.cpp calib.cpp MaterialType.cpp FlushVolCalc.cpp NormalUtils.cpp \
+             IntersectionPoints.cpp FlushVolPredictor.cpp Geometry/Circle.cpp TriangleSetSampling.cpp FaceDetector.cpp TriangleSelector.cpp BuildVolume.cpp Extruder.cpp PrincipalComponents2D.cpp MultiMaterialSegmentation.cpp FilamentGroup.cpp ContourZ.cpp Feature/Interlocking/InterlockingGenerator.cpp Feature/Interlocking/VoxelUtils.cpp calib.cpp MaterialType.cpp FlushVolCalc.cpp NormalUtils.cpp \
              Preset.cpp PresetBundle.cpp AppConfig.cpp \
              miniz_extension.cpp Format/3mf.cpp Format/bbs_3mf.cpp NSVGUtils.cpp \
              Emboss.cpp ExPolygonsIndex.cpp Orient.cpp CutUtils.cpp \
-             Measure.cpp AABBMesh.cpp QuadricEdgeCollapse.cpp TriangleMeshDeal.cpp; do
+             Measure.cpp AABBMesh.cpp QuadricEdgeCollapse.cpp TriangleMeshDeal.cpp \
+             BeltBrim.cpp BeltPurge.cpp BeltSliceStrategy.cpp BeltTransform.cpp \
+             ConnectedBodies.cpp ExclusionVolumeGeometry.cpp FilamentMixer.cpp \
+             IMEXHelpers.cpp IMEXZones.cpp InstanceLock.cpp MeshRepair.cpp \
+             MultiNozzleUtils.cpp PresetCacheFormat.cpp PublishSettings.cpp \
+             TextureDisplacement.cpp Zipper.cpp Support/BeltFloorContext.cpp \
+             GCode/BeltKinematics.cpp GCode/ElegooGCodeProcessorHelper.cpp \
+             GCode/ExclusionVolumePathCheck.cpp GCode/ExclusionVolumeTravelAvoidance.cpp \
+             GCode/MachineFrameTransform.cpp GCode/MachineKinematics.cpp \
+             GCode/OrderingStrategies.cpp GCode/PreciseSeam.cpp GCode/SeamContour.cpp \
+             GCode/WipePathHelpers.cpp GCode/WipeTowerEstimate.cpp \
+             GCode/BeltBackTransform.cpp BeltGCode.cpp ColorDecomposeRecipe.cpp \
+             TextureBake/TextureBakeDebug.cpp TextureBake/TextureBakeDecimate.cpp \
+             TextureBake/TextureBakeDisplace.cpp TextureBake/TextureBakeFlip.cpp \
+             TextureBake/TextureBakeIndex.cpp TextureBake/TextureBakeMesh.cpp \
+             TextureBake/TextureBakePipeline.cpp TextureBake/TextureBakeRegularize.cpp \
+             TextureBake/TextureBakeRelocate.cpp TextureBake/TextureBakeRepair.cpp \
+             TextureBake/TextureBakeSubdivide.cpp; do
         case "$f" in
             # host libstdc++ does not leak <memory> transitively into this
             # header (Darwin libc++ does) — same adapter pattern as LocalesUtils
@@ -108,6 +127,7 @@ engine_sources() {
              FillCrossHatch.cpp FillGyroid.cpp FillHoneycomb.cpp Fill3DHoneycomb.cpp \
              FillAdaptive.cpp FillLightning.cpp FillLine.cpp FillPlanePath.cpp \
              FillRectilinear.cpp FillTpmsD.cpp FillTpmsFK.cpp \
+             AdaptiveInfillField.cpp FillCornerSmoothing.cpp FillSpiralInset.cpp \
              Lightning/Generator.cpp Lightning/Layer.cpp Lightning/DistanceField.cpp \
              Lightning/TreeNode.cpp; do
         printf 'cxx\t%s\n' "$SRC/libslic3r/Fill/$f"
@@ -140,13 +160,10 @@ engine_sources() {
     # vendored semver (version parsing)
     printf 'c\t%s\n' "$DEPS/semver/semver.c"
 
-    # vendored clipper1 Z-variant (VoronoiUtils / MM segmentation)
-    printf 'cxx\t%s\n' "$DEPS/clipper/clipper_z.cpp"
-
-    # vendored clipper2 (Clipper2Utils / Fill paths)
-    for f in clipper.engine clipper.offset clipper.rectclip clipper.minkowski; do
-        [ -f "$DEPS/clipper2/Clipper2Lib/src/$f.cpp" ] &&
-            printf 'cxx\t%s\n' "$DEPS/clipper2/Clipper2Lib/src/$f.cpp"
+    # vendored Clipper2 — EXACT CLIPPER2_SRC of deps_src/clipper2/CMakeLists.txt
+    # (clipper2_z.cpp re-includes the sources with USINGZ for the Z variant)
+    for f in clipper.engine clipper.offset clipper.rectclip clipper.triangulation clipper2_z; do
+        printf 'cxx\t%s\n' "$DEPS/clipper2/Clipper2Lib/src/$f.cpp"
     done
 
     # vendored expat (XML for AMF/3mf metadata)
@@ -212,6 +229,8 @@ engine_sources() {
 
     # adapter stubs (STEP/DRC/SVG — loud throws, upstream untouched)
     printf 'cxx\t%s\n' "$BRIDGE/engine-cxx/format_stubs.cpp"
+    # the utils.cpp functions the closure needs (utils.cpp itself needs Boost.Log)
+    printf 'cxx\t%s\n' "$BRIDGE/engine-cxx/utils_subset.cpp"
     # real thumbnail parse/encode (PNG via miniz, QOI vendored; JPEG hits the
     # loud adapter below)
     printf 'cxx\t%s\n' "$SRC/libslic3r/GCode/Thumbnails.cpp"

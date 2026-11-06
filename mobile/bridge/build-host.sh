@@ -109,7 +109,7 @@ needs_build() { # needs_build <src> <obj> — true if recompile required
     while IFS= read -r p; do
         [ -z "$p" ] && continue
         [ -e "$p" ] && [ "$p" -nt "$o" ] && return 0
-    done < <(sed '1s/[^:]*://' "$d" | tr '\\ ' '\n\n' | sed '/^$/d')
+    done < <(sed '1s/[^:]*://' "$d" | tr '\\ ' '\n' | sed '/^$/d')
     return 1
 }
 
@@ -174,7 +174,8 @@ while IFS=$'\t' read -r kind src extra_str; do
     [ -n "${src:-}" ] || continue
     extra_args=()
     [ -n "${extra_str:-}" ] && read -ra extra_args <<< "$extra_str"
-    o="$OBJ/$(echo "${src#"$REPO"/}" | sed 's|/|_|g').o"
+    rel="${src#"$REPO"/}"
+    o="$OBJ/${rel//\//_}.o"
     if [ "$kind" = "cxx" ]; then
         compile_one "$src" "$o" "$CXX" "${CFLAGS[@]}" "${extra_args[@]}"
     else

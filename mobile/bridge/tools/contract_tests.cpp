@@ -2036,7 +2036,7 @@ static void test_object_ops(const std::string &dir, const std::string &data_dir)
     orca_presets *presets = nullptr;
     GUARD(g12, orca_presets_new(data_dir.c_str(), &presets));
     expect_ok(g12, "presets");
-    GUARD(g13, orca_presets_select(presets, "Anycubic Vyper 0.4 nozzle", "Anycubic Generic PLA",
+    GUARD(g13, orca_presets_select(presets, "Anycubic Vyper 0.4 nozzle", "Generic PLA @Anycubic",
                                    "0.20mm Standard @Anycubic Vyper"));
     expect_ok(g13, "select Vyper");
     GUARD(g14, orca_plater_scale_to_fit(plater, presets, assembly, 0x7fffffff, &revision));
@@ -2516,7 +2516,7 @@ static void test_select_machine(const std::string &dir, const std::string &data_
     CHECK(mk4_process != "Default Setting");
     // the engine's own update_compatible(Always) choice for the swapped,
     // incompatible BBL filament (upstream PreferedFilamentsProfileMatch)
-    CHECK(select_machine_current(presets, 1) == "Generic PLA @System");
+    CHECK(select_machine_current(presets, 1) == "Generic PLA @Prusa MK4");
     GUARD(g6, orca_plater_slice_to_gcode_with_presets(
                   plater, presets, gcode.c_str(), nullptr, nullptr, nullptr, &report));
     expect_ok(g6, "slice after vendor switch");
@@ -3166,7 +3166,7 @@ static void test_arrange_orient(const std::string &dir, const std::string &data_
     GUARD(gp, orca_presets_new(data_dir.c_str(), &presets));
     expect_ok(gp, "presets_new");
     GUARD(gsel, orca_presets_select(presets, "Anycubic Vyper 0.4 nozzle",
-                                    "Anycubic Generic PLA",
+                                    "Generic PLA @Anycubic",
                                     "0.20mm Standard @Anycubic Vyper"));
     expect_ok(gsel, "select Vyper (244x244 bed)");
 
@@ -4708,7 +4708,7 @@ static void test_physical_printers(const std::string &data_dir) {
     GUARD(g0, orca_presets_new(data_dir.c_str(), &presets));
     expect_ok(g0, "presets_new");
     GUARD(gsel, orca_presets_select(presets, "Anycubic Vyper 0.4 nozzle",
-                                    "Anycubic Generic PLA",
+                                    "Generic PLA @Anycubic",
                                     "0.20mm Standard @Anycubic Vyper"));
     expect_ok(gsel, "select Vyper");
 

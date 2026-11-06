@@ -1666,7 +1666,7 @@ static Slic3r::TriangleMesh orcapad_shape_mesh(int32_t shape, double size_mm,
     case ORCA_SHAPE_SPHERE: return TriangleMesh(Slic3r::its_make_sphere(0.5 * size_mm, PI / 90.0));
     case ORCA_SHAPE_CONE: return TriangleMesh(Slic3r::its_make_cone(0.5 * size_mm, size_mm));
     case ORCA_SHAPE_DISC: return TriangleMesh(Slic3r::its_make_cylinder(0.5 * size_mm, 0.2));
-    case ORCA_SHAPE_TORUS: return TriangleMesh(Slic3r::its_make_torus(0.5 * size_mm, 0.125 * size_mm, PI / 60.0));
+    case ORCA_SHAPE_TORUS: return TriangleMesh(Slic3r::its_make_torus(0.5 * size_mm, 0.125 * size_mm, PI / 60.0, PI / 60.0));
     case ORCA_SHAPE_SLAB:
         return TriangleMesh(Slic3r::its_make_cube(
             instance_bb.size().x() * 1.5, instance_bb.size().y() * 1.5,
@@ -1696,9 +1696,9 @@ static bool orcapad_valid_transform(const orca_instance_transform &transform) {
 /// ModelObject::instance_bounding_box) touches z = 0.
 static void orcapad_rest_on_bed(Slic3r::ModelObject *object,
                                 Slic3r::ModelInstance *instance) {
-    // Desktop ModelInstance::auto_drop: a disabled flag keeps the instance
-    // floating after transforms (no snap-to-bed; under-bed allowed).
-    if (!instance->auto_drop) return;
+    // Desktop ModelObject::auto_drop: a disabled flag keeps the object's
+    // instances floating after transforms (no snap-to-bed; under-bed allowed).
+    if (!object->auto_drop) return;
     object->invalidate_bounding_box();
     const Slic3r::BoundingBoxf3 box = object->instance_bounding_box(*instance);
     if (!box.defined) return;
@@ -4229,10 +4229,12 @@ orca_result orca_plater_instance_set_auto_drop(orca_plater *plater,
             return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
                                 "document revision is exhausted");
         OrcapadMutation mutation(*plater, auto_drop ? "Auto drop" : "Keep floating");
-        for (Slic3r::ModelInstance *instance : targets) {
-            instance->auto_drop = auto_drop != 0;
-            if (auto_drop) orcapad_rest_on_bed(object, instance);
-        }
+        // Upstream keeps auto_drop on the object (instances share their Z
+        // offset), so the flag applies to every instance of the object.
+        object->auto_drop = auto_drop != 0;
+        if (auto_drop)
+            for (Slic3r::ModelInstance *instance : object->instances)
+                orcapad_rest_on_bed(object, instance);
         *out_revision = mutation.commit();
         return orcapad_ok();
     });
@@ -4351,7 +4353,7 @@ orca_result orca_plater_volume_paint_fill(orca_plater *plater,
             selector.seed_fill_select_triangles(
                 hit_mesh, facet, trafo_no_translate,
                 Slic3r::TriangleSelector::ClippingPlane{},
-                static_cast<float>(angle_deg), 0.0f, false);
+                static_cast<float>(angle_deg), 0.0f, Slic3r::Vec3f::UnitZ(), false);
         } else {
             selector.bucket_fill_select_triangles(
                 hit_mesh, facet, Slic3r::TriangleSelector::ClippingPlane{},
@@ -6592,7 +6594,7 @@ orca_result orca_plater_snapshot(orca_plater *plater,
                     model_instance->get_scaling_factor();
                 instance.mirrored = model_instance->is_left_handed() ? 1 : 0;
                 instance.printable = model_instance->printable ? 1 : 0;
-                instance.auto_drop = model_instance->auto_drop ? 1 : 0;
+                instance.auto_drop = model_instance->get_object()->auto_drop ? 1 : 0;
                 const Slic3r::Vec3d offset = model_instance->get_offset();
                 instance.transform.offset_x = offset.x();
                 instance.transform.offset_y = offset.y();
@@ -7376,14 +7378,15 @@ static orca_result orcapad_run_print(const char *operation,
         try {
             // Desktop BackgroundSlicingProcess::validate: errors refuse the
             // slice, warnings are surfaced.
-            Slic3r::StringObjectException validate_warning;
-            const Slic3r::StringObjectException error = print.validate(&validate_warning);
+            std::vector<Slic3r::StringObjectException> validate_warnings;
+            const Slic3r::StringObjectException error = print.validate(&validate_warnings);
             if (!error.string.empty())
                 return orcapad_fail(ORCA_STATUS_INVALID_CONFIGURATION, operation,
                                     error.string.c_str());
-            if (!validate_warning.string.empty())
-                warnings.push_back({ORCA_SLICE_WARNING_WARNING, ORCA_SLICE_SOURCE_VALIDATE,
-                                    validate_warning.opt_key, validate_warning.string, ""});
+            for (const Slic3r::StringObjectException &w : validate_warnings)
+                if (!w.string.empty())
+                    warnings.push_back({ORCA_SLICE_WARNING_WARNING, ORCA_SLICE_SOURCE_VALIDATE,
+                                        w.opt_key, w.string, ""});
 
             print.set_status_callback(
                 [progress, ctx](const Slic3r::PrintBase::SlicingStatus &status) {
@@ -8873,6 +8876,45 @@ static orca_result orcapad_target_instances(
     return orcapad_ok();
 }
 
+
+/// Desktop OrientJob's "minimise support area" tuning
+/// (setMinimalSupportAreaPrams in src/slic3r/GUI/Jobs/OrientJob.cpp, which
+/// lives in the GUI and so cannot be linked here). Keep the two in sync.
+static void orcapad_min_support_area_params(Slic3r::orientation::OrientParams &out) {
+    out.TAR_A               = 0.015f;
+    out.TAR_B               = 0.177f;
+    out.RELATIVE_F          = 20;
+    out.CONTOUR_F           = 0.5f;
+    out.BOTTOM_F            = 2.5f;
+    out.BOTTOM_HULL_F       = 0.1f;
+    out.TAR_C               = 0.1f;
+    out.TAR_D               = 1;
+    out.TAR_E               = 0.0115f;
+    out.FIRST_LAY_H         = 0.2f;
+    out.VECTOR_TOL          = -0.00083f;
+    out.NEGL_FACE_SIZE      = 0.01f;
+    out.ASCENT              = -0.5f;
+    out.PLAFOND_ADV         = 0.0599f;
+    out.CONTOUR_AMOUNT      = 0.0182427f;
+    out.OV_H                = 2.574f;
+    out.height_offset       = 2.3728f;
+    out.height_log          = 0.041375f;
+    out.height_log_k        = 1.9325457f;
+    out.LAF_MAX             = 0.999f;
+    out.LAF_MIN             = 0.97f;
+    out.TAR_LAF             = 0.001f;
+    out.TAR_PROJ_AREA       = 0.1f;
+    out.BOTTOM_MIN          = 0.1f;
+    out.BOTTOM_MAX          = 2000;
+    out.height_to_bottom_hull_ratio_MIN = 1;
+    out.BOTTOM_HULL_MAX     = 2000;
+    out.APPERANCE_FACE_SUPP = 3;
+    out.overhang_angle      = 60.f;
+    out.use_low_angle_face  = true;
+    out.min_volume          = false;
+    out.fun_dir             = {};
+}
+
 orca_result orca_plater_orient(orca_plater *plater, orca_presets *presets,
                                orca_object_id object_id,
                                orca_instance_id instance_id,
@@ -8924,12 +8966,8 @@ orca_result orca_plater_orient(orca_plater *plater, orca_presets *presets,
             selected.emplace_back(std::move(om));
         }
         Slic3r::orientation::OrientParams params;
-        Slic3r::orientation::OrientParamsArea params_area;
-        memcpy(&params, &params_area, sizeof(params));
-        params.min_volume = false;
-        // OrientJob.cpp does the same: the area params carry EMPTY
-        // std::function members, so both callbacks must be set after memcpy
-        // (a null progressind would throw bad_function_call inside _orient).
+        orcapad_min_support_area_params(params);
+        // A null progressind would throw bad_function_call inside _orient.
         params.progressind = [](unsigned, std::string) {};
         params.stopcondition = []() { return false; };
         Slic3r::orientation::orient(selected, unselected, params);

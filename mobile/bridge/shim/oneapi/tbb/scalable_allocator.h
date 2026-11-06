@@ -10,6 +10,10 @@
 #include <new>
 #include <type_traits>
 
+// tbbmalloc's C entry points (global namespace, as in oneTBB).
+inline void *scalable_malloc(std::size_t size) { return std::malloc(size); }
+inline void scalable_free(void *ptr) { std::free(ptr); }
+
 namespace tbb {
 
 template <typename T>

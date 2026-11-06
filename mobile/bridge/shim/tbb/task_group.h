@@ -15,4 +15,6 @@ public:
     bool is_canceling() const { return false; }
     void cancel() {}
 };
+// Serial shim: task groups run eagerly and are never cancelled.
+inline bool is_current_task_group_canceling() { return false; }
 } // namespace tbb

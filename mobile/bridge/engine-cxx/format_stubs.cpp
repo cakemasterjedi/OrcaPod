@@ -13,9 +13,18 @@
 #include "libslic3r/Format/bbs_3mf.hpp"
 #include "libslic3r/GCode/Thumbnails.hpp"
 #include "libslic3r/Model.hpp"
+#include "libslic3r/MeshBoolean.hpp"
+#include "libslic3r/PNGReadWrite.hpp"
+#include "libslic3r/Format/AssimpImport.hpp"
 
+#include <boost/filesystem/path.hpp>
+
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <vector>
+
+namespace fs = boost::filesystem;
 
 namespace Slic3r {
 
@@ -37,12 +46,33 @@ bool load_step(const char *, Model *, bool &,
 Step::Step(fs::path, ImportStepProgressFn, StepIsUtf8Fn) {}
 Step::Step(std::string, ImportStepProgressFn, StepIsUtf8Fn) {}
 Step::~Step() = default;
-Step::Step_Status Step::load() {
+Step::Step_Status Step::load(bool) {
     orcapad_unsupported("STEP load");
 }
-Step::Step_Status Step::mesh(Model *, bool &, bool, double, double) {
+Step::Step_Status Step::mesh(Model *, bool &, bool, double, double, bool) {
     orcapad_unsupported("STEP mesh conversion");
 }
+
+// --- textured-model import (blocked on Assimp) ---
+bool load_assimp_textured_model(const std::string &, TexturedMesh &, std::string *) {
+    orcapad_unsupported("textured model import (Assimp)");
+}
+
+// --- PNG decoding for texture displacement maps (blocked on libpng) ---
+namespace png {
+bool is_png(const ReadBuf &) { orcapad_unsupported("PNG decoding (libpng)"); }
+bool decode_png(IStream &, ImageGreyscale &) { orcapad_unsupported("PNG decoding (libpng)"); }
+bool decode_colored_png(IStream &, ImageColorscale &) { orcapad_unsupported("PNG decoding (libpng)"); }
+bool decode_colored_png(const ReadBuf &, ImageColorscale &) { orcapad_unsupported("PNG decoding (libpng)"); }
+} // namespace png
+
+// --- texture UV parameterization (MeshBoolean.cpp needs CGAL's mesh
+// processing and MCUT, not in the closure) ---
+namespace MeshBoolean { namespace cgal {
+std::optional<std::vector<Vec2f>> parameterize_lscm(const indexed_triangle_set &) {
+    orcapad_unsupported("texture UV parameterization (CGAL mesh processing)");
+}
+}} // namespace MeshBoolean::cgal
 
 // --- GCode thumbnails: the REAL GCode/Thumbnails.cpp is compiled into the
 // closure (pure-string list parsing for load paths; PNG/QOI via vendored
@@ -74,7 +104,7 @@ std::string make_temp_stl_with_modelio(const std::string &) {
 // --- MeshBoolean (CGAL/mcut wall) ---
 #include "libslic3r/MeshBoolean.hpp"
 namespace MeshBoolean { namespace mcut {
-bool make_boolean(const TriangleMesh &, const TriangleMesh &,
+void make_boolean(const TriangleMesh &, const TriangleMesh &,
                   std::vector<TriangleMesh> &, const std::string &) {
     orcapad_unsupported("mesh boolean");
 }
@@ -212,7 +242,7 @@ size_t get_utf8_sequence_length(const char *seq, size_t size) {
 
 // --- png debug output (EdgeGrid debug dumps; libpng not ported) ---
 namespace Slic3r { namespace png {
-void write_rgb_to_file_scaled(const std::string &, size_t, size_t,
+bool write_rgb_to_file_scaled(const std::string &, size_t, size_t,
                               const std::vector<unsigned char> &, size_t) {
     // Debug-only dump helper; fails loudly rather than silently faking output.
     throw std::runtime_error("OrcaPad: png debug output not supported");

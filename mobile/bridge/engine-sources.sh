@@ -23,10 +23,12 @@ REPO="$(cd "$BRIDGE/../.." && pwd)"
 BOOST_VER=1.84.0
 CGAL_VER=6.2.1
 EIGEN_VER=5.0.1
+TBB_VER=2021.5.0
 BOOST_DIR="$BRIDGE/cache/boost-$BOOST_VER"
 BOOST_INC="$BRIDGE/cache/boost-include-$BOOST_VER"
 CGAL_INC="$BRIDGE/cache/CGAL-$CGAL_VER/include"
 EIGEN_INC="$BRIDGE/cache/eigen-$EIGEN_VER"
+TBB_SRC="$BRIDGE/cache/oneTBB-$TBB_VER"
 
 engine_sources() {
     local SRC DEPS f
@@ -249,7 +251,7 @@ engine_sources() {
 
 # Fetches ALL build-only third-party sources listed above (idempotent;
 # single source of truth for every build). Pins:
-#   Boost 1.84.0, CGAL 6.2.1, Eigen 5.0.1 (OrcaSlicer's deps/ pins),
+#   Boost 1.84.0, CGAL 6.2.1, Eigen 5.0.1, oneTBB 2021.5.0 (OrcaSlicer's deps/ pins),
 #   cereal v1.3.0, NLopt v2.5.0, libnoise 1.0 (SoftFever/Orca-deps-libnoise)
 _fetch_git() { # _fetch_git <url> <tag> <dir> <sentinel>
     [ -f "$3/$4" ] && return 0
@@ -291,6 +293,7 @@ engine_fetch_deps() {
         "$BRIDGE/cache/CGAL-$CGAL_VER" include/CGAL/version.h || return 1
     _fetch_archive "https://gitlab.com/libeigen/eigen/-/archive/$EIGEN_VER/eigen-$EIGEN_VER.zip" \
         "$EIGEN_INC" Eigen/Core || return 1
+    _fetch_git https://github.com/uxlfoundation/oneTBB "v$TBB_VER" "$TBB_SRC" include/oneapi/tbb.h || return 1
     _fetch_git https://github.com/USCiLab/cereal v1.3.0 "$BRIDGE/cache/cereal" include/cereal/access.hpp || return 1
     _fetch_git https://github.com/SoftFever/Orca-deps-libnoise 1.0 "$BRIDGE/cache/Orca-deps-libnoise" src/noisegen.cpp || return 1
     _fetch_git https://github.com/stevengj/nlopt v2.5.0 "$BRIDGE/cache/nlopt" src/api/nlopt-in.hpp || return 1
@@ -301,4 +304,27 @@ engine_fetch_deps() {
         python3 "$BRIDGE/tools/gen_nlopt.py" "$BRIDGE/cache/nlopt" \
             "$BRIDGE/cache/nlopt-gen" || { echo "FATAL: NLopt header generation failed" >&2; return 1; }
     fi
+}
+
+# Builds oneTBB (tbb + tbbmalloc, static) with CMake into <build>/tbb-install,
+# using OrcaSlicer's deps/TBB options. Extra arguments are passed to CMake
+# (a toolchain file for cross builds). Prints the install prefix.
+engine_build_tbb() { # engine_build_tbb <build dir> [cmake args...]
+    local build="$1"; shift
+    local prefix="$build/tbb-install"
+    if [ ! -f "$prefix/include/oneapi/tbb.h" ]; then
+        echo "==> building oneTBB $TBB_VER" >&2
+        if ! { cmake -S "$TBB_SRC" -B "$build/tbb-build" -G Ninja \
+                   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
+                   -DCMAKE_INSTALL_LIBDIR=lib \
+                   -DTBB_BUILD_SHARED=OFF -DBUILD_SHARED_LIBS=OFF -DTBB_TEST=OFF -DTBB_STRICT=OFF \
+                   -DTBB_DISABLE_HWLOC_AUTOMATIC_SEARCH=ON -DTBB_ENABLE_IPO=OFF \
+                   -DCMAKE_POSITION_INDEPENDENT_CODE=ON "$@" >&2 &&
+               cmake --build "$build/tbb-build" >&2 &&
+               cmake --install "$build/tbb-build" >&2; }; then
+            echo "FATAL: oneTBB build failed" >&2
+            return 1
+        fi
+    fi
+    printf '%s\n' "$prefix"
 }

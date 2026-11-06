@@ -44,11 +44,15 @@ its symbols. The host build packs everything into a static archive before
 linking, so translation units nothing references are never linked, as on the
 mobile targets.
 
-Boost, CGAL and Eigen are fetched at the same versions OrcaSlicer's `deps/`
-build pins (`BOOST_VER`, `CGAL_VER`, `EIGEN_VER` in `engine-sources.sh`), so the
-engine compiles against exactly what the desktop build uses, and no host
-packages are needed apart from GMP and MPFR. The compiled parts of Boost
-(filesystem, thread) and NLopt are built from source inside the closure.
+Boost, CGAL, Eigen and oneTBB are fetched at the same versions OrcaSlicer's
+`deps/` build pins (`BOOST_VER`, `CGAL_VER`, `EIGEN_VER`, `TBB_VER` in
+`engine-sources.sh`), so the engine compiles against exactly what the desktop
+build uses, and no host packages are needed apart from GMP and MPFR. The
+compiled parts of Boost (filesystem, thread) and NLopt are built from source
+inside the closure. oneTBB is the one dependency built with its own CMake
+project (`engine_build_tbb`), because it is the engine's source of
+parallelism: profile loading and every slicing step run on all cores through
+it, as on the desktop.
 
 ## Shims and adapters
 
@@ -56,10 +60,11 @@ The engine assumes some dependencies the bridge does not ship. Each gap is
 filled in one of two ways, and never with a silent fake success:
 
 - **Header shims** (`shim/`) stand in for a dependency whose behavior the
-  engine does not need on mobile. oneTBB is replaced by a serial
-  implementation of the TBB interfaces the engine uses, so the engine runs
-  single-threaded: parallelism is a speed optimization, not semantics.
-  `tbbmalloc` maps to `malloc`, and Boost.Log's trivial logger is a no-op sink.
+  engine does not need on mobile. Boost.Log's trivial logger is a no-op sink.
+  `shim-tbb-serial/` is a single-threaded implementation of the TBB
+  interfaces the engine uses, selected with `ORCAPOD_TBB=serial` for a
+  platform where oneTBB is not built yet. Parallelism is a speed
+  optimization, not semantics, so both builds produce the same output.
   The OCCT headers in `shim/occt-stub/` exist only so `Format/STEP.hpp`, which
   `Model.hpp` includes unconditionally, parses.
 - **Loud adapters** (`engine-cxx/format_stubs.cpp`, `jpeg_stubs.cpp`) define
@@ -84,7 +89,8 @@ are how drift is caught: they exercise every bridge entry point against the
 real bundled profiles, slicing included. After a merge, run
 `mobile/bridge/build-host.sh --test`; the usual fixes are adding a new
 translation unit to `engine-sources.sh`, a new TBB interface to the serial
-shim, or a signature change in the bridge or an adapter.
+shim (checked with `ORCAPOD_TBB=serial`), or a signature change in the
+bridge or an adapter.
 
 The contract tests load every vendor's system profiles at once, unlike the
 desktop app, which loads only installed vendors. A system process preset that

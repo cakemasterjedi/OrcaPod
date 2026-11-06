@@ -6,7 +6,7 @@
 #
 # Builds the headless engine for the local Linux host from this repository's
 # own OrcaSlicer sources (src/, deps_src/) and the shared compile list in
-# engine-sources.sh, without CMake, wxWidgets, OpenGL, TBB or OCCT:
+# engine-sources.sh, without wxWidgets, OpenGL or OCCT:
 #
 #   build-host/libengine-host.a   the engine closure + the C bridge
 #   build-host/contract_tests     the bridge contract test suite
@@ -14,9 +14,14 @@
 #
 # With --test it then runs the contract tests and the CLI smoke test.
 #
+# The engine runs multithreaded on oneTBB, built from source at OrcaSlicer's
+# pin. ORCAPOD_TBB=serial swaps in the single-threaded TBB stand-in from
+# shim-tbb-serial/ instead (no CMake needed, slower).
+#
 # Host prerequisites: a C++20 compiler (clang++ by default, override with CXX),
 # GMP and MPFR development packages (libgmp-dev libmpfr-dev), git, curl,
-# unzip, python3. Boost, CGAL, Eigen and the other build-only sources are
+# unzip, python3, and CMake with Ninja for oneTBB. Boost, CGAL, Eigen, oneTBB
+# and the other build-only sources are
 # fetched at OrcaSlicer's pinned versions into mobile/bridge/cache/.
 #
 # -O2 -DNDEBUG matches the shipped configuration: upstream GCode.hpp enables
@@ -36,6 +41,19 @@ CXX="${CXX:-clang++}"
 BUILD="$BRIDGE/build-host"
 mkdir -p "$BUILD/gen/libslic3r" "$BUILD/obj"
 
+case "${ORCAPOD_TBB:-real}" in
+    real)
+        TBB_PREFIX="$(engine_build_tbb "$BUILD" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_C_COMPILER="${CXX%++}")"
+        TBB_FLAGS=(-isystem "$TBB_PREFIX/include")
+        TBB_LIBS=("$TBB_PREFIX/lib/libtbb.a" "$TBB_PREFIX/lib/libtbbmalloc.a" -ldl)
+        ;;
+    serial)
+        TBB_FLAGS=(-I"$BRIDGE/shim-tbb-serial")
+        TBB_LIBS=()
+        ;;
+    *) echo "FATAL: ORCAPOD_TBB must be real or serial" >&2; exit 1 ;;
+esac
+
 # The ORCA version comes from version.inc, as the CMake build reads it.
 inc_var() { sed -n "s/^set($1 \"\(.*\)\")/\1/p" "$REPO/version.inc" | head -1; }
 SLIC3R_VERSION="$(inc_var SLIC3R_VERSION)"
@@ -44,10 +62,11 @@ SOFTFEVER_VERSION="$(inc_var SoftFever_VERSION)"
 CFLAGS=(
     -std=c++17 -O2 -DNDEBUG -Wno-deprecated-declarations
     # ORDER MATTERS: shim-host FIRST (host md5 override), then the shared
-    # platform shims (boost/log, boost/nowide, tbb, occt stub), and only then
+    # platform shims (boost/log, boost/nowide, occt stub) and TBB, and only then
     # the real Boost headers.
     -I"$BRIDGE/shim-host"
     -I"$BRIDGE/shim" -I"$BRIDGE/shim/occt-stub"
+    "${TBB_FLAGS[@]}"
     -I"$SRC" -I"$SRC/libslic3r" -I"$BUILD/gen"
     -I"$DEPS" -I"$DEPS/admesh"
     -I"$DEPS/qhull/src"
@@ -198,7 +217,7 @@ mapfile -t OBJS < <(grep -v -e 'contract_tests\.o$' -e 'orcapod_slice\.o$' "$MAN
 HOST_ARCHIVE="$BUILD/libengine-host.a"
 rm -f "$HOST_ARCHIVE"
 ar rcs "$HOST_ARCHIVE" "${OBJS[@]}"
-LIBS=(-lpthread -lm -lgmp -lmpfr -latomic)
+LIBS=("${TBB_LIBS[@]}" -lpthread -lm -lgmp -lmpfr -latomic)
 "$CXX" -o "$BUILD/contract_tests" "$OBJ/contract_tests.o" "$HOST_ARCHIVE" "${LIBS[@]}"
 "$CXX" -o "$BUILD/orcapod-slice" "$OBJ/orcapod_slice.o" "$HOST_ARCHIVE" "${LIBS[@]}"
 echo "==> built $BUILD/contract_tests and $BUILD/orcapod-slice" >&2

@@ -48,7 +48,10 @@ class EngineHostTest {
         @JvmStatic
         fun tearDown() {
             engine?.close()
-            if (::work.isInitialized) work.deleteRecursively()
+            // File.deleteRecursively follows the symlinks into the profile tree; Files.walk does not.
+            if (::work.isInitialized) {
+                Files.walk(work.toPath()).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
+            }
         }
 
         private fun cubeStl(s: Double): String {

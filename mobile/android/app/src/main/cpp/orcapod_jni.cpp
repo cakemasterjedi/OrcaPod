@@ -160,7 +160,12 @@ void on_progress(int32_t percent, const char *message, void *raw)
     JNIEnv *env = nullptr;
     bool attached = false;
     if (ctx->vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) == JNI_EDETACHED) {
-        if (ctx->vm->AttachCurrentThread(&env, nullptr) != JNI_OK)
+#if defined(__ANDROID__)
+        const jint attach = ctx->vm->AttachCurrentThread(&env, nullptr);
+#else // the JDK's jni.h declares the env out-parameter as void **
+        const jint attach = ctx->vm->AttachCurrentThread(reinterpret_cast<void **>(&env), nullptr);
+#endif
+        if (attach != JNI_OK)
             return;
         attached = true;
     }

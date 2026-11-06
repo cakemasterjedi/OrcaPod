@@ -26,5 +26,9 @@
     "support_type": "tree(auto)",
     "support_style": "tree_slim",
     "support_on_build_plate_only": "1",
-    "tree_support_wall_count": "1"
+    "tree_support_wall_count": "1",
+    "compatible_printers": [
+        "KINARB 1HB 0.5 nozzle",
+        "KINARB 2HB 0.5 nozzle"
+    ]
 }

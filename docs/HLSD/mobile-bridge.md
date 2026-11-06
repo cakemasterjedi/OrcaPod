@@ -38,7 +38,8 @@ Dependencies only point right.
 
 There is no CMake project for the bridge. `engine-sources.sh` is the single
 list of translation units, shared by every build of the bridge (the Linux
-host build in `build-host.sh` today, the Android NDK build next). It is grown
+host build in `build-host.sh` and the Android NDK build in `build-android.sh`;
+`compile-lib.sh` holds their incremental compile machinery). It is grown
 link-error-driven: a file is added when something in the closure needs one of
 its symbols. The host build packs everything into a static archive before
 linking, so translation units nothing references are never linked, as on the
@@ -53,6 +54,34 @@ inside the closure. oneTBB is the one dependency built with its own CMake
 project (`engine_build_tbb`), because it is the engine's source of
 parallelism: profile loading and every slicing step run on all cores through
 it, as on the desktop.
+
+## Android
+
+`build-android.sh` cross-compiles the same closure with the NDK's clang for
+one ABI (`arm64-v8a` by default) and a minimum API level (26 by default).
+GMP and MPFR have no Android packages, so it builds them from source as
+static libraries at OrcaSlicer's `deps/` pins. oneTBB is cross-built through
+the same `engine_build_tbb` as the host, with the NDK's CMake toolchain file,
+so the engine runs on all cores on the phone too. The result is one
+self-contained `liborcapod.so` for the app's `jniLibs/`: libc++ is linked in
+statically, so the app needs no `libc++_shared.so`, the only exported symbols
+are the `orca_*` C API (`android/exports.map`), and its segments are aligned to
+16 KB pages, which Android 15 devices require. The JNI layer sits on top of
+that C API and is not part of the bridge.
+
+Two target differences need compile flags rather than code changes.
+`char` is unsigned on Arm Linux, while the engine assumes it is signed
+(`BuildVolume_Type : char` holds `-1`), so the build passes `-fsigned-char`, as
+OrcaSlicer's own CMake build does. The NDK's libc++ has no `std::atomic_ref`,
+so Boost.Filesystem is told to use `boost::atomic_ref` instead.
+
+The same archive also links a static `orcapod-slice`, which runs on a Linux
+host under `qemu-aarch64`, so `build-android.sh --test` runs the CLI smoke
+test on the Arm code without a device. A static Bionic executable needs a
+TLS segment aligned to 64 bytes, which `android/tls_align.c` provides; the
+shared library does not need it. libc++ on Android resolves the temporary
+directory from `TMPDIR`, falling back to `/data/local/tmp`, so the app should
+set `TMPDIR` to its cache directory before calling into the engine.
 
 ## Shims and adapters
 

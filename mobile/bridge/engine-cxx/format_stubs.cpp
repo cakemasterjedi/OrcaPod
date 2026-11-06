@@ -85,6 +85,7 @@ std::optional<std::vector<Vec2f>> parameterize_lscm(const indexed_triangle_set &
 #include "libslic3r/Format/bbs_3mf.hpp"
 #include "libslic3r/Format/svg.hpp"
 #include "libslic3r/Utils.hpp"
+#include <stdlib.h> // getprogname (Apple, Android)
 #include <unistd.h>
 
 namespace Slic3r {
@@ -410,7 +411,7 @@ std::string decode_path(const char *src) { return src; }
 std::string get_process_name(int pid)
 {
     if (pid != 0 && pid != int(::getpid())) return {};
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__ANDROID__)
     return getprogname();
 #else
     return program_invocation_short_name;

@@ -22,7 +22,8 @@ mobile/bridge/build-host.sh --test   # build, then run the contract tests and th
 The first run downloads Boost, CGAL, Eigen, oneTBB and a few smaller sources into
 `mobile/bridge/cache/`. Outputs land in `mobile/bridge/build-host/`. Set
 `ORCAPOD_JOBS` to change the number of parallel compile jobs (default 6).
-`ORCAPOD_TBB=serial` builds the engine single-threaded, without oneTBB.
+`ORCAPOD_TBB=serial` builds the engine single-threaded, without oneTBB, and
+`ORCAPOD_HOST_BUILD_DIR` puts the outputs in another directory.
 
 ## Slice from the command line
 

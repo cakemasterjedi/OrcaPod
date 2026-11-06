@@ -38,7 +38,7 @@ engine_fetch_deps
 SRC="$REPO/src"
 DEPS="$REPO/deps_src"
 CXX="${CXX:-clang++}"
-BUILD="$BRIDGE/build-host"
+BUILD="${ORCAPOD_HOST_BUILD_DIR:-$BRIDGE/build-host}"
 mkdir -p "$BUILD/gen/libslic3r" "$BUILD/obj"
 
 case "${ORCAPOD_TBB:-real}" in

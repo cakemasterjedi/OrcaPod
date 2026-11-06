@@ -66,8 +66,8 @@ so the engine runs on all cores on the phone too. The result is one
 self-contained `liborcapod.so` for the app's `jniLibs/`: libc++ is linked in
 statically, so the app needs no `libc++_shared.so`, the only exported symbols
 are the `orca_*` C API (`android/exports.map`), and its segments are aligned to
-16 KB pages, which Android 15 devices require. The JNI layer sits on top of
-that C API and is not part of the bridge.
+16 KB pages, which Android 15 devices require. The app's JNI layer sits on
+top of that C API and is not part of the bridge ([android-app.md](android-app.md)).
 
 Two target differences need compile flags rather than code changes.
 `char` is unsigned on Arm Linux, while the engine assumes it is signed

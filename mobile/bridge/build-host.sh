@@ -13,6 +13,8 @@
 #   build-host/orcapod-slice      the command-line slicer (tools/orcapod_slice.cpp)
 #
 # With --test it then runs the contract tests and the CLI smoke test.
+# ORCAPOD_HOST_BUILD_DIR moves the outputs elsewhere, so a differently
+# configured build (the app's host JNI test) does not overwrite this one.
 #
 # The engine runs multithreaded on oneTBB, built from source at OrcaSlicer's
 # pin. ORCAPOD_TBB=serial swaps in the single-threaded TBB stand-in from
@@ -38,7 +40,7 @@ engine_fetch_deps
 SRC="$REPO/src"
 DEPS="$REPO/deps_src"
 CXX="${CXX:-clang++}"
-BUILD="$BRIDGE/build-host"
+BUILD="${ORCAPOD_HOST_BUILD_DIR:-$BRIDGE/build-host}"
 mkdir -p "$BUILD/gen/libslic3r" "$BUILD/obj"
 
 case "${ORCAPOD_TBB:-real}" in

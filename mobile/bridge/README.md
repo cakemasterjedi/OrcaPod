@@ -10,17 +10,19 @@ original copyright lines are kept in each file.
 ## Build on Linux
 
 Needs a C++20 compiler (`clang++` by default, set `CXX` to change it), the GMP
-and MPFR development packages, `git`, `curl`, `unzip` and `python3`:
+and MPFR development packages, CMake and Ninja (for oneTBB), `git`, `curl`,
+`unzip` and `python3`:
 
 ```bash
-sudo apt install clang libgmp-dev libmpfr-dev
+sudo apt install clang cmake ninja-build libgmp-dev libmpfr-dev
 mobile/bridge/build-host.sh          # build only
 mobile/bridge/build-host.sh --test   # build, then run the contract tests and the CLI test
 ```
 
-The first run downloads Boost, CGAL, Eigen and a few smaller sources into
+The first run downloads Boost, CGAL, Eigen, oneTBB and a few smaller sources into
 `mobile/bridge/cache/`. Outputs land in `mobile/bridge/build-host/`. Set
 `ORCAPOD_JOBS` to change the number of parallel compile jobs (default 6).
+`ORCAPOD_TBB=serial` builds the engine single-threaded, without oneTBB.
 
 ## Slice from the command line
 

@@ -63,6 +63,7 @@ fun PlateScreen(vm: AppViewModel) {
     val snackbar = remember { SnackbarHostState() }
     var picker by remember { mutableStateOf<PresetKind?>(null) }
     var settingsOpen by remember { mutableStateOf(false) }
+    var profilesOpen by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var layFlat by remember { mutableStateOf(false) }
     var viewRef by remember { mutableStateOf<PlateView?>(null) }
@@ -125,6 +126,7 @@ fun PlateScreen(vm: AppViewModel) {
                             HorizontalDivider()
                             DropdownMenuItem(text = { Text("Reset view") }, onClick = { menuOpen = false; viewRef?.resetView() })
                             DropdownMenuItem(text = { Text("Printer brands") }, onClick = { menuOpen = false; vm.manageVendors() })
+                            DropdownMenuItem(text = { Text("Back up and sync profiles") }, onClick = { menuOpen = false; profilesOpen = true })
                         }
                     }
                 },
@@ -219,6 +221,7 @@ fun PlateScreen(vm: AppViewModel) {
         )
     }
     if (settingsOpen) SettingsSheet(vm) { settingsOpen = false }
+    if (profilesOpen) ProfilesSheet(vm) { profilesOpen = false }
 }
 
 @Composable

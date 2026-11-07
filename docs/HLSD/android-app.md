@@ -54,6 +54,32 @@ top of the selected presets through the engine's edited-preset mechanism, so
 slicing picks them up exactly as desktop does; they can be saved as user
 presets.
 
+### Backup and sync
+
+User presets can leave the phone two ways, both working on the files in
+`user/default/{machine,filament,process}` rather than through the engine, so
+the engine only has to reload its presets afterwards (unsaved edits are
+dropped then).
+
+- **Backup file** (`ProfileBackup`): a zip with `printer/`, `filament/` and
+  `process/` folders, the layout of desktop's preset bundle export. It has no
+  `bundle_structure.json` on purpose: with one, desktop imports the presets
+  as a read-only local bundle instead of editable user presets. Import takes
+  desktop's `.orca_printer`, `.orca_filament` and `.zip` exports or a single
+  preset JSON, classifies each file by its `*_settings_id` key, `type` or
+  folder, names it after its `name` key (the engine loads a user preset under
+  its file name), and replaces a preset of the same name.
+- **Sync folder** (`ProfileSync`, `SafProfileFolder`): a folder picked with
+  the Storage Access Framework, kept with a persistable permission, that a
+  cloud or sync app mirrors to other devices. Presets go in an
+  `OrcaPod profiles` subfolder, or straight into the picked folder when it
+  already looks like a `user/default`. Sync is a three-way merge against the
+  content hashes recorded at the last sync, so a deletion on one side is
+  carried to the other instead of being undone. A preset changed on both
+  sides keeps the newer file, and the older one is written to the folder's
+  `conflicts/` so nothing is lost. It runs when the engine opens, after the
+  user saves or deletes a preset, and on demand.
+
 ## Viewport
 
 The plate is drawn in engine coordinates (z-up millimetres). Gestures:

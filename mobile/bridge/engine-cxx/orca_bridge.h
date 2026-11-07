@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 /// Version of the C ABI contract in this header. Callers verify it at runtime.
-#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)43)
+#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)45)
 
 typedef int32_t orca_status_code;
 #define ORCA_STATUS_OK                     ((orca_status_code)0)
@@ -210,7 +210,7 @@ orca_result orca_plater_import_model(orca_plater *plater, const char *path,
                                      orca_object_id *out_first_object_id,
                                      uint32_t *out_object_count,
                                      orca_revision *out_revision);
-// --- STEP import (desktop StepMeshDialog, ABI v43) ---------------------------
+// --- STEP import (desktop StepMeshDialog, ABI v45) ---------------------------
 
 /// A STEP document on its way into the plater. Desktop reads the file once,
 /// lets the user pick the meshing quality while it shows the resulting
@@ -685,7 +685,9 @@ orca_result orca_plater_object_height_profile_adaptive(
     orca_revision *out_revision);
 
 /// Desktop "Smooth": smooth_height_profile over `radius` layers
-/// (keep_min = keep local minima). One undo step.
+/// (keep_min = keep local minima). One undo step. Smooth and adjust start
+/// from the profile the layer height and height ranges give when the object
+/// has none, as desktop's layers editing does.
 orca_result orca_plater_object_height_profile_smooth(
     orca_plater *plater, orca_presets *presets, orca_object_id object_id,
     uint32_t radius, uint8_t keep_min, double **out_pairs, uint32_t *out_count,
@@ -698,6 +700,72 @@ orca_result orca_plater_object_height_profile_adjust(
     orca_plater *plater, orca_presets *presets, orca_object_id object_id,
     double z, double thickness_delta, double band_width, int32_t action,
     orca_revision *out_revision);
+
+// --- calibration (desktop Calibration menu, ABI v44) ---------------------------
+
+/// Desktop calibration modes (CalibMode) the bridge can set up.
+#define ORCA_CALIB_NONE              ((int32_t)0)
+#define ORCA_CALIB_PA_LINE           ((int32_t)1)
+#define ORCA_CALIB_PA_TOWER          ((int32_t)3)
+#define ORCA_CALIB_FLOW_RATE         ((int32_t)5)
+#define ORCA_CALIB_TEMP_TOWER        ((int32_t)6)
+#define ORCA_CALIB_VOLUMETRIC_SPEED  ((int32_t)7)
+#define ORCA_CALIB_VFA               ((int32_t)8)
+#define ORCA_CALIB_RETRACTION        ((int32_t)9)
+#define ORCA_CALIB_PA_PATTERN        ((int32_t)2)
+#define ORCA_CALIB_SHAPING_FREQ      ((int32_t)10)
+#define ORCA_CALIB_SHAPING_DAMP      ((int32_t)11)
+#define ORCA_CALIB_CORNERING         ((int32_t)12)
+
+/// One test's parameters (desktop Calib_Params and its dialogs). start,
+/// end and step are the tested range in the mode's unit: PA, degrees C
+/// (start hotter; the step is always 5), mm3/s, mm/s or mm.
+typedef struct {
+    int32_t mode;                 // ORCA_CALIB_*
+    int32_t flow_pass;            // flow rate: 1 or 2
+    double start, end, step;
+    uint8_t print_numbers;        // PA line: print the PA values
+    uint8_t nozzle_based_resize;  // temperature tower, VFA: scale to the nozzle
+    uint8_t flow_linear;          // flow rate: Orca YOLO (pass 2 = perfectionist)
+    uint8_t reserved;
+    int32_t flow_pattern;         // flow rate top surface: 0 Archimedean chords, 1 monotonic
+    double vfa_layer_height;      // VFA: 0 = nozzle diameter / 2
+    /// Input shaping: the frequency range per axis (Hz); the damping test
+    /// uses only the starts. start/end are the damping factors there (the
+    /// frequency test's damping is `start`). Cornering: start/end are jerk
+    /// (mm/s) or junction deviation (mm).
+    double freq_start_x, freq_end_x, freq_start_y, freq_end_y;
+    /// Input shaping: 0 ringing tower, 1 fast tower; cornering adds 2 SCV-V2.
+    int32_t test_model;
+    uint32_t speed_count;         // PA pattern: speeds (mm/s); 0 = optimal speed
+    const char *shaper_type;      // input shaping: input_shaping_type value; NULL/"" = firmware default
+    const double *speeds;
+    const double *accelerations;  // PA pattern: accelerations (mm/s2); 0 = the profile's
+    uint32_t acceleration_count;
+    uint32_t reserved3;
+} orca_calibration;
+
+/// Desktop Plater::calib_*: replaces the document with the test model at
+/// `model_path` (the desktop resources/calib file, as STL or 3MF; NULL for
+/// the PA pattern, whose handles are generated cubes), edits
+/// the session's edited print, filament and printer presets and the
+/// objects' settings as desktop does, cuts the model to the tested range,
+/// and keeps the parameters so slicing this plater generates the test.
+/// The PA pattern lays out one pattern per speed and acceleration pair, as
+/// desktop does, and its G-code is generated into each slice of the plate.
+/// One undo step "Calibration"; the preset edits are not undone.
+orca_result orca_plater_start_calibration(orca_plater *plater, orca_presets *presets,
+                                          const orca_calibration *calibration,
+                                          const char *model_path,
+                                          orca_revision *out_revision);
+
+/// The test the document was set up for; mode ORCA_CALIB_NONE otherwise.
+/// Flow rate pass, linear and pattern are not kept (they only shape setup).
+orca_result orca_plater_calibration(const orca_plater *plater, orca_calibration *out);
+
+/// Slices this plater as an ordinary document again. orca_plater_clear
+/// also ends the test.
+orca_result orca_plater_calibration_clear(orca_plater *plater);
 
 // --- per-plate settings (desktop PlateSettingsDialog, ABI v41) -----------------
 
@@ -836,7 +904,7 @@ orca_result orca_plater_instance_assemble_action(orca_plater *plater,
 /// 2 snap), style (0 prism, 1 frustum), shape (0 triangle, 1 square,
 /// 2 hexagon, 3 circle).
 typedef struct {
-    double position[3];       // world (engine) space, on the cut plane
+    double position[3];       // on the cut plane: world point minus the instance offset (desktop CutConnector::pos)
     double normal[3];         // cut plane normal the connector is drilled along
     float  radius;            // mm
     float  height;            // mm
@@ -996,6 +1064,18 @@ orca_result orca_plater_instances_delete(
 /// Overrides are slice inputs (Print::apply consumes them).
 /// Allowed keys for objects (for_volume = 0) or volumes, JSON string array.
 orca_result orca_plater_settings_keys(uint8_t for_volume, orca_owned_string *out_json);
+/// Option definitions (desktop ConfigOptionDef, ABI v43), for building
+/// settings editors: a JSON object keyed by option key, each value
+/// {"type": "float|int|string|percent|float_or_percent|point|bool|enum|...",
+///  "vector": bool, "label", "full_label", "category", "tooltip", "sidetext",
+///  "mode": "simple|advanced|expert|develop", "gui": "" or the GUIType name
+///  ("color", "f_enum_open", "i_enum_open", "select_open", "one_string", ...),
+///  "min"/"max" (only when bounded), "enum_values"/"enum_labels" (when set),
+///  "multiline", "readonly", "nullable", "default" (serialized)}.
+/// `keys_json` is a JSON string array restricting the result, or NULL for
+/// every print/printer/filament option. Unknown keys are skipped. Labels
+/// are the engine's untranslated English.
+orca_result orca_config_option_defs(const char *keys_json, orca_owned_string *out_json);
 /// Current overrides of the target as a JSON object {"key": "serialized"}.
 orca_result orca_plater_settings_dump(orca_plater *plater, orca_object_id object_id,
                                       orca_volume_id volume_id,
@@ -1022,6 +1102,15 @@ orca_result orca_plater_settings_apply(orca_plater *plater, orca_object_id objec
                                        const char *const *keys,
                                        const char *const *serialized_values,
                                        int32_t count, orca_revision *out_revision);
+/// Desktop object-list filament column (ABI v43): sets the "extruder"
+/// option of the object (`volume_id` 0) or of one part / modifier, which
+/// slicing maps to a filament slot. `extruder` is 1-based; 0 clears a
+/// volume's own assignment (it follows the object) and resets an object to
+/// the first filament. Values above ORCA_FILAMENT_MAX are INVALID_ARGUMENT.
+/// One undo step "Change filament".
+orca_result orca_plater_set_extruder(orca_plater *plater, orca_object_id object_id,
+                                     orca_volume_id volume_id, int32_t extruder,
+                                     orca_revision *out_revision);
 /// Desktop printable toggle: `instance_id` 0 applies to the object and all
 /// its instances. Non-printable instances are skipped by slicing.
 orca_result orca_plater_set_printable(orca_plater *plater, orca_object_id object_id,
@@ -1357,7 +1446,9 @@ orca_result orca_presets_set_filament_count(orca_presets *presets,
                                             const char *new_colour);
 
 /// Desktop per-slot filament combo: assigns a different filament preset to
-/// one slot. Typed NOT_FOUND for an unknown preset or slot.
+/// one slot. Slot 0 also becomes the selected filament preset (the one
+/// the settings tab edits), discarding its unsaved edits. Typed NOT_FOUND
+/// for an unknown preset or slot.
 orca_result orca_presets_select_filament(orca_presets *presets,
                                          uint32_t slot,
                                          const char *preset_name);
@@ -1536,7 +1627,7 @@ typedef struct {
 #define ORCA_TP_MAX_EXTRUDERS 16
 
 typedef struct {
-    float    z;             // layer z, mm
+    float    z;             // layer z, mm: print_z, else the first extrusion's z
     uint32_t first_segment;
     uint32_t segment_count;
     float    time_seconds;

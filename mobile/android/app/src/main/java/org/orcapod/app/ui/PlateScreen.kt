@@ -14,7 +14,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.ui.graphics.Color
+import org.orcapod.app.engine.Shape
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
@@ -50,6 +58,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
+import androidx.lifecycle.viewmodel.compose.viewModel
 import org.orcapod.app.engine.PresetKind
 import org.orcapod.app.ui.viewport.PlateView
 import org.orcapod.app.ui.viewport.Selection
@@ -62,14 +71,23 @@ private val MODEL_TYPES = arrayOf("*/*")
 @Composable
 fun PlateScreen(vm: AppViewModel) {
     val context = LocalContext.current
+    val printerVm: PrinterViewModel = viewModel()
+    var sendOpen by remember { mutableStateOf(false) }
+    var printersOpen by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     var picker by remember { mutableStateOf<PresetKind?>(null) }
-    var settingsOpen by remember { mutableStateOf(false) }
+    var settingsFor by remember { mutableStateOf<PresetKind?>(null) }
+    var objectList by remember { mutableStateOf(false) }
+    var objectSheet by remember { mutableStateOf<Selection?>(null) }
+    var filamentSlots by remember { mutableStateOf(false) }
+    var shapeMenu by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
+    var calibrating by remember { mutableStateOf(false) }
     var layFlat by remember { mutableStateOf(false) }
     var viewRef by remember { mutableStateOf<PlateView?>(null) }
 
     LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
+    LaunchedEffect(Unit) { printerVm.messages.collect { snackbar.showSnackbar(it) } }
 
     val importModels = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) vm.importUris(uris)
@@ -77,8 +95,18 @@ fun PlateScreen(vm: AppViewModel) {
     val openProject = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) vm.importUris(listOf(uri), asProject = true)
     }
+    val saveProject = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/3mf")) { uri ->
+        if (uri != null) vm.saveProject(uri)
+    }
     val export3mf = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/3mf")) { uri ->
-        if (uri != null) vm.exportProject(uri)
+        if (uri != null) vm.exportGeneric3mf(uri)
+    }
+    val exportStl = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/stl")) { uri ->
+        if (uri != null) vm.exportStl(null, uri)
+    }
+    var slicedAll by remember { mutableStateOf(false) }
+    val exportSliced = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/3mf")) { uri ->
+        if (uri != null) vm.exportSliced3mf(uri, slicedAll)
     }
     val saveGcode = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/x-gcode")) { uri ->
         if (uri != null) vm.saveGcode(uri)
@@ -92,6 +120,11 @@ fun PlateScreen(vm: AppViewModel) {
                 vm.selection = selection
                 vm.layFlat(selection, nx, ny, nz)
                 layFlat = false
+            }
+            override fun onRay(origin: FloatArray, direction: FloatArray) { vm.placeConnector(origin, direction) }
+            override fun onMeasure(selection: Selection, triangle: Int, local: FloatArray) { vm.measureAt(selection, triangle, local) }
+            override fun onPaint(objectId: Long, volumeId: Long, hit: FloatArray, view: FloatArray, first: Boolean) {
+                vm.paintAt(objectId, volumeId, hit, view, first)
             }
         }
     }
@@ -112,20 +145,46 @@ fun PlateScreen(vm: AppViewModel) {
                     Box {
                         IconButton(onClick = { menuOpen = true }) { Icon(Icons.Filled.MoreVert, "More") }
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            val hasObjects = vm.scene.snapshot.objects.isNotEmpty()
                             DropdownMenuItem(text = { Text("Import models") }, onClick = { menuOpen = false; importModels.launch(MODEL_TYPES) })
+                            DropdownMenuItem(text = { Text("Add shape…") }, onClick = { menuOpen = false; shapeMenu = true })
                             DropdownMenuItem(text = { Text("Online model library") }, onClick = { menuOpen = false; vm.openLibrary() })
                             DropdownMenuItem(text = { Text("Open 3MF project") }, onClick = { menuOpen = false; openProject.launch(MODEL_TYPES) })
                             DropdownMenuItem(
-                                text = { Text("Export plate as 3MF") },
-                                enabled = vm.scene.snapshot.objects.isNotEmpty(),
+                                text = { Text("Save project") },
+                                enabled = hasObjects,
+                                onClick = { menuOpen = false; saveProject.launch("project.3mf") },
+                            )
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("Export plate sliced file") },
+                                enabled = hasObjects && vm.slice !is SliceState.Running,
+                                onClick = { menuOpen = false; slicedAll = false; exportSliced.launch("plate.gcode.3mf") },
+                            )
+                            if (vm.scene.snapshot.plates.size > 1) DropdownMenuItem(
+                                text = { Text("Export all plates sliced file") },
+                                enabled = hasObjects && vm.slice !is SliceState.Running,
+                                onClick = { menuOpen = false; slicedAll = true; exportSliced.launch("plates.gcode.3mf") },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Export generic 3MF") },
+                                enabled = hasObjects,
                                 onClick = { menuOpen = false; export3mf.launch("plate.3mf") },
                             )
                             DropdownMenuItem(
+                                text = { Text("Export all objects as STL") },
+                                enabled = hasObjects,
+                                onClick = { menuOpen = false; exportStl.launch("plate.stl") },
+                            )
+                            HorizontalDivider()
+                            DropdownMenuItem(text = { Text("Calibration…") }, onClick = { menuOpen = false; calibrating = true })
+                            DropdownMenuItem(
                                 text = { Text("Clear plate") },
-                                enabled = vm.scene.snapshot.objects.isNotEmpty(),
+                                enabled = hasObjects,
                                 onClick = { menuOpen = false; vm.clearPlate() },
                             )
                             HorizontalDivider()
+                            DropdownMenuItem(text = { Text("Printers") }, onClick = { menuOpen = false; printersOpen = true })
                             DropdownMenuItem(text = { Text("Reset view") }, onClick = { menuOpen = false; viewRef?.resetView() })
                             DropdownMenuItem(text = { Text("Printer brands") }, onClick = { menuOpen = false; vm.manageVendors() })
                             DropdownMenuItem(
@@ -139,6 +198,11 @@ fun PlateScreen(vm: AppViewModel) {
                                 onClick = { vm.askNameCleanup = !vm.askNameCleanup },
                             )
                         }
+                        DropdownMenu(expanded = shapeMenu, onDismissRequest = { shapeMenu = false }) {
+                            for (shape in Shape.entries) if (shape != Shape.SLAB) {
+                                DropdownMenuItem(text = { Text(shape.label) }, onClick = { shapeMenu = false; vm.addShape(shape) })
+                            }
+                        }
                     }
                 },
             )
@@ -150,18 +214,32 @@ fun PlateScreen(vm: AppViewModel) {
                 factory = { ctx -> PlateView(ctx, listener).also { viewRef = it } },
                 update = { view ->
                     view.pickFaces = layFlat
+                    view.rayTaps = vm.cut?.placing == true
+                    view.lockDrag = vm.cut != null || vm.paint != null || vm.measure != null || vm.layerHeights != null
+                    view.paintObject = vm.paint?.objectId
+                    view.measureObject = vm.measure?.objectId
                     view.state = ViewportState(
                         scene = vm.scene,
                         selection = vm.selection,
                         toolpath = done?.toolpath,
-                        layer = vm.previewLayer,
+                        range = vm.previewRange,
+                        previewStyle = vm.previewStyle,
                         showToolpath = previewing && done?.toolpath != null,
+                        toolpathPlate = done?.plate ?: 0,
+                        selectedVolume = vm.selectedVolume,
+                        filamentColours = vm.filamentSlots.map { it.colour },
+                        cutQuad = vm.cut?.quad(),
+                        cutPoints = vm.cut?.connectorPoints(),
+                        paintOverlay = if (vm.paint != null) vm.paintOverlay else null,
+                        measureLines = vm.measure?.lines(),
+                        measurePoints = vm.measure?.points(),
                     )
                 },
             )
 
             Column(Modifier.fillMaxWidth().padding(8.dp)) {
-                PresetBar(vm) { picker = it }
+                PresetBar(vm, onFilaments = { filamentSlots = true }) { picker = it }
+                if (!previewing) PlateStrip(vm)
                 vm.busy?.let { label ->
                     Spacer(Modifier.height(6.dp))
                     val percent = vm.busyProgress
@@ -200,21 +278,32 @@ fun PlateScreen(vm: AppViewModel) {
                             context.startActivity(Intent.createChooser(send, "Send G-code"))
                         },
                         onSave = { saveGcode.launch(done.gcode.name) },
+                        onPrint = { sendOpen = true },
                     )
                     vm.slice is SliceState.Running -> SlicingPanel(vm.slice as SliceState.Running, vm::cancelSlice)
+                    vm.cut != null -> CutPanel(vm, vm.cut!!)
+                    vm.paint != null -> PaintPanel(vm, vm.paint!!)
+                    vm.layerHeights != null -> LayerHeightPanel(vm, vm.layerHeights!!)
+                    vm.measure != null -> MeasurePanel(vm, vm.measure!!)
                     else -> {
                         if (sel != null && vm.transformOf(sel) != null) {
-                            ObjectPanel(vm, sel, layFlat = layFlat, onLayFlat = { layFlat = !layFlat })
+                            ObjectPanel(vm, sel, layFlat = layFlat, onLayFlat = { layFlat = !layFlat }, onEdit = { objectSheet = sel })
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        if (vm.calibration != null) {
+                            CalibrationBanner(vm)
                             Spacer(Modifier.height(8.dp))
                         }
                         ActionBar(
                             hasObjects = vm.scene.snapshot.objects.isNotEmpty(),
                             hasResult = done != null,
+                            plates = vm.scene.snapshot.plates.size,
                             onImport = { importModels.launch(MODEL_TYPES) },
+                            onObjects = { objectList = true },
                             onLibrary = { vm.openLibrary() },
                             onArrange = vm::arrange,
-                            onSettings = { settingsOpen = true },
-                            onSlice = vm::startSlice,
+                            onSettings = { settingsFor = PresetKind.PROCESS },
+                            onSlice = { vm.startSlice(allPlates = it) },
                             onShowResult = { vm.showPreview = true },
                         )
                     }
@@ -248,29 +337,58 @@ fun PlateScreen(vm: AppViewModel) {
             onBrand = vm::switchBrand,
         )
     }
-    if (settingsOpen) SettingsSheet(vm) { settingsOpen = false }
+    settingsFor?.let { kind -> SettingsScreen(vm, kind) { settingsFor = null } }
+    if (objectList) ObjectListSheet(vm, onOpen = { objectList = false; vm.selection = it; objectSheet = it }) { objectList = false }
+    objectSheet?.let { sel -> ObjectSheet(vm, sel) { objectSheet = null } }
+    if (calibrating) CalibrationDialog(vm) { calibrating = false }
+    if (filamentSlots) {
+        FilamentSlotsSheet(vm, onEdit = { filamentSlots = false; settingsFor = PresetKind.FILAMENT }) { filamentSlots = false }
+    }
+    if (sendOpen && done != null) SendToPrinterSheet(printerVm, done.gcode, vm.printer) { sendOpen = false }
+    if (printersOpen) PrintersSheet(printerVm, vm.printer) { printersOpen = false }
     vm.stepImport?.let { StepImportDialog(it, vm::stepTriangleCountAsync, vm::stopTriangleCount, vm::answerStepImport) }
     vm.nameCleanup?.let { NameCleanupDialog(it, vm::previewNameChanges, vm::answerNameCleanup) }
 }
 
 @Composable
-private fun PresetBar(vm: AppViewModel, onPick: (PresetKind) -> Unit) {
+private fun PresetBar(vm: AppViewModel, onFilaments: () -> Unit, onPick: (PresetKind) -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))) {
         Column(Modifier.padding(horizontal = 4.dp, vertical = 2.dp)) {
             PresetLine("Printer", vm.printer) { onPick(PresetKind.PRINTER) }
             Row {
-                Box(Modifier.weight(1f)) { PresetLine("Filament", vm.filament) { onPick(PresetKind.FILAMENT) } }
+                Box(Modifier.weight(1f)) {
+                    val slots = vm.filamentSlots
+                    if (slots.size > 1) {
+                        PresetLine("Filaments", "${slots.size} slots", swatches = slots.map { it.colour }, onClick = onFilaments)
+                    } else {
+                        PresetLine("Filament", vm.filament, onLongClick = onFilaments) { onPick(PresetKind.FILAMENT) }
+                    }
+                }
                 Box(Modifier.weight(1f)) { PresetLine("Process", vm.process) { onPick(PresetKind.PROCESS) } }
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun PresetLine(label: String, value: String, onClick: () -> Unit) {
-    TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.fillMaxWidth()) {
-            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+private fun PresetLine(
+    label: String,
+    value: String,
+    swatches: List<String> = emptyList(),
+    onLongClick: (() -> Unit)? = null,
+    onClick: () -> Unit,
+) {
+    Column(
+        Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            for (c in swatches.take(8)) {
+                Box(Modifier.size(14.dp).background(parseColor(c) ?: Color.Gray, CircleShape))
+                Spacer(Modifier.width(3.dp))
+            }
             Text(
                 value.ifEmpty { "—" },
                 style = MaterialTheme.typography.bodyMedium,
@@ -293,13 +411,16 @@ private fun Hint(text: String) {
 private fun ActionBar(
     hasObjects: Boolean,
     hasResult: Boolean,
+    plates: Int,
     onImport: () -> Unit,
+    onObjects: () -> Unit,
     onLibrary: () -> Unit,
     onArrange: () -> Unit,
     onSettings: () -> Unit,
-    onSlice: () -> Unit,
+    onSlice: (allPlates: Boolean) -> Unit,
     onShowResult: () -> Unit,
 ) {
+    var sliceMenu by remember { mutableStateOf(false) }
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f))) {
         Row(
             Modifier.fillMaxWidth().padding(8.dp),
@@ -307,15 +428,22 @@ private fun ActionBar(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             IconButton(onClick = onImport) { Icon(Icons.Filled.Add, "Import models") }
+            IconButton(onClick = onObjects, enabled = hasObjects) { Icon(Icons.AutoMirrored.Filled.List, "Objects") }
             IconButton(onClick = onLibrary) { Icon(AppIcons.CloudDownload, "Online model library") }
             IconButton(onClick = onArrange, enabled = hasObjects) { Icon(AppIcons.GridView, "Arrange") }
             IconButton(onClick = onSettings) { Icon(AppIcons.Tune, "Print settings") }
             if (hasResult) IconButton(onClick = onShowResult) { Icon(AppIcons.Layers, "Show preview") }
             Spacer(Modifier.weight(1f))
-            Button(onClick = onSlice, enabled = hasObjects) {
-                Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                Spacer(Modifier.width(6.dp))
-                Text("Slice")
+            Box {
+                Button(onClick = { if (plates > 1) sliceMenu = true else onSlice(false) }, enabled = hasObjects) {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Slice")
+                }
+                DropdownMenu(expanded = sliceMenu, onDismissRequest = { sliceMenu = false }) {
+                    DropdownMenuItem(text = { Text("Slice this plate") }, onClick = { sliceMenu = false; onSlice(false) })
+                    DropdownMenuItem(text = { Text("Slice all plates") }, onClick = { sliceMenu = false; onSlice(true) })
+                }
             }
         }
     }

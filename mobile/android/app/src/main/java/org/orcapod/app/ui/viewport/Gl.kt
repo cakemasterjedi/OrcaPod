@@ -98,6 +98,7 @@ internal class ColorProgram {
         void main() {
             vColor = aColor;
             gl_Position = uMvp * vec4(aPos, 1.0);
+            gl_PointSize = 7.0;
         }""",
         """#version 300 es
         precision mediump float;

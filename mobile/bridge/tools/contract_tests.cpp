@@ -22,6 +22,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <set>
 #include <string>
 #include <sys/stat.h>
 #include <thread>
@@ -276,7 +278,7 @@ static void test_md5_shim() {
 
 static void test_abi_version() {
     CHECK_EQ(orca_bridge_abi_version(), ORCA_BRIDGE_ABI_VERSION);
-    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 43);
+    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 45);
 }
 
 struct ProgressRecord {
@@ -1121,6 +1123,62 @@ static void test_group_transforms(const std::string &dir) {
 
     orca_plater_free(plater);
 }
+// ABI v43: object / part filament assignment.
+static void test_set_extruder(const std::string &dir) {
+    orca_plater *plater = nullptr;
+    GUARD(g0, orca_plater_new(&plater));
+    expect_ok(g0, "plater_new");
+    orca_revision revision = 0;
+    const std::string cube = write_cube_stl(dir, "extruder_cube.stl");
+    orca_object_id object_id = 0;
+    GUARD(g1, import_one(plater, cube.c_str(), 100, 100, &object_id, &revision));
+    expect_ok(g1, "import");
+    orca_scene_snapshot snap = take_snapshot(plater);
+    const orca_volume_id part = snap.objects[0].volumes[0].id;
+    orca_scene_snapshot_dispose(&snap);
+    GUARD(g2, orca_plater_set_extruder(plater, object_id, 0, 3, &revision));
+    expect_ok(g2, "object extruder");
+    GUARD(g3, orca_plater_set_extruder(plater, object_id, part, 2, &revision));
+    expect_ok(g3, "part extruder");
+    snap = take_snapshot(plater);
+    CHECK_EQ(snap.objects[0].extruder, 3);
+    CHECK_EQ(snap.objects[0].volumes[0].extruder, 2);
+    CHECK(snapshot_label(snap.undo_label) == "Change filament");
+    orca_scene_snapshot_dispose(&snap);
+    GUARD(g4, orca_plater_set_extruder(plater, object_id, part, 0, &revision));
+    expect_ok(g4, "part follows object");
+    snap = take_snapshot(plater);
+    CHECK_EQ(snap.objects[0].volumes[0].extruder, 0);
+    orca_scene_snapshot_dispose(&snap);
+    GUARD(g5, orca_plater_set_extruder(plater, object_id, 0, ORCA_FILAMENT_MAX + 1, &revision));
+    CHECK_EQ(g5.r.code, ORCA_STATUS_INVALID_ARGUMENT);
+    GUARD(g6, orca_plater_undo(plater, &revision));
+    expect_ok(g6, "undo");
+    snap = take_snapshot(plater);
+    CHECK_EQ(snap.objects[0].volumes[0].extruder, 2);
+    orca_scene_snapshot_dispose(&snap);
+    orca_plater_free(plater);
+}
+
+// ABI v43: option definitions for settings editors.
+static void test_option_defs() {
+    orca_owned_string defs{};
+    GUARD(g0, orca_config_option_defs("[\"layer_height\",\"sparse_infill_pattern\",\"no_such_key\"]", &defs));
+    expect_ok(g0, "option defs subset");
+    CHECK(defs.data && strstr(defs.data, "\"layer_height\"") != nullptr);
+    CHECK(defs.data && strstr(defs.data, "\"enum_values\"") != nullptr);
+    CHECK(defs.data && strstr(defs.data, "\"gyroid\"") != nullptr);
+    CHECK(defs.data && strstr(defs.data, "no_such_key") == nullptr);
+    orca_owned_string_dispose(&defs);
+    GUARD(g1, orca_config_option_defs(nullptr, &defs));
+    expect_ok(g1, "option defs all");
+    CHECK(defs.data && strstr(defs.data, "\"nozzle_temperature\"") != nullptr);
+    CHECK(defs.data && strstr(defs.data, "\"printable_area\"") != nullptr);
+    orca_owned_string_dispose(&defs);
+    GUARD(g2, orca_config_option_defs("{}", &defs));
+    CHECK_EQ(g2.r.code, ORCA_STATUS_INVALID_ARGUMENT);
+}
+
 // ABI v22: per-object / per-part setting overrides.
 static void test_object_settings(const std::string &dir) {
     orca_owned_string keys{};
@@ -3714,9 +3772,12 @@ static void test_cut(const std::string &dir) {
     orca_scene_snapshot snap = take_snapshot(plater);
     CHECK_EQ(snap.object_count, 1);
     const orca_scene_object &source = snap.objects[0];
-    const double cx = 0.5 * (source.bbox_min[0] + source.bbox_max[0]);
-    const double cy = 0.5 * (source.bbox_min[1] + source.bbox_max[1]);
-    const double midZ = 0.5 * (source.bbox_min[2] + source.bbox_max[2]);
+    // the plane is a WORLD point: the object-space bbox centre moved by the
+    // instance offset (matrix translation; the cube is neither rotated nor scaled)
+    const double *m = source.instances[0].matrix;
+    const double cx = 0.5 * (source.bbox_min[0] + source.bbox_max[0]) + m[12];
+    const double cy = 0.5 * (source.bbox_min[1] + source.bbox_max[1]) + m[13];
+    const double midZ = 0.5 * (source.bbox_min[2] + source.bbox_max[2]) + m[14];
     const float sourceHeight = source.bbox_max[2] - source.bbox_min[2];
     const orca_instance_id instance = source.instances[0].id;
     orca_scene_snapshot_dispose(&snap);
@@ -3761,6 +3822,20 @@ static void test_cut(const std::string &dir) {
         orca_scene_snapshot restored = take_snapshot(plater);
         CHECK_EQ(restored.object_count, 1);
         orca_scene_snapshot_dispose(&restored);
+    }
+
+    // a tilted plane through the object's centre still splits it: the plane
+    // is placed relative to the instance offset, its frame maps Z onto the
+    // normal (desktop get_cut_matrix)
+    for (int axis = 0; axis < 2; ++axis) {
+        const double t = 0.5; // ~30 degrees
+        GUARD(ct, orca_plater_object_cut(plater, object_id, instance, cx, cy, midZ,
+                                         axis == 0 ? t : 0.0, axis == 1 ? t : 0.0, 0.866,
+                                         3, &first, &count, &revision));
+        expect_ok(ct, "tilted cut");
+        CHECK_EQ(count, 2u);
+        GUARD(ut, orca_plater_undo(plater, &revision));
+        expect_ok(ut, "undo tilted cut");
     }
 
     // both halves as PARTS: one object, two volumes
@@ -3947,9 +4022,11 @@ static void test_measure_and_mesh_ops(const std::string &dir) {
     CHECK_NEAR(plane.area, 400.0, 25.0);   // 20 x 20mm face
     orca_measurement plane_to_point;
     memset(&plane_to_point, 0, sizeof plane_to_point);
-    GUARD(m5, orca_measure_between(measure, &plane, &corner_a, &plane_to_point));
+    GUARD(m5, orca_measure_between(measure, &plane, &corner_b, &plane_to_point));
     expect_ok(m5, "plane to point");
-    CHECK(plane_to_point.has_distance || plane_to_point.has_xyz);
+    // The plane round-trips as (normal, point): the bottom corner is 20 mm below the top face.
+    CHECK(plane_to_point.has_distance);
+    CHECK_NEAR(plane_to_point.distance, 20.0, 0.05);
     orca_measure_dispose(measure);
 
     // --- simplify: quadric edge collapse on the single volume
@@ -5231,11 +5308,18 @@ static void test_gcode_toolpath(const std::string &dir) {
     bool extrusion_seen = false;
     bool travel_seen = false;
     bool roles_seen = false;
+    bool layer_z_ok = true;
     for (uint32_t i = 0; i < toolpath.layer_count; ++i) {
         const orca_tp_layer &layer = toolpath.layers[i];
         CHECK(layer.segment_count > 0);
         total += layer.segment_count;
+        // every printed layer has a height, also without BBL's Z_HEIGHT tag
+        bool extrudes = false;
+        for (uint32_t s = 0; s < layer.segment_count; ++s)
+            extrudes |= toolpath.segments[layer.first_segment + s].move_type == 10;
+        if (extrudes && !(layer.z > 0.0f)) layer_z_ok = false;
     }
+    CHECK(layer_z_ok);
     CHECK_EQ(total, toolpath.segment_count);
     for (uint32_t i = 0; i < toolpath.segment_count; ++i) {
         const orca_tp_segment &segment = toolpath.segments[i];
@@ -5277,7 +5361,7 @@ static void test_gcode_toolpath(const std::string &dir) {
     orca_gcode_free(nullptr);
 }
 
-// --- STEP import (ABI v43) ---------------------------------------------------
+// --- STEP import (ABI v45) ---------------------------------------------------
 
 /// tests/data of this repository (the STEP fixtures desktop's test_step.cpp
 /// uses), found next to the profiles directory.
@@ -5530,6 +5614,209 @@ static void test_step_import(const std::string &dir) {
     }
     orca_scene_snapshot_dispose(&snap);
     orca_plater_free(plater);
+
+// ABI v44: desktop calibration tests (Plater::calib_*).
+static std::string calib_model(const char *name) {
+    const char *profiles = getenv("ORCAPAD_TEST_PROFILES_DIR");
+    // resources/profiles -> mobile/android/app/src/main/assets/calib
+    return std::string(profiles ? profiles : ".") +
+           "/../../mobile/android/app/src/main/assets/calib/" + name;
+}
+
+static std::string resolved_value(orca_presets *presets, const char *key) {
+    orca_owned_string json{};
+    if (orca_presets_resolved_config(presets, &json).code != ORCA_STATUS_OK || !json.data) return {};
+    const std::string body(json.data, size_t(json.length));
+    orca_owned_string_dispose(&json);
+    const std::string needle = std::string("\"") + key + "\":\"";
+    size_t at = body.find(needle);
+    if (at == std::string::npos) {
+        at = body.find(std::string("\"") + key + "\": \"");
+        if (at == std::string::npos) return {};
+        at += strlen(key) + 5;
+    } else {
+        at += needle.size();
+    }
+    return body.substr(at, body.find('"', at) - at);
+}
+
+static float object_height(orca_plater *plater, int32_t index) {
+    orca_scene_snapshot snapshot{};
+    if (orca_plater_snapshot(plater, &snapshot).code != ORCA_STATUS_OK) return -1;
+    float h = -1;
+    if (index < snapshot.object_count) {
+        const orca_scene_object &o = snapshot.objects[index];
+        const double *m = o.instances[0].matrix;
+        h = (o.bbox_max[2] - o.bbox_min[2]) * float(m[10]);
+    }
+    orca_scene_snapshot_dispose(&snapshot);
+    return h;
+}
+
+static void test_calibration(const std::string &dir, const std::string &data_dir) {
+    orca_presets *presets = nullptr;
+    GUARD(c0, orca_presets_new(data_dir.c_str(), &presets));
+    expect_ok(c0, "presets_new");
+    GUARD(c1, orca_presets_select(presets, "Bambu Lab X1 Carbon 0.4 nozzle",
+                                  "Bambu PLA Basic @BBL X1C", "0.20mm Standard @BBL X1C"));
+    expect_ok(c1, "select X1C triple");
+    orca_plater *plater = nullptr;
+    GUARD(c2, orca_plater_new(&plater));
+    expect_ok(c2, "plater_new");
+    orca_revision revision = 0;
+
+    orca_calibration none{};
+    GUARD(c3, orca_plater_calibration(plater, &none));
+    expect_ok(c3, "calibration of a plain document");
+    CHECK_EQ(none.mode, ORCA_CALIB_NONE);
+
+    // Desktop dialog limits.
+    orca_calibration bad{};
+    bad.mode = ORCA_CALIB_TEMP_TOWER;
+    bad.start = 190;
+    bad.end = 230;
+    GUARD(e1, orca_plater_start_calibration(plater, presets, &bad, calib_model("temperature_tower.3mf").c_str(), &revision));
+    expect_code(e1, ORCA_STATUS_INVALID_ARGUMENT, "temperature tower going up");
+    bad.mode = 2 /* desktop PA pattern */;
+    GUARD(e2, orca_plater_start_calibration(plater, presets, &bad, calib_model("pa_tower.3mf").c_str(), &revision));
+    expect_code(e2, ORCA_STATUS_INVALID_ARGUMENT, "PA pattern is not offered");
+
+    // Temperature tower 230 -> 190 C: nine 10 mm blocks, filament at the start temperature.
+    orca_calibration temp{};
+    temp.mode = ORCA_CALIB_TEMP_TOWER;
+    temp.start = 230;
+    temp.end = 190;
+    temp.nozzle_based_resize = 1;
+    GUARD(t1, orca_plater_start_calibration(plater, presets, &temp, calib_model("temperature_tower.3mf").c_str(), &revision));
+    expect_ok(t1, "temperature tower");
+    CHECK_NEAR(object_height(plater, 0), 90.0, 0.5);
+    CHECK(resolved_value(presets, "nozzle_temperature") == "230");
+    orca_calibration kept{};
+    GUARD(t2, orca_plater_calibration(plater, &kept));
+    expect_ok(t2, "kept calibration");
+    CHECK_EQ(kept.mode, ORCA_CALIB_TEMP_TOWER);
+    CHECK_NEAR(kept.step, 5.0, 1e-9);
+
+    // Flow rate pass 1: nine plates, each with its own flow ratio; ten 0.2 mm layers.
+    orca_calibration flow{};
+    flow.mode = ORCA_CALIB_FLOW_RATE;
+    flow.flow_pass = 1;
+    GUARD(f1, orca_plater_start_calibration(plater, presets, &flow, calib_model("flowrate_pass1.3mf").c_str(), &revision));
+    expect_ok(f1, "flow rate pass 1");
+    orca_scene_snapshot snapshot{};
+    GUARD(f2, orca_plater_snapshot(plater, &snapshot));
+    expect_ok(f2, "flow snapshot");
+    CHECK_EQ(snapshot.object_count, 9);
+    for (int32_t i = 0; i < snapshot.object_count; ++i) CHECK(snapshot.objects[i].override_count > 20);
+    orca_scene_snapshot_dispose(&snapshot);
+    CHECK(resolved_value(presets, "layer_height") == "0.2");
+    CHECK_NEAR(object_height(plater, 0), 2.0, 0.05);
+
+    // PA tower 0 -> 0.1 by 0.002: a 51 mm tower whose G-code steps PA.
+    orca_calibration pa{};
+    pa.mode = ORCA_CALIB_PA_TOWER;
+    pa.start = 0;
+    pa.end = 0.1;
+    pa.step = 0.002;
+    GUARD(p1, orca_plater_start_calibration(plater, presets, &pa, calib_model("pa_tower.3mf").c_str(), &revision));
+    expect_ok(p1, "PA tower");
+    CHECK_NEAR(object_height(plater, 0), 51.0, 0.5);
+    orca_slice_report report;
+    const std::string gcode = dir + "/calib_pa_tower.gcode";
+    GUARD(p2, orca_plater_slice_to_gcode_with_presets(plater, presets, gcode.c_str(), nullptr, nullptr, nullptr, &report));
+    expect_ok(p2, "slice PA tower");
+    orca_slice_report_dispose(&report);
+    std::ifstream in(gcode);
+    std::set<std::string> pa_commands;
+    for (std::string line; std::getline(in, line);)
+        if (line.rfind("M900 K", 0) == 0 || line.rfind("SET_PRESSURE_ADVANCE", 0) == 0) pa_commands.insert(line);
+    CHECK(pa_commands.size() > 20); // one PA per step up the tower
+
+    // The other towers set up with desktop's defaults.
+    struct Tower { int32_t mode; double start, end, step; const char *model; float height; } towers[] = {
+        {ORCA_CALIB_VOLUMETRIC_SPEED, 5, 20, 0.5, "volumetric_speed.3mf", 32.0f},
+        {ORCA_CALIB_VFA, 40, 200, 10, "vfa.3mf", 85.0f},
+        {ORCA_CALIB_RETRACTION, 0, 2, 0.1, "retraction_tower.3mf", 21.4f},
+    };
+    for (const Tower &t : towers) {
+        orca_calibration c{};
+        c.mode = t.mode;
+        c.start = t.start;
+        c.end = t.end;
+        c.step = t.step;
+        c.nozzle_based_resize = 1;
+        GUARD(tw, orca_plater_start_calibration(plater, presets, &c, calib_model(t.model).c_str(), &revision));
+        expect_ok(tw, t.model);
+        CHECK_NEAR(object_height(plater, 0), t.height, 0.5);
+    }
+
+    // Earlier tests leave desktop's spiral vase edits; start the pattern from the profiles.
+    for (int32_t kind = 0; kind < 3; ++kind) orca_presets_reset_kind(presets, kind);
+    // PA pattern, two speeds: one handle each, and each slice draws the patterns.
+    orca_calibration pattern{};
+    pattern.mode = ORCA_CALIB_PA_PATTERN;
+    pattern.start = 0;
+    pattern.end = 0.08;
+    pattern.step = 0.005;
+    const double pattern_speeds[] = {100, 200};
+    pattern.speeds = pattern_speeds;
+    pattern.speed_count = 2;
+    GUARD(pp1, orca_plater_start_calibration(plater, presets, &pattern, nullptr, &revision));
+    expect_ok(pp1, "PA pattern");
+    GUARD(pp2, orca_plater_snapshot(plater, &snapshot));
+    expect_ok(pp2, "pattern snapshot");
+    CHECK_EQ(snapshot.object_count, 2);
+    orca_scene_snapshot_dispose(&snapshot);
+    const std::string pattern_gcode = dir + "/calib_pa_pattern.gcode";
+    GUARD(pp3, orca_plater_slice_to_gcode_with_presets(plater, presets, pattern_gcode.c_str(), nullptr, nullptr, nullptr, &report));
+    expect_ok(pp3, "slice PA pattern");
+    orca_slice_report_dispose(&report);
+    std::ifstream pattern_in(pattern_gcode);
+    std::set<std::string> pattern_pa;
+    for (std::string line; std::getline(pattern_in, line);)
+        if (line.rfind("M900 K", 0) == 0 || line.rfind("SET_PRESSURE_ADVANCE", 0) == 0) pattern_pa.insert(line);
+    CHECK(pattern_pa.size() >= 17); // 0 to 0.08 by 0.005, per pattern
+
+    // Input shaping and cornering towers.
+    orca_calibration shaping{};
+    shaping.mode = ORCA_CALIB_SHAPING_FREQ;
+    shaping.freq_start_x = shaping.freq_start_y = 15;
+    shaping.freq_end_x = shaping.freq_end_y = 110;
+    shaping.start = 0.15;
+    GUARD(is1, orca_plater_start_calibration(plater, presets, &shaping, calib_model("ringing_tower.3mf").c_str(), &revision));
+    expect_ok(is1, "input shaping frequency");
+    CHECK(resolved_value(presets, "spiral_mode") == "1");
+    shaping.freq_end_x = 5;
+    GUARD(is2, orca_plater_start_calibration(plater, presets, &shaping, calib_model("ringing_tower.3mf").c_str(), &revision));
+    expect_code(is2, ORCA_STATUS_INVALID_ARGUMENT, "falling frequency range");
+    orca_calibration damping{};
+    damping.mode = ORCA_CALIB_SHAPING_DAMP;
+    damping.freq_start_x = damping.freq_start_y = 30;
+    damping.start = 0;
+    damping.end = 0.4;
+    damping.test_model = 1;
+    GUARD(is3, orca_plater_start_calibration(plater, presets, &damping, calib_model("fast_tower.3mf").c_str(), &revision));
+    expect_ok(is3, "input shaping damping");
+    orca_calibration cornering{};
+    cornering.mode = ORCA_CALIB_CORNERING;
+    cornering.start = 1;
+    cornering.end = 15;
+    cornering.test_model = 2;
+    GUARD(cn1, orca_plater_start_calibration(plater, presets, &cornering, calib_model("scv_v2.3mf").c_str(), &revision));
+    expect_ok(cn1, "cornering");
+    // Machine limits resolve as normal and silent values.
+    CHECK(resolved_value(presets, "machine_max_jerk_x").rfind("15", 0) == 0);
+    GUARD(cn2, orca_plater_calibration(plater, &kept));
+    expect_ok(cn2, "cornering kept");
+    CHECK_EQ(kept.mode, ORCA_CALIB_CORNERING);
+
+    GUARD(x1, orca_plater_clear(plater, &revision));
+    expect_ok(x1, "clear ends the test");
+    GUARD(x2, orca_plater_calibration(plater, &kept));
+    expect_ok(x2, "calibration after clear");
+    CHECK_EQ(kept.mode, ORCA_CALIB_NONE);
+    orca_plater_free(plater);
+    orca_presets_free(presets);
 }
 
 int main() {
@@ -5546,6 +5833,8 @@ int main() {
     test_mirror_clipboard(dir);
     test_group_transforms(dir);
     test_object_settings(dir);
+    test_option_defs();
+    test_set_extruder(dir);
     test_batch_operations(dir);
     test_plates(dir, data_dir);
     test_object_ops(dir, data_dir);
@@ -5585,6 +5874,7 @@ int main() {
     test_physical_printers(data_dir);
     test_arrange_orient(dir, data_dir);
     test_gcode_toolpath(dir);
+    test_calibration(dir, data_dir);
 
     fprintf(stderr, "\n═══ contract tests: %d checks, %d failures ═══\n",
             checks, failures);

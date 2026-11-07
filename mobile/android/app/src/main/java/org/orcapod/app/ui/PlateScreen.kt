@@ -48,6 +48,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
+import org.orcapod.app.data.VendorNames
 import org.orcapod.app.engine.PresetKind
 import org.orcapod.app.ui.viewport.PlateView
 import org.orcapod.app.ui.viewport.Selection
@@ -218,10 +219,12 @@ fun PlateScreen(vm: AppViewModel) {
             },
             onDelete = if (kind == PresetKind.PRINTER) null else { name -> vm.deleteUserPreset(kind, name) },
             onDismiss = { picker = null },
-            brands = if (kind == PresetKind.PRINTER) vm.installedVendors.sortedWith(String.CASE_INSENSITIVE_ORDER) else emptyList(),
+            brands = if (kind == PresetKind.PRINTER) VendorNames.sorted(vm.installedVendors) else emptyList(),
             brand = vm.activeVendor,
             loading = vm.busy != null,
             onBrand = vm::switchBrand,
+            choice = vm.choices[kind],
+            onChoose = { vm.choosePresets(kind, entries, it) },
         )
     }
     if (settingsOpen) SettingsSheet(vm) { settingsOpen = false }

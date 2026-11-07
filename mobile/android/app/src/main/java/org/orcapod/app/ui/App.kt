@@ -39,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import org.orcapod.app.data.ProfileStore
+import org.orcapod.app.data.VendorNames
 
 @Composable
 fun OrcaPodApp(viewModel: AppViewModel, pendingImports: List<Uri>, onImportsTaken: () -> Unit) {
@@ -109,7 +110,7 @@ fun VendorSetupScreen(
 ) {
     var chosen by remember { mutableStateOf(initial.filter { it in vendors }.toSet()) }
     var query by rememberSaveable { mutableStateOf("") }
-    val shown = vendors.filter { it.contains(query.trim(), ignoreCase = true) }
+    val shown = VendorNames.sorted(vendors).filter { VendorNames.display(it).contains(query.trim(), ignoreCase = true) }
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp)) {
         Text(if (firstRun) "Welcome to OrcaPod" else "Printer brands", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(4.dp))
@@ -138,7 +139,7 @@ fun VendorSetupScreen(
                 ) {
                     Checkbox(checked = vendor in chosen, onCheckedChange = null)
                     Spacer(Modifier.width(12.dp))
-                    Text(vendor)
+                    Text(VendorNames.display(vendor))
                 }
                 HorizontalDivider()
             }

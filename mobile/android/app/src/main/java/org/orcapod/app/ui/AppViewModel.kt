@@ -19,7 +19,9 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import org.orcapod.app.data.PresetChoice
 import org.orcapod.app.data.ProfileStore
+import org.orcapod.app.data.VendorNames
 import org.orcapod.app.engine.Engine
 import org.orcapod.app.engine.InstanceTransform
 import org.orcapod.app.engine.OrcaException
@@ -61,6 +63,7 @@ data class QuickSetting(
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = ProfileStore(app)
     private val prefs = app.getSharedPreferences("session", Context.MODE_PRIVATE)
+    private val choicePrefs = app.getSharedPreferences("preset_choices", Context.MODE_PRIVATE)
     private var engine: Engine? = null
     private var sliceJob: Job? = null
 
@@ -98,6 +101,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var editedKeys by mutableStateOf<Set<String>>(emptySet())
         private set
     var installedVendors by mutableStateOf<Set<String>>(emptySet())
+        private set
+
+    /** Printers and filaments the user picked to show in the pickers, by kind. */
+    var choices by mutableStateOf(loadChoices())
         private set
 
     /** The installed brand whose profiles are loaded; the others load when picked. */
@@ -203,7 +210,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Switches the loaded profiles to [vendor]'s, restoring the presets last used with it. */
     fun switchBrand(vendor: String) {
         if (vendor == activeVendor) return
-        engineAction("Loading $vendor profiles…") { e ->
+        engineAction("Loading ${VendorNames.display(vendor)} profiles…") { e ->
             val previous = activeVendor
             try {
                 activateBrand(vendor)
@@ -329,6 +336,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteUserPreset(kind: PresetKind, name: String) = engineAction { e ->
         e.deleteUserPreset(kind, name)
         refreshPresets()
+    }
+
+    /** Shows only [picked] of [entries] in the [kind] picker; nothing picked shows them all. */
+    fun choosePresets(kind: PresetKind, entries: List<PresetEntry>, picked: Set<String>) {
+        val choice = (choices[kind] ?: PresetChoice()).pick(entries, picked)
+        choices = choices + (kind to choice)
+        choicePrefs.edit()
+            .putStringSet("shown/${kind.name}", choice.shown)
+            .putStringSet("seen/${kind.name}", choice.seen)
+            .apply()
+    }
+
+    private fun loadChoices(): Map<PresetKind, PresetChoice> = CHOOSABLE.associateWith { kind ->
+        PresetChoice(
+            shown = choicePrefs.getStringSet("shown/${kind.name}", null).orEmpty().toSet(),
+            seen = choicePrefs.getStringSet("seen/${kind.name}", null).orEmpty().toSet(),
+        )
     }
 
     // --- document ---
@@ -545,5 +569,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val TAG = "OrcaPod"
         val IMPORTABLE = setOf("stl", "3mf", "obj", "amf")
+
+        /** Preset kinds whose picker lists only the presets the user picked. */
+        val CHOOSABLE = listOf(PresetKind.PRINTER, PresetKind.FILAMENT)
     }
 }

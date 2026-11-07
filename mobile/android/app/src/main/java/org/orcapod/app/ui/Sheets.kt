@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -51,13 +52,17 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import org.orcapod.app.data.PresetChoice
+import org.orcapod.app.data.VendorNames
 import org.orcapod.app.engine.PresetEntry
 import org.orcapod.app.engine.PresetKind
 
 /**
  * Searchable preset list; printers show their vendor, user presets can be deleted.
  * With more than one [brands], a row of chips above the list switches the loaded
- * brand through [onBrand]; [loading] shows while that brand loads.
+ * brand through [onBrand]; [loading] shows while that brand loads. With a
+ * [choice], the list holds only the presets the user picked to show, and
+ * "Choose" lets them tick which ones through [onChoose].
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -72,17 +77,50 @@ fun PresetPickerSheet(
     brand: String? = null,
     loading: Boolean = false,
     onBrand: (String) -> Unit = {},
+    choice: PresetChoice? = null,
+    onChoose: (Set<String>) -> Unit = {},
 ) {
     var query by remember { mutableStateOf("") }
+    // Ticked presets while choosing which to show; null when picking a preset.
+    var picking by remember { mutableStateOf<Set<String>?>(null) }
+    val ticked = picking
+    val listed = if (choice == null || ticked != null) entries else choice.filter(entries, current)
     val words = query.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
-    val shown = entries.filter { e -> words.all { w -> e.name.contains(w, true) || e.vendor.contains(w, true) } }
+    val shown = listed.filter { e ->
+        val vendor = VendorNames.display(e.vendor)
+        words.all { w -> e.name.contains(w, true) || vendor.contains(w, true) }
+    }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxHeight(0.9f).padding(horizontal = 16.dp)) {
-            Text(title, style = MaterialTheme.typography.titleLarge)
-            if (brands.size > 1) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                if (choice != null) {
+                    if (ticked == null) {
+                        TextButton(onClick = {
+                            val hiding = choice.hidesAny(entries, current)
+                            picking = if (hiding) listed.mapTo(HashSet()) { it.name } else emptySet()
+                        }) { Text("Choose") }
+                    } else {
+                        TextButton(onClick = { picking = emptySet() }, enabled = ticked.isNotEmpty()) { Text("Clear") }
+                        TextButton(onClick = { onChoose(ticked); picking = null }) { Text("Done") }
+                    }
+                }
+            }
+            when {
+                ticked != null -> Text(
+                    if (ticked.isEmpty()) "Tick the ones you use; only those will be listed. With none ticked, all are listed."
+                    else "${ticked.size} ticked; only those will be listed.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                listed.size < entries.size -> Text(
+                    "Showing ${listed.size} of ${entries.size}. Tap Choose to change which are listed.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (brands.size > 1 && ticked == null) {
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     for (b in brands) {
-                        FilterChip(selected = b == brand, onClick = { onBrand(b) }, enabled = !loading, label = { Text(b) })
+                        FilterChip(selected = b == brand, onClick = { onBrand(b) }, enabled = !loading, label = { Text(VendorNames.display(b)) })
                     }
                 }
             }
@@ -99,17 +137,30 @@ fun PresetPickerSheet(
             LazyColumn(Modifier.weight(1f)) {
                 items(shown, key = { it.name }) { e ->
                     ListItem(
-                        modifier = Modifier.clickable { onPick(e.name); onDismiss() },
+                        modifier = Modifier.clickable {
+                            if (ticked != null) {
+                                picking = if (e.name in ticked) ticked - e.name else ticked + e.name
+                            } else {
+                                onPick(e.name)
+                                onDismiss()
+                            }
+                        },
                         headlineContent = { Text(e.name) },
                         supportingContent = {
-                            val tags = listOfNotNull(e.vendor.takeIf { it.isNotEmpty() }, "User preset".takeIf { e.isUser })
+                            val tags = listOfNotNull(
+                                e.vendor.takeIf { it.isNotEmpty() }?.let(VendorNames::display),
+                                "User preset".takeIf { e.isUser },
+                            )
                             if (tags.isNotEmpty()) Text(tags.joinToString(" · "))
                         },
                         leadingContent = {
-                            if (e.name == current) Icon(Icons.Filled.Check, contentDescription = "Selected")
-                            else Spacer(Modifier.width(24.dp))
+                            when {
+                                ticked != null -> Checkbox(checked = e.name in ticked, onCheckedChange = null)
+                                e.name == current -> Icon(Icons.Filled.Check, contentDescription = "Selected")
+                                else -> Spacer(Modifier.width(24.dp))
+                            }
                         },
-                        trailingContent = if (e.isUser && onDelete != null && e.name != current) {
+                        trailingContent = if (ticked == null && e.isUser && onDelete != null && e.name != current) {
                             { IconButton(onClick = { onDelete(e.name) }) { Icon(Icons.Filled.Delete, contentDescription = "Delete preset") } }
                         } else null,
                     )

@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 OrcaPad contributors
+
+#pragma once
+// OrcaPad adapter shim (sequential tbb stand-in): tasks run immediately on
+// the calling thread; wait/spawn are trivial.
+#include <functional>
+#include <utility>
+namespace tbb {
+class task_group {
+public:
+    template <typename F> void run(F &&f) { f(); }         // eager, serial
+    template <typename F> void run(F &&f, void *) { f(); } // dummy-group overload
+    void wait() {}
+    bool is_canceling() const { return false; }
+    void cancel() {}
+};
+// Serial shim: task groups run eagerly and are never cancelled.
+inline bool is_current_task_group_canceling() { return false; }
+} // namespace tbb

@@ -1,0 +1,7 @@
+/* Only the bridge's C API (engine-cxx/orca_bridge.h) is visible to the app. */
+{
+    global:
+        orca_*;
+    local:
+        *;
+};

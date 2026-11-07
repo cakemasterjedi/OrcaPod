@@ -43,3 +43,7 @@ mobile/android/tools/host-jni-test.sh
 builds the engine for the Linux host (the `build-host.sh` prerequisites
 apply), links the app's JNI code into a host library and runs the engine
 layer's tests on the JVM.
+
+The `Android` workflow (`.github/workflows/android.yml`) runs both builds and
+all of these tests on every pull request that touches the app, the engine or
+the profiles, and attaches the debug APK to the run as `orcapod-debug-apk`.

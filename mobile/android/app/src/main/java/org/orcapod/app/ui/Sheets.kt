@@ -1,6 +1,7 @@
 package org.orcapod.app.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -23,9 +25,11 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
@@ -50,7 +54,11 @@ import androidx.compose.ui.unit.dp
 import org.orcapod.app.engine.PresetEntry
 import org.orcapod.app.engine.PresetKind
 
-/** Searchable preset list; printers show their vendor, user presets can be deleted. */
+/**
+ * Searchable preset list; printers show their vendor, user presets can be deleted.
+ * With more than one [brands], a row of chips above the list switches the loaded
+ * brand through [onBrand]; [loading] shows while that brand loads.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PresetPickerSheet(
@@ -60,6 +68,10 @@ fun PresetPickerSheet(
     onPick: (String) -> Unit,
     onDelete: ((String) -> Unit)?,
     onDismiss: () -> Unit,
+    brands: List<String> = emptyList(),
+    brand: String? = null,
+    loading: Boolean = false,
+    onBrand: (String) -> Unit = {},
 ) {
     var query by remember { mutableStateOf("") }
     val words = query.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
@@ -67,6 +79,14 @@ fun PresetPickerSheet(
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxHeight(0.9f).padding(horizontal = 16.dp)) {
             Text(title, style = MaterialTheme.typography.titleLarge)
+            if (brands.size > 1) {
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (b in brands) {
+                        FilterChip(selected = b == brand, onClick = { onBrand(b) }, enabled = !loading, label = { Text(b) })
+                    }
+                }
+            }
+            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 4.dp))
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = query,

@@ -3,7 +3,9 @@
 The Android app: import STL, 3MF, OBJ, AMF or STEP models onto a 3D build plate,
 move, rotate and scale them, pick printer, filament and process profiles,
 slice with OrcaSlicer's engine, preview the layers and send or save the
-G-code. See [docs/HLSD/android-app.md](../../docs/HLSD/android-app.md) for
+G-code. The online model library searches Thingiverse (with your own app
+token) and browses Printables, MakerWorld and other sites, adding their
+downloads to the plate. See [docs/HLSD/android-app.md](../../docs/HLSD/android-app.md) for
 the design.
 
 ## Build

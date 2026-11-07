@@ -2,6 +2,8 @@ package org.orcapod.app.ui
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.system.Os
@@ -19,6 +21,9 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.orcapod.app.data.ProfileStore
+import org.orcapod.app.data.ProjectStore
+import org.orcapod.app.data.RecentProject
+import org.orcapod.app.data.Recovery
 import org.orcapod.app.engine.BedTypeState
 import org.orcapod.app.engine.PaintLayer
 import org.orcapod.app.engine.CustomGcode
@@ -74,6 +79,7 @@ data class OverrideTarget(val objectId: Long, val volumeId: Long)
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = ProfileStore(app)
+    private val projects = ProjectStore(app)
     private val prefs = app.getSharedPreferences("session", Context.MODE_PRIVATE)
     private var engine: Engine? = null
     private var sliceJob: Job? = null
@@ -142,6 +148,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** The part highlighted in the object list, if any. */
     var selectedVolume by mutableStateOf<Long?>(null)
     var installedVendors by mutableStateOf<Set<String>>(emptySet())
+        private set
+
+    // --- the open project (desktop's project title, dirty mark and recent list) ---
+
+    /** Name of the open project, or null for a plate never saved or opened. */
+    var projectName by mutableStateOf<String?>(null)
+        private set
+    /** Where the open project lives, when "Save" may write there again. */
+    var projectUri by mutableStateOf<Uri?>(null)
+        private set
+    private var savedRevision by mutableStateOf(0L)
+    private var savedSettings by mutableStateOf<Any?>(null)
+    /** The plate or settings changed since the project was last opened or saved. */
+    val projectDirty: Boolean
+        get() = scene.snapshot.objects.isNotEmpty() &&
+            (scene.snapshot.revision != savedRevision || settingsFingerprint() != savedSettings)
+    var recentProjects by mutableStateOf<List<RecentProject>>(emptyList())
+        private set
+    /** A project 3MF the user imported or opened from another app: open it, or import its geometry? */
+    var projectChoice by mutableStateOf<Uri?>(null)
+    /** An unsaved plate left by the last session, offered back once at startup. */
+    var recovery by mutableStateOf<Recovery?>(null)
         private set
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
@@ -224,6 +252,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         restoreSelection(e)
         refreshScene()
+        markSaved()
+        recentProjects = projects.recent()
+        recovery = projects.recovery()
         phase = Phase.Ready
     }
 
@@ -343,12 +374,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- document ---
 
-    /** Copies picked files into the cache (the engine reads by extension) and imports them. */
-    fun importUris(uris: List<Uri>, asProject: Boolean = false) = engineAction("Importing…") { e ->
+    /**
+     * Copies picked files into the cache (the engine reads by extension) and imports them.
+     * A single 3MF that carries project settings is not imported straight away: like
+     * desktop, the user picks between opening it as a project and taking its geometry.
+     */
+    fun importUris(uris: List<Uri>, askProject: Boolean = true) = engineAction("Importing…") { e ->
         var imported = 0
         for (uri in uris) {
             val file = copyToCache(uri)
             val ext = file.extension.lowercase()
+            if (askProject && uris.size == 1 && ext == "3mf" && withContext(Dispatchers.IO) { ProjectStore.isProject(file) }) {
+                projectChoice = uri
+                return@engineAction
+            }
             if (ext == "step" || ext == "stp") {
                 _messages.tryEmit("STEP files are not supported yet; export the model as STL or 3MF")
                 continue
@@ -357,12 +396,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 _messages.tryEmit("${file.name}: not a model file (STL, 3MF, OBJ or AMF)")
                 continue
             }
-            if (asProject && ext == "3mf") {
-                e.openProject(file.path)
-                refreshPresets()
-            } else {
-                imported += e.import(file.path)
-            }
+            imported += e.import(file.path)
         }
         if (uris.size > 1 && imported > 1) {
             val unfit = e.arrange()
@@ -372,13 +406,200 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         invalidateSlice()
     }
 
-    /** Saves the whole project (model, plates, settings) as an OrcaSlicer 3MF. */
-    fun saveProject(uri: Uri) = engineAction("Saving…") { e ->
-        val tmp = File(getApplication<Application>().cacheDir, "project.3mf")
-        e.saveProject(tmp.path)
-        copyFromFile(tmp, uri)
-        _messages.tryEmit("Project saved")
+    // --- project files ---
+
+    /** Desktop "Open project": the 3MF's objects, plates and settings replace the current plate. */
+    fun openProject(uri: Uri) = engineAction("Opening…") { e ->
+        val file = copyToCache(uri)
+        if (file.extension.lowercase() != "3mf") {
+            _messages.tryEmit("${file.name}: a project is a 3MF file")
+            return@engineAction
+        }
+        openProjectFile(e, file, uri)
+        refreshScene()
+        invalidateSlice()
+        markSaved()
     }
+
+    /** Re-opens a project from the recent list; drops it when the file is gone or no longer readable. */
+    fun openRecent(project: RecentProject) = engineAction("Opening…") { e ->
+        val uri = Uri.parse(project.uri)
+        val file = try {
+            copyToCache(uri)
+        } catch (ex: Exception) {
+            if (ex is CancellationException) throw ex
+            projects.forget(project.uri)
+            recentProjects = projects.recent()
+            _messages.tryEmit("${project.name} can no longer be opened; removed it from the list")
+            return@engineAction
+        }
+        openProjectFile(e, file, uri)
+        refreshScene()
+        invalidateSlice()
+        markSaved()
+    }
+
+    fun recentThumbnail(project: RecentProject): Bitmap? = projects.thumbnail(project)
+
+    fun forgetRecent(project: RecentProject) {
+        runCatching {
+            getApplication<Application>().contentResolver.releasePersistableUriPermission(
+                Uri.parse(project.uri),
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+        }
+        projects.forget(project.uri)
+        recentProjects = projects.recent()
+    }
+
+    private suspend fun openProjectFile(e: Engine, file: File, uri: Uri) {
+        e.openProject(file.path)
+        refreshPresets()
+        selection = null
+        selectedVolume = null
+        val name = ProjectStore.projectName(file.name)
+        projectName = name
+        projectUri = uri.takeIf { keepAccess(it) }
+        val thumbnail = withContext(Dispatchers.IO) { ProjectStore.thumbnailOf(file) }
+        if (projectUri != null) remember(uri, name, thumbnail)
+        projects.clearRecovery()
+        recovery = null
+    }
+
+    /** Starts an empty, unnamed project (desktop "New project"); keeps the selected presets. */
+    fun newProject() = engineAction { e ->
+        e.clear()
+        selection = null
+        selectedVolume = null
+        projectName = null
+        projectUri = null
+        refreshScene()
+        invalidateSlice()
+        markSaved()
+        projects.clearRecovery()
+        recovery = null
+    }
+
+    /**
+     * Desktop "Save project": the whole plate (objects, parts, transforms, per-object and
+     * per-plate settings, painting, plates) and the selected settings as an OrcaSlicer 3MF.
+     * [uri] null writes back to the open project ("Save"); otherwise it is "Save as".
+     */
+    fun saveProject(uri: Uri? = null, then: (() -> Unit)? = null) = engineAction("Saving…") { e ->
+        val target = uri ?: projectUri ?: return@engineAction
+        val name = if (uri == null) projectName ?: "Project" else ProjectStore.projectName(displayName(target) ?: "Project")
+        val thumbnail = renderThumbnail()
+        val tmp = File(getApplication<Application>().cacheDir, "project.3mf")
+        e.saveProject(tmp.path, thumbnail?.size ?: 0, thumbnail?.rgba())
+        copyFromFile(tmp, target)
+        projectName = name
+        if (keepAccess(target)) {
+            projectUri = target
+            remember(target, name, thumbnail?.bitmap())
+        }
+        markSaved()
+        projects.clearRecovery()
+        _messages.tryEmit("Saved $name")
+        then?.invoke()
+    }
+
+    /**
+     * Keeps a copy of an unsaved plate when the app goes to the background, so a
+     * process the system kills can be restored on the next start.
+     */
+    fun saveRecovery() {
+        val e = engine ?: return
+        if (phase != Phase.Ready || slice is SliceState.Running) return
+        if (!projectDirty) {
+            projects.clearRecovery()
+            recoveryState = null
+            return
+        }
+        // Opening a file picker stops the activity too: skip a copy that would not change.
+        val state = listOf(scene.snapshot.revision, settingsFingerprint(), projectName, projectUri)
+        if (state == recoveryState && projects.recoveryFile.isFile) return
+        viewModelScope.launch {
+            try {
+                val thumbnail = renderThumbnail()
+                val tmp = File(projects.recoveryFile.path + ".tmp.3mf")
+                e.saveProject(tmp.path, thumbnail?.size ?: 0, thumbnail?.rgba())
+                if (!tmp.renameTo(projects.recoveryFile)) throw java.io.IOException("Cannot keep the recovery copy")
+                projects.recoveryWritten(projectName, projectUri?.toString())
+                recoveryState = state
+            } catch (ex: Exception) {
+                if (ex is CancellationException) throw ex
+                Log.w(TAG, "recovery save failed", ex)
+            }
+        }
+    }
+
+    /** Opens the plate the last session left unsaved; it stays marked as unsaved. */
+    fun restoreRecovery() = engineAction("Restoring…") { e ->
+        val r = recovery ?: return@engineAction
+        recovery = null
+        e.openProject(r.file.path)
+        refreshPresets()
+        refreshScene()
+        invalidateSlice()
+        projectName = r.name
+        projectUri = r.uri?.let(Uri::parse)?.takeIf { stillGranted(it) }
+        savedRevision = -1 // unsaved until the user saves it
+        savedSettings = settingsFingerprint()
+    }
+
+    fun discardRecovery() {
+        recovery = null
+        projects.clearRecovery()
+    }
+
+    private suspend fun renderThumbnail(): PlateThumbnail? = withContext(Dispatchers.Default) {
+        try {
+            PlateThumbnail.render(scene, filamentSlots.map { it.colour })
+        } catch (ex: OutOfMemoryError) {
+            null
+        }
+    }
+
+    private suspend fun remember(uri: Uri, name: String, thumbnail: Bitmap?) {
+        withContext(Dispatchers.IO) { projects.remember(RecentProject(uri.toString(), name, System.currentTimeMillis()), thumbnail) }
+        recentProjects = projects.recent()
+    }
+
+    private var recoveryState: Any? = null
+
+    private fun markSaved() {
+        savedRevision = scene.snapshot.revision
+        savedSettings = settingsFingerprint()
+    }
+
+    /** Everything about the selected settings that a saved project carries. */
+    private fun settingsFingerprint(): Any = listOf(printer, filament, process, presetValues, filamentSlots)
+
+    /**
+     * Keeps read (and, when granted, write) access to a picked document across restarts.
+     * True when the app can write to it again later, so "Save" may overwrite it.
+     */
+    private fun keepAccess(uri: Uri): Boolean {
+        if (uri.scheme != "content") return false
+        val resolver = getApplication<Application>().contentResolver
+        val rw = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        return try {
+            resolver.takePersistableUriPermission(uri, rw)
+            true
+        } catch (_: SecurityException) {
+            runCatching { resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            false
+        }
+    }
+
+    private fun stillGranted(uri: Uri): Boolean =
+        getApplication<Application>().contentResolver.persistedUriPermissions.any { it.uri == uri && it.isWritePermission }
+
+    private fun displayName(uri: Uri): String? = runCatching {
+        getApplication<Application>().contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        }
+    }.getOrNull()
 
     /** Geometry-only 3MF that any slicer reads. */
     fun exportGeneric3mf(uri: Uri) = engineAction("Exporting…") { e ->

@@ -34,6 +34,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStop() {
+        super.onStop()
+        // The system may kill a background app: keep a copy of unsaved changes.
+        viewModel.saveRecovery()
+    }
+
     // Models opened from a file manager ("Open with") or shared from another app.
     private fun collectShared(intent: Intent?) {
         when (intent?.action) {

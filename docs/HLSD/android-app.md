@@ -90,8 +90,34 @@ Plates are desktop's plate tabs: add, rename, lock, duplicate, reorder,
 delete and per-plate settings (plate type, sequence, spiral vase, first-layer
 filament order). Slicing works on the selected plate or every plate into one
 file; the preview shows a single plate, offset to where it sits beside the
-bed. Projects save as OrcaSlicer 3MF with plates and settings, and sliced
-3MF files (G-code inside a 3MF) export per plate or for all plates.
+bed. Sliced 3MF files (G-code inside a 3MF) export per plate or for all
+plates.
+
+## Projects
+
+A project is an OrcaSlicer 3MF written by the engine's own project writer
+(`store_bbs_3mf`): objects, parts and modifiers with their transforms,
+per-object and per-part settings, height ranges, painting, plates with their
+settings, and the selected printer, filament and process with their unsaved
+edits. Desktop OrcaSlicer opens the same file, and opening one replaces the
+plate and adopts its settings (`load_config_model`).
+
+The app keeps desktop's project workflow around that: the title shows the
+project name with a `*` while the plate or settings differ from the last
+save; "Save" writes back to the same document and "Save as" picks a new one;
+replacing an unsaved plate asks first; and a recent list remembers each
+project with its picture. The picture is the first plate drawn by a small
+software renderer (`PlateThumbnail`, no GL context needed) and is stored in
+the 3MF as desktop's `Metadata/plate_1.png`. Documents come from the Storage
+Access Framework, so the app keeps a persistable permission on each one; a
+document it can only read (one shared from another app) opens, but saving it
+asks where to write.
+
+Android may kill a backgrounded app, so when the activity stops with unsaved
+changes the app writes a recovery copy of the project to its private storage
+(desktop's project backup). The next start offers to restore it; it comes
+back still marked unsaved. Importing a 3MF that carries project settings asks,
+like desktop, whether to open it as a project or import only its objects.
 
 Filament slots (preset and colour per slot) follow desktop's sidebar list;
 objects and parts take a slot through the "extruder" option, which slicing
@@ -250,7 +276,11 @@ and arranges, settings edit, and a plate slices, previews and cancels. It
 also checks that every option of the shipped settings layout is known to the
 engine, and exercises parts and modifiers, per-object and per-part settings,
 height ranges, plates, filament slots, slicing all plates and the project,
-sliced-3MF and STL exports. The preview checks cover travels, markers,
+sliced-3MF and STL exports. The project check saves a plate with a moved,
+rotated and scaled object, object and modifier settings, a height range, a
+second plate with its own settings, two filaments and an edited process
+value, then clears all of it and checks that opening the 3MF brings each
+back. The preview checks cover travels, markers,
 attributes and layer heights, hidden roles, ranges and slider draw ranges, and
 a pause and filament change that reach the sliced G-code. Cut, paint and
 layer height checks cover straight and tilted cuts with connectors, brush and

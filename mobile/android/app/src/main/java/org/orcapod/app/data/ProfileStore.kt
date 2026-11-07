@@ -4,22 +4,29 @@ import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
 import java.util.zip.ZipFile
 
 /**
  * OrcaSlicer's system profiles, shipped as assets/profiles.zip, installed per
- * vendor into the engine's data directory:
+ * vendor (printer brand):
  *
- *     <filesDir>/orca/system/<Vendor>.json + <Vendor>/   (installed vendors)
+ *     <filesDir>/orca/system/<Vendor>.json + <Vendor>/   (the active brand)
+ *     <filesDir>/orca-brands/<Vendor>.json + <Vendor>/   (other installed brands)
  *     <filesDir>/orca/user/default/                       (user presets)
  *
- * Installing only the vendors the user owns keeps the printer list short and
- * preset loading fast, like desktop's setup wizard. The filament library and
- * the vendor-independent files are always installed.
+ * The engine loads every vendor under system/, and parsing a vendor's preset
+ * tree is the bulk of startup, so only the brand of the printer in use sits
+ * there. Switching brand moves the bundles between the two directories (a
+ * rename on the same filesystem) and reloads the engine's presets. Installing
+ * only the brands the user owns keeps the brand list short, like desktop's
+ * setup wizard. The filament library and the vendor-independent files are
+ * always in system/.
  */
 class ProfileStore(private val context: Context) {
     val dataDir = File(context.filesDir, "orca")
     private val systemDir = File(dataDir, "system")
+    private val brandsDir = File(context.filesDir, "orca-brands")
     private val prefs = context.getSharedPreferences("profiles", Context.MODE_PRIVATE)
 
     /**
@@ -29,33 +36,65 @@ class ProfileStore(private val context: Context) {
     val selectedVendors: Set<String>
         get() = prefs.getStringSet(KEY_VENDORS, emptySet()).orEmpty()
 
+    /** The installed vendor whose profiles the engine loads; null before setup. */
+    val activeVendor: String?
+        get() = prefs.getString(KEY_ACTIVE, null)?.takeIf { it in selectedVendors } ?: defaultVendor(selectedVendors)
+
     /** Every vendor in the bundled profiles, sorted case-insensitively. */
     suspend fun availableVendors(): List<String> = withContext(Dispatchers.IO) {
         ZipFile(bundle()).use { zip -> vendorsIn(zip).filter { it !in ALWAYS }.sortedWith(String.CASE_INSENSITIVE_ORDER) }
     }
 
-    /** Replaces the installed system profiles with [vendors]; user presets are kept. */
+    /**
+     * Replaces the installed system profiles with [vendors] and activates the
+     * current brand when it is still among them, else the first one. User
+     * presets are kept.
+     */
     suspend fun install(vendors: Set<String>) = withContext(Dispatchers.IO) {
         prefs.edit().remove(KEY_STAMP).apply()
         systemDir.deleteRecursively()
+        brandsDir.deleteRecursively()
         systemDir.mkdirs()
+        brandsDir.mkdirs()
         File(dataDir, "user/default").mkdirs()
-        val keep = vendors + ALWAYS
-        val root = systemDir.canonicalPath + File.separator
+        val active = prefs.getString(KEY_ACTIVE, null)?.takeIf { it in vendors } ?: defaultVendor(vendors)
         ZipFile(bundle()).use { zip ->
             val all = vendorsIn(zip)
             for (entry in zip.entries()) {
                 if (entry.isDirectory) continue
                 val owner = if ('/' in entry.name) entry.name.substringBefore('/') else entry.name.removeSuffix(".json")
-                // Vendor files follow the selection; shared files (blacklist.json, ...) always go in.
-                if (owner in all && owner !in keep) continue
-                val out = File(systemDir, entry.name)
-                if (!out.canonicalPath.startsWith(root)) continue // zip slip
+                // Vendor files follow the selection; shared files (blacklist.json, ...) always go in system/.
+                val target = when {
+                    owner !in all || owner in ALWAYS || owner == active -> systemDir
+                    owner in vendors -> brandsDir
+                    else -> continue
+                }
+                val out = File(target, entry.name)
+                if (!out.canonicalPath.startsWith(target.canonicalPath + File.separator)) continue // zip slip
                 out.parentFile?.mkdirs()
                 zip.getInputStream(entry).use { input -> out.outputStream().use { input.copyTo(it) } }
             }
         }
-        prefs.edit().putStringSet(KEY_VENDORS, vendors).putLong(KEY_STAMP, appStamp()).apply()
+        prefs.edit()
+            .putStringSet(KEY_VENDORS, vendors)
+            .putString(KEY_ACTIVE, active)
+            .putLong(KEY_STAMP, appStamp())
+            .apply()
+    }
+
+    /**
+     * Makes [vendor] the brand the engine loads on its next preset load;
+     * every other installed brand is parked outside system/. Safe to repeat
+     * after an interrupted switch; missing files are extracted again.
+     */
+    suspend fun activate(vendor: String) = withContext(Dispatchers.IO) {
+        require(vendor in selectedVendors) { "$vendor is not installed" }
+        prefs.edit().putString(KEY_ACTIVE, vendor).apply()
+        try {
+            switchBrand(systemDir, brandsDir, selectedVendors, vendor)
+        } catch (_: IOException) {
+            install(selectedVendors) // files went missing: extract the brands again, this one active
+        }
     }
 
     /** True when profiles are installed and match this app build's bundle. */
@@ -84,6 +123,7 @@ class ProfileStore(private val context: Context) {
 
     companion object {
         private const val KEY_VENDORS = "vendors"
+        private const val KEY_ACTIVE = "active_vendor"
         private const val KEY_STAMP = "installed_stamp"
         private const val KEY_BUNDLE_STAMP = "bundle_stamp"
 
@@ -92,5 +132,31 @@ class ProfileStore(private val context: Context) {
 
         /** Preselected on first launch. */
         val SUGGESTED = setOf("Custom")
+
+        /** The brand activated when none was picked yet: the first one, preferring a real brand to Custom. */
+        fun defaultVendor(vendors: Set<String>): String? =
+            vendors.sortedWith(compareBy<String> { it in SUGGESTED }.thenBy(String.CASE_INSENSITIVE_ORDER) { it }).firstOrNull()
+
+        /**
+         * Moves every vendor of [installed] other than [active] (its <Vendor>.json
+         * and <Vendor>/) from [systemDir] to [brandsDir], and [active] the other
+         * way. Each piece moves on its own, so a run cut short by the process
+         * dying is finished by the next run.
+         */
+        fun switchBrand(systemDir: File, brandsDir: File, installed: Set<String>, active: String) {
+            brandsDir.mkdirs()
+            for (vendor in installed) {
+                val (from, to) = if (vendor == active) brandsDir to systemDir else systemDir to brandsDir
+                for (name in listOf("$vendor.json", vendor)) {
+                    val src = File(from, name)
+                    if (!src.exists()) continue
+                    val dst = File(to, name)
+                    dst.deleteRecursively()
+                    if (!src.renameTo(dst)) throw IOException("Could not move the $vendor profiles")
+                }
+            }
+            if (!File(systemDir, "$active.json").isFile || !File(systemDir, active).isDirectory)
+                throw IOException("The $active profiles are missing; reinstall the brand")
+        }
     }
 }

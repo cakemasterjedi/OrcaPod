@@ -102,7 +102,8 @@ fun VendorSetupScreen(
         Spacer(Modifier.height(4.dp))
         Text(
             "Pick the brands of the printers you own. Their printer, filament and process profiles " +
-                "are installed; \"Custom\" holds generic printers you can adapt.",
+                "are installed and you switch brands in the printer picker; \"Custom\" holds generic " +
+                "printers you can adapt.",
             style = MaterialTheme.typography.bodyMedium,
         )
         Spacer(Modifier.height(12.dp))

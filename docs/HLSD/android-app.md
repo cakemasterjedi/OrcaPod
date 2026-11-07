@@ -44,10 +44,20 @@ OrcaSlicer's `resources/profiles` tree is zipped into the APK's assets at
 build time. On first launch the user picks the printer brands they own, and
 only those vendors (plus the shared filament library and vendor-independent
 files) are extracted into the engine's data directory, which keeps the
-printer list short and preset loading fast, like the desktop setup wizard.
+printer list short, like the desktop setup wizard.
 After an app update the same brands are re-extracted, since the bundled
 profiles may have changed. User presets live beside them in `user/default`
 and survive both.
+
+The engine loads every vendor under `system/`, and parsing a vendor's preset
+tree dominates startup, so only one installed brand sits there at a time: the
+brand of the printer in use. The others are parked in `orca-brands/`, outside
+the data directory. Picking another brand in the printer picker moves the
+bundles between the two (renames on one filesystem, finished by the next run
+if cut short), reloads the engine's presets and restores the printer, filament
+and process last used with that brand. User presets whose parent belongs to a
+parked brand are skipped by the engine until that brand is loaded again; their
+files are left untouched.
 
 The settings sheet edits a handful of common process and filament options on
 top of the selected presets through the engine's edited-preset mechanism, so

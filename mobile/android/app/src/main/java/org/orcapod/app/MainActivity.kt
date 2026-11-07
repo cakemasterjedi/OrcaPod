@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import org.orcapod.app.data.PrinterFleet
 import org.orcapod.app.ui.AppViewModel
 import org.orcapod.app.ui.OrcaPodApp
 import org.orcapod.app.ui.Phase
@@ -20,7 +21,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        if (savedInstanceState == null) collectShared(intent)
+        if (savedInstanceState == null) {
+            collectShared(intent)
+            PrinterFleet.handleIntent(this, intent)
+        }
         setContent {
             OrcaPodApp(viewModel, pendingImports = pending) { pending.clear() }
         }
@@ -29,6 +33,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         collectShared(intent)
+        PrinterFleet.handleIntent(this, intent)
         if (viewModel.phase == Phase.Ready && pending.isNotEmpty()) {
             viewModel.importUris(pending.toList())
             pending.clear()

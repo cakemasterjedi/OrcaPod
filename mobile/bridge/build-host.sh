@@ -34,6 +34,7 @@ set -euo pipefail
 RUN_TESTS=0
 [ "${1:-}" = "--test" ] && RUN_TESTS=1
 
+# shellcheck disable=SC1091 # sourced from this directory at run time
 source "$(dirname "$0")/engine-sources.sh"   # sets BRIDGE, REPO and the dep pins
 engine_fetch_deps
 
@@ -63,9 +64,9 @@ case "$ORCAPOD_STEP" in
     real)
         OCCT_PREFIX="$(engine_build_occt "$BRIDGE/build-host")"
         OCCT_FLAGS=(-isystem "$OCCT_PREFIX/include/occt")
-        OCCT_LIBS=(-Wl,--start-group)
+        OCCT_LIBS=("-Wl,--start-group")
         for tk in "${OCCT_TOOLKITS[@]}"; do OCCT_LIBS+=("$OCCT_PREFIX/lib/lib$tk.a"); done
-        OCCT_LIBS+=(-Wl,--end-group)
+        OCCT_LIBS+=("-Wl,--end-group")
         ;;
     stub)
         OCCT_FLAGS=(-I"$BRIDGE/shim/occt-stub" -DORCAPOD_STEP_STUB)

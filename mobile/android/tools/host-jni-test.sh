@@ -30,12 +30,13 @@ chmod +x "$BUILD/bin/cc-pic++" "$BUILD/bin/cc-pic"
 CXX="$BUILD/bin/cc-pic++" ORCAPOD_TBB=serial ORCAPOD_HOST_BUILD_DIR="$BUILD" "$BRIDGE/build-host.sh"
 
 # OpenCASCADE for STEP import, as build-host.sh linked it (shared by every host build).
+# shellcheck disable=SC1091 # sourced from this directory at run time
 source "$BRIDGE/engine-sources.sh"
 OCCT_LIBS=()
 if [ "$ORCAPOD_STEP" = real ]; then
-    OCCT_LIBS=(-Wl,--start-group)
+    OCCT_LIBS=("-Wl,--start-group")
     for tk in "${OCCT_TOOLKITS[@]}"; do OCCT_LIBS+=("$BRIDGE/build-host/occt-install/lib/lib$tk.a"); done
-    OCCT_LIBS+=(-Wl,--end-group)
+    OCCT_LIBS+=("-Wl,--end-group")
 fi
 
 JAVA_HOME="${JAVA_HOME:-$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")}"

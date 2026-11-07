@@ -137,6 +137,23 @@ jfloatArray floats(JNIEnv *env, const float *data, jsize n)
     return a;
 }
 
+jintArray ints(JNIEnv *env, const uint32_t *data, jsize n)
+{
+    jintArray a = env->NewIntArray(n);
+    if (a && n > 0)
+        env->SetIntArrayRegion(a, 0, n, reinterpret_cast<const jint *>(data));
+    return a;
+}
+
+jstring take_json(JNIEnv *env, orca_result r, orca_owned_string &s)
+{
+    if (!check(env, r)) {
+        orca_owned_string_dispose(&s);
+        return nullptr;
+    }
+    return take(env, s);
+}
+
 template <typename T> T *ptr(jlong handle) { return reinterpret_cast<T *>(static_cast<intptr_t>(handle)); }
 jlong handle(const void *p) { return static_cast<jlong>(reinterpret_cast<intptr_t>(p)); }
 
@@ -333,14 +350,16 @@ JNI_FN(jobject, platerSnapshot)(JNIEnv *env, jobject, jlong pl, jlongArray known
 
     jclass inst_cls = env->FindClass(cls("SceneInstance").c_str());
     jmethodID inst_ctor = env->GetMethodID(inst_cls, "<init>", "(J[D[FZZI)V");
+    jclass vol_cls = env->FindClass(cls("SceneVolume").c_str());
+    jmethodID vol_ctor = env->GetMethodID(vol_cls, "<init>", "(JLjava/lang/String;II[F[F[F[IIII)V");
     jclass obj_cls = env->FindClass(cls("SceneObject").c_str());
     jmethodID obj_ctor = env->GetMethodID(obj_cls, "<init>",
-        ("(JJLjava/lang/String;[F[I[F[F[L" + cls("SceneInstance") + ";)V").c_str());
+        ("(JJLjava/lang/String;[F[I[F[F[L" + cls("SceneInstance") + ";[L" + cls("SceneVolume") + ";II)V").c_str());
     jclass plate_cls = env->FindClass(cls("Plate").c_str());
-    jmethodID plate_ctor = env->GetMethodID(plate_cls, "<init>", "(JILjava/lang/String;[F[FI)V");
+    jmethodID plate_ctor = env->GetMethodID(plate_cls, "<init>", "(JILjava/lang/String;[F[FIZ)V");
     jclass snap_cls = env->FindClass(cls("SceneSnapshot").c_str());
     jmethodID snap_ctor = env->GetMethodID(snap_cls, "<init>",
-        ("(J[L" + cls("SceneObject") + ";[L" + cls("Plate") + ";III)V").c_str());
+        ("(J[L" + cls("SceneObject") + ";[L" + cls("Plate") + ";IIILjava/lang/String;Ljava/lang/String;)V").c_str());
 
     jobjectArray objects = env->NewObjectArray(snap.object_count, obj_cls, nullptr);
     for (int32_t i = 0; i < snap.object_count; ++i) {
@@ -367,19 +386,40 @@ JNI_FN(jobject, platerSnapshot)(JNIEnv *env, jobject, jlong pl, jlongArray known
         jfloatArray positions = nullptr;
         jintArray indices = nullptr;
         auto it = known.find(o.id);
-        if (it == known.end() || it->second != o.mesh_revision) {
+        // Volume meshes change with the object's mesh revision, so they ride along with it.
+        const bool send_mesh = it == known.end() || it->second != o.mesh_revision;
+        if (send_mesh) {
             positions = floats(env, o.positions, o.position_count * 3);
-            indices = env->NewIntArray(o.index_count);
-            if (o.index_count > 0)
-                env->SetIntArrayRegion(indices, 0, o.index_count, reinterpret_cast<const jint *>(o.indices));
+            indices = ints(env, o.indices, o.index_count);
+        }
+        jobjectArray vols = env->NewObjectArray(o.volume_count, vol_cls, nullptr);
+        for (int32_t k = 0; k < o.volume_count && !env->ExceptionCheck(); ++k) {
+            const orca_scene_volume &v = o.volumes[k];
+            jfloatArray vpos = nullptr;
+            jintArray vidx = nullptr;
+            if (send_mesh && v.positions) {
+                vpos = floats(env, v.positions, v.position_count * 3);
+                vidx = ints(env, v.indices, v.index_count);
+            }
+            jstring vname = jstr(env, v.name);
+            jfloatArray vmin = floats(env, v.bbox_min, 3), vmax = floats(env, v.bbox_max, 3);
+            jobject jv = env->NewObject(vol_cls, vol_ctor, jlong(v.id), vname, jint(v.type), jint(v.extruder), vmin,
+                                        vmax, vpos, vidx, jint(v.merged_triangle_start),
+                                        jint(v.merged_triangle_count), jint(v.override_count));
+            env->SetObjectArrayElement(vols, k, jv);
+            for (jobject r : {jv, static_cast<jobject>(vname), static_cast<jobject>(vmin), static_cast<jobject>(vmax),
+                              static_cast<jobject>(vpos), static_cast<jobject>(vidx)})
+                if (r)
+                    env->DeleteLocalRef(r);
         }
         jstring name = jstr(env, o.name);
         jfloatArray bmin = floats(env, o.bbox_min, 3), bmax = floats(env, o.bbox_max, 3);
         jobject jo = env->NewObject(obj_cls, obj_ctor, jlong(o.id), jlong(o.mesh_revision), name, positions, indices,
-                                    bmin, bmax, insts);
+                                    bmin, bmax, insts, vols, jint(o.override_count), jint(o.extruder));
         env->SetObjectArrayElement(objects, i, jo);
         for (jobject r : {jo, static_cast<jobject>(name), static_cast<jobject>(bmin), static_cast<jobject>(bmax),
-                          static_cast<jobject>(insts), static_cast<jobject>(positions), static_cast<jobject>(indices)})
+                          static_cast<jobject>(insts), static_cast<jobject>(vols), static_cast<jobject>(positions),
+                          static_cast<jobject>(indices)})
             if (r)
                 env->DeleteLocalRef(r);
         if (env->ExceptionCheck())
@@ -392,7 +432,7 @@ JNI_FN(jobject, platerSnapshot)(JNIEnv *env, jobject, jlong pl, jlongArray known
         jstring name = jstr(env, p.name);
         jfloatArray origin = floats(env, p.origin, 3), size = floats(env, p.size, 3);
         jobject jp = env->NewObject(plate_cls, plate_ctor, jlong(p.id), jint(p.index), name, origin, size,
-                                    jint(p.object_count));
+                                    jint(p.object_count), jboolean(p.locked != 0));
         env->SetObjectArrayElement(plates, i, jp);
         env->DeleteLocalRef(jp);
         env->DeleteLocalRef(name);
@@ -401,9 +441,11 @@ JNI_FN(jobject, platerSnapshot)(JNIEnv *env, jobject, jlong pl, jlongArray known
     }
 
     jobject out = nullptr;
-    if (!env->ExceptionCheck())
+    if (!env->ExceptionCheck()) {
+        jstring undo = jstr(env, snap.undo_label), redo = jstr(env, snap.redo_label);
         out = env->NewObject(snap_cls, snap_ctor, jlong(snap.revision), objects, plates, jint(snap.current_plate),
-                             jint(snap.undo_count), jint(snap.redo_count));
+                             jint(snap.undo_count), jint(snap.redo_count), undo, redo);
+    }
     orca_scene_snapshot_dispose(&snap);
     return out;
 }
@@ -512,7 +554,14 @@ JNI_FN(jlong, jobNew)(JNIEnv *env, jobject)
 JNI_FN(void, jobCancel)(JNIEnv *, jobject, jlong job) { orca_slice_job_cancel(ptr<orca_slice_job>(job)); }
 JNI_FN(void, jobFree)(JNIEnv *, jobject, jlong job) { orca_slice_job_free(ptr<orca_slice_job>(job)); }
 
-JNI_FN(jobject, platerSlice)(JNIEnv *env, jobject, jlong pl, jlong p, jstring path, jlong job, jobject listener)
+// Slice targets of platerSlice.
+constexpr jint kSlicePlate = 0;     // the selected plate, to G-code
+constexpr jint kSliceAll = 1;       // every non-empty plate, one G-code
+constexpr jint kSliced3mf = 2;      // every plate, G-code embedded in a 3MF
+constexpr jint kSliced3mfPlate = 3; // the selected plate, as a sliced 3MF
+
+JNI_FN(jobject, platerSlice)(JNIEnv *env, jobject, jlong pl, jlong p, jstring path, jlong job, jobject listener,
+                             jint target, jint plate_index)
 {
     ProgressCtx ctx{};
     env->GetJavaVM(&ctx.vm);
@@ -520,9 +569,28 @@ JNI_FN(jobject, platerSlice)(JNIEnv *env, jobject, jlong pl, jlong p, jstring pa
     ctx.method = env->GetMethodID(env->GetObjectClass(listener), "onProgress", "(ILjava/lang/String;)V");
 
     orca_slice_report report{};
-    const bool ok = check(env, orca_plater_slice_to_gcode_with_presets(plater_of(pl), presets_of(p),
-                                                                       utf8(env, path).c_str(), on_progress, &ctx,
-                                                                       ptr<orca_slice_job>(job), &report));
+    const std::string file = utf8(env, path);
+    auto *j = ptr<orca_slice_job>(job);
+    orca_result r{};
+    switch (target) {
+    case kSliceAll:
+        r = orca_plater_slice_all_to_gcode_with_presets(plater_of(pl), presets_of(p), file.c_str(), on_progress, &ctx,
+                                                        j, &report);
+        break;
+    case kSliced3mf:
+        r = orca_plater_export_gcode_3mf(plater_of(pl), presets_of(p), file.c_str(), on_progress, &ctx, j, &report);
+        break;
+    case kSliced3mfPlate:
+        r = orca_plater_export_gcode_3mf_plate(plater_of(pl), presets_of(p), plate_index, file.c_str(), on_progress,
+                                               &ctx, j, &report);
+        break;
+    default:
+        r = orca_plater_slice_to_gcode_with_presets(plater_of(pl), presets_of(p), file.c_str(), on_progress, &ctx, j,
+                                                    &report);
+        break;
+    }
+    (void)kSlicePlate;
+    const bool ok = check(env, r);
     env->DeleteGlobalRef(ctx.listener);
     if (!ok)
         return nullptr;
@@ -610,4 +678,436 @@ JNI_FN(jobject, toolpathLoad)(JNIEnv *env, jobject, jstring path)
                                  jfloat(tp.extruder_count > 0 ? tp.filament_diameters[0] : 0.f));
     orca_toolpath_dispose(&tp);
     return out;
+}
+
+// --- settings editors ------------------------------------------------------
+
+JNI_FN(jstring, optionDefs)(JNIEnv *env, jobject, jstring keys_json)
+{
+    orca_owned_string json{};
+    const std::string keys = utf8(env, keys_json);
+    return take_json(env, orca_config_option_defs(keys_json ? keys.c_str() : nullptr, &json), json);
+}
+
+JNI_FN(jstring, presetsConfigDump)(JNIEnv *env, jobject, jlong p, jint kind, jboolean edited)
+{
+    orca_owned_string json{};
+    return take_json(env, orca_presets_config_dump(presets_of(p), kind, edited ? 1 : 0, &json), json);
+}
+
+JNI_FN(void, presetsResetValue)(JNIEnv *env, jobject, jlong p, jint kind, jstring key)
+{
+    check(env, orca_presets_reset_value(presets_of(p), kind, utf8(env, key).c_str()));
+}
+
+JNI_FN(void, presetsSaveUserDetached)(JNIEnv *env, jobject, jlong p, jint kind, jstring name, jboolean detach)
+{
+    check(env, orca_presets_save_user(presets_of(p), kind, utf8(env, name).c_str(), detach ? 1 : 0));
+}
+
+// --- filament slots and plate type -----------------------------------------
+
+/** Returns [name0, colour0, name1, colour1, ...]. */
+JNI_FN(jobjectArray, presetsFilamentSlots)(JNIEnv *env, jobject, jlong p)
+{
+    orca_filament_slots slots{};
+    if (!check(env, orca_presets_filament_slots(presets_of(p), &slots)))
+        return nullptr;
+    jobjectArray out = env->NewObjectArray(jsize(slots.count * 2), env->FindClass("java/lang/String"), nullptr);
+    for (uint32_t i = 0; i < slots.count; ++i) {
+        jstring name = jstr(env, slots.preset_names[i]), colour = jstr(env, slots.colours[i]);
+        env->SetObjectArrayElement(out, jsize(2 * i), name);
+        env->SetObjectArrayElement(out, jsize(2 * i + 1), colour);
+        env->DeleteLocalRef(name);
+        env->DeleteLocalRef(colour);
+    }
+    orca_filament_slots_dispose(&slots);
+    return out;
+}
+
+JNI_FN(void, presetsSetFilamentCount)(JNIEnv *env, jobject, jlong p, jint count, jstring colour)
+{
+    const std::string c = utf8(env, colour);
+    check(env, orca_presets_set_filament_count(presets_of(p), uint32_t(count), colour ? c.c_str() : nullptr));
+}
+
+JNI_FN(void, presetsSelectFilamentSlot)(JNIEnv *env, jobject, jlong p, jint slot, jstring name)
+{
+    check(env, orca_presets_select_filament(presets_of(p), uint32_t(slot), utf8(env, name).c_str()));
+}
+
+JNI_FN(void, presetsSetFilamentColour)(JNIEnv *env, jobject, jlong p, jint slot, jstring colour)
+{
+    check(env, orca_presets_set_filament_colour(presets_of(p), uint32_t(slot), utf8(env, colour).c_str()));
+}
+
+/** Returns [current, machine default, count, selectable (0/1), supported mask]. */
+JNI_FN(jintArray, presetsBedType)(JNIEnv *env, jobject, jlong p)
+{
+    orca_bed_type_state st{};
+    if (!check(env, orca_presets_bed_type(presets_of(p), &st)))
+        return nullptr;
+    const jint v[5] = {st.current, st.machine_default, st.count, jint(st.selectable), jint(st.supported_mask)};
+    jintArray out = env->NewIntArray(5);
+    env->SetIntArrayRegion(out, 0, 5, v);
+    return out;
+}
+
+JNI_FN(void, presetsSetBedType)(JNIEnv *env, jobject, jlong p, jint bed_type)
+{
+    check(env, orca_presets_set_bed_type(presets_of(p), bed_type));
+}
+
+// --- per-object / per-part settings -----------------------------------------
+
+JNI_FN(jstring, settingsKeys)(JNIEnv *env, jobject, jboolean for_volume)
+{
+    orca_owned_string json{};
+    return take_json(env, orca_plater_settings_keys(for_volume ? 1 : 0, &json), json);
+}
+
+JNI_FN(jstring, settingsDump)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol)
+{
+    orca_owned_string json{};
+    return take_json(env, orca_plater_settings_dump(plater_of(pl), orca_object_id(obj), orca_volume_id(vol), &json),
+                     json);
+}
+
+JNI_FN(void, settingsSet)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol, jstring key, jstring value)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_settings_set(plater_of(pl), orca_object_id(obj), orca_volume_id(vol),
+                                        utf8(env, key).c_str(), utf8(env, value).c_str(), &rev));
+}
+
+JNI_FN(void, settingsErase)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol, jstring key)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_settings_erase(plater_of(pl), orca_object_id(obj), orca_volume_id(vol),
+                                          utf8(env, key).c_str(), &rev));
+}
+
+JNI_FN(void, settingsApply)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol, jobjectArray keys,
+                            jobjectArray values)
+{
+    const jsize n = env->GetArrayLength(keys);
+    if (env->GetArrayLength(values) != n) {
+        throw_state(env, "keys and values differ in length");
+        return;
+    }
+    std::vector<std::string> k(static_cast<size_t>(n)), v(static_cast<size_t>(n));
+    std::vector<const char *> kp(static_cast<size_t>(n)), vp(static_cast<size_t>(n));
+    for (jsize i = 0; i < n; ++i) {
+        auto *jk = static_cast<jstring>(env->GetObjectArrayElement(keys, i));
+        auto *jv = static_cast<jstring>(env->GetObjectArrayElement(values, i));
+        k[size_t(i)] = utf8(env, jk);
+        v[size_t(i)] = utf8(env, jv);
+        env->DeleteLocalRef(jk);
+        env->DeleteLocalRef(jv);
+    }
+    for (size_t i = 0; i < size_t(n); ++i) {
+        kp[i] = k[i].c_str();
+        vp[i] = v[i].c_str();
+    }
+    orca_revision rev = 0;
+    check(env, orca_plater_settings_apply(plater_of(pl), orca_object_id(obj), orca_volume_id(vol), kp.data(),
+                                          vp.data(), n, &rev));
+}
+
+// --- objects and parts -----------------------------------------------------
+
+JNI_FN(void, objectRename)(JNIEnv *env, jobject, jlong pl, jlong obj, jstring name)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_object_rename(plater_of(pl), orca_object_id(obj), utf8(env, name).c_str(), &rev));
+}
+
+JNI_FN(jlong, addShapeObject)(JNIEnv *env, jobject, jlong pl, jint shape, jdouble size, jdouble cx, jdouble cy)
+{
+    orca_object_id id = 0;
+    orca_revision rev = 0;
+    if (!check(env, orca_plater_add_shape_object(plater_of(pl), shape, size, cx, cy, &id, &rev)))
+        return 0;
+    return jlong(id);
+}
+
+JNI_FN(jlong, volumeAddShape)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong inst, jint type, jint shape,
+                              jdouble size)
+{
+    orca_volume_id id = 0;
+    orca_revision rev = 0;
+    if (!check(env, orca_plater_volume_add_shape(plater_of(pl), orca_object_id(obj), orca_instance_id(inst),
+                                                 uint8_t(type), shape, size, &id, &rev)))
+        return 0;
+    return jlong(id);
+}
+
+JNI_FN(jlong, volumeAddFile)(JNIEnv *env, jobject, jlong pl, jlong obj, jint type, jstring path)
+{
+    orca_volume_id id = 0;
+    orca_revision rev = 0;
+    if (!check(env, orca_plater_volume_add_file(plater_of(pl), orca_object_id(obj), uint8_t(type),
+                                                utf8(env, path).c_str(), &id, &rev)))
+        return 0;
+    return jlong(id);
+}
+
+JNI_FN(void, volumeSetType)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol, jint type)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_volume_set_type(plater_of(pl), orca_object_id(obj), orca_volume_id(vol), uint8_t(type),
+                                           &rev));
+}
+
+JNI_FN(void, volumeDelete)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_volume_delete(plater_of(pl), orca_object_id(obj), orca_volume_id(vol), &rev));
+}
+
+JNI_FN(void, volumeRename)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol, jstring name)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_volume_rename(plater_of(pl), orca_object_id(obj), orca_volume_id(vol),
+                                         utf8(env, name).c_str(), &rev));
+}
+
+JNI_FN(jint, splitObjects)(JNIEnv *env, jobject, jlong pl, jlong obj)
+{
+    orca_object_id first = 0;
+    uint32_t count = 0;
+    orca_revision rev = 0;
+    if (!check(env, orca_plater_split_objects(plater_of(pl), orca_object_id(obj), &first, &count, &rev)))
+        return 0;
+    return jint(count);
+}
+
+JNI_FN(jint, splitParts)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol)
+{
+    uint32_t count = 0;
+    orca_revision rev = 0;
+    if (!check(env, orca_plater_split_parts(plater_of(pl), orca_object_id(obj), orca_volume_id(vol), &count, &rev)))
+        return 0;
+    return jint(count);
+}
+
+JNI_FN(void, instanceMirror)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong inst, jint axis)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_instance_mirror(plater_of(pl), orca_object_id(obj), orca_instance_id(inst), axis, &rev));
+}
+
+JNI_FN(void, setPrintable)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong inst, jboolean printable)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_set_printable(plater_of(pl), orca_object_id(obj), orca_instance_id(inst),
+                                         printable ? 1 : 0, &rev));
+}
+
+JNI_FN(void, setInstanceCount)(JNIEnv *env, jobject, jlong pl, jlong obj, jint count)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_set_instance_count(plater_of(pl), orca_object_id(obj), count, &rev));
+}
+
+JNI_FN(void, cloneObject)(JNIEnv *env, jobject, jlong pl, jlong obj, jint count)
+{
+    orca_object_id first = 0;
+    orca_revision rev = 0;
+    check(env, orca_plater_clone_object(plater_of(pl), orca_object_id(obj), count, &first, &rev));
+}
+
+JNI_FN(void, instanceToObject)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong inst)
+{
+    orca_object_id id = 0;
+    orca_revision rev = 0;
+    check(env, orca_plater_instance_to_object(plater_of(pl), orca_object_id(obj), orca_instance_id(inst), &id, &rev));
+}
+
+JNI_FN(void, mergeObjects)(JNIEnv *env, jobject, jlong pl, jlongArray ids)
+{
+    const jsize n = env->GetArrayLength(ids);
+    std::vector<jlong> v(static_cast<size_t>(n));
+    env->GetLongArrayRegion(ids, 0, n, v.data());
+    std::vector<orca_object_id> o(v.begin(), v.end());
+    orca_object_id id = 0;
+    orca_revision rev = 0;
+    check(env, orca_plater_merge_objects(plater_of(pl), o.data(), n, &id, &rev));
+}
+
+JNI_FN(void, convertUnits)(JNIEnv *env, jobject, jlong pl, jlong obj, jint conversion)
+{
+    orca_object_id id = 0;
+    orca_revision rev = 0;
+    check(env, orca_plater_convert_units(plater_of(pl), orca_object_id(obj), conversion, &id, &rev));
+}
+
+JNI_FN(void, objectDrop)(JNIEnv *env, jobject, jlong pl, jlong obj)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_object_drop(plater_of(pl), orca_object_id(obj), &rev));
+}
+
+JNI_FN(jint, volumeSimplify)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol, jboolean use_count, jint count,
+                             jdouble max_error)
+{
+    uint32_t tris = 0;
+    orca_revision rev = 0;
+    if (!check(env, orca_plater_volume_simplify(plater_of(pl), orca_object_id(obj), orca_volume_id(vol),
+                                                use_count ? 1 : 0, uint32_t(count), max_error, &tris, &rev)))
+        return 0;
+    return jint(tris);
+}
+
+JNI_FN(jint, volumeSubdivide)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol)
+{
+    uint32_t tris = 0;
+    orca_revision rev = 0;
+    if (!check(env, orca_plater_volume_subdivide(plater_of(pl), orca_object_id(obj), orca_volume_id(vol), &tris, &rev)))
+        return 0;
+    return jint(tris);
+}
+
+JNI_FN(jint, fillBed)(JNIEnv *env, jobject, jlong pl, jlong p, jlong obj)
+{
+    uint32_t added = 0;
+    orca_revision rev = 0;
+    if (!check(env, orca_plater_fill_bed(plater_of(pl), presets_of(p), orca_object_id(obj), 1, &added, &rev)))
+        return 0;
+    return jint(added);
+}
+
+JNI_FN(void, objectExportStl)(JNIEnv *env, jobject, jlong pl, jlong obj, jstring path)
+{
+    check(env, orca_plater_object_export_stl(plater_of(pl), orca_object_id(obj), utf8(env, path).c_str(), 1));
+}
+
+JNI_FN(void, exportStlAll)(JNIEnv *env, jobject, jlong pl, jstring path)
+{
+    check(env, orca_plater_export_stl_all(plater_of(pl), utf8(env, path).c_str(), 1));
+}
+
+JNI_FN(void, projectSave)(JNIEnv *env, jobject, jlong pl, jlong p, jstring path)
+{
+    check(env, orca_project_save(plater_of(pl), presets_of(p), utf8(env, path).c_str(), 0, nullptr));
+}
+
+// --- height range modifiers -------------------------------------------------
+
+/** Flat (min z, max z, layer height) triples. */
+JNI_FN(jdoubleArray, heightRanges)(JNIEnv *env, jobject, jlong pl, jlong obj)
+{
+    orca_height_range *ranges = nullptr;
+    uint32_t count = 0;
+    if (!check(env, orca_plater_object_height_ranges(plater_of(pl), orca_object_id(obj), &ranges, &count)))
+        return nullptr;
+    std::vector<double> flat;
+    flat.reserve(size_t(count) * 3);
+    for (uint32_t i = 0; i < count; ++i)
+        flat.insert(flat.end(), {ranges[i].min_z, ranges[i].max_z, ranges[i].layer_height});
+    orca_height_ranges_dispose(ranges);
+    jdoubleArray out = env->NewDoubleArray(jsize(flat.size()));
+    if (!flat.empty())
+        env->SetDoubleArrayRegion(out, 0, jsize(flat.size()), flat.data());
+    return out;
+}
+
+JNI_FN(void, setHeightRanges)(JNIEnv *env, jobject, jlong pl, jlong obj, jdoubleArray flat)
+{
+    const jsize n = env->GetArrayLength(flat);
+    std::vector<double> v(static_cast<size_t>(n));
+    env->GetDoubleArrayRegion(flat, 0, n, v.data());
+    std::vector<orca_height_range> ranges;
+    for (size_t i = 0; i + 2 < v.size(); i += 3)
+        ranges.push_back({v[i], v[i + 1], v[i + 2]});
+    orca_revision rev = 0;
+    check(env, orca_plater_object_set_height_ranges(plater_of(pl), orca_object_id(obj), ranges.data(),
+                                                     uint32_t(ranges.size()), &rev));
+}
+
+// --- plates ------------------------------------------------------------------
+
+JNI_FN(void, plateAdd)(JNIEnv *env, jobject, jlong pl)
+{
+    orca_plate_id id = 0;
+    orca_revision rev = 0;
+    check(env, orca_plater_plate_add(plater_of(pl), &id, &rev));
+}
+
+JNI_FN(void, plateDelete)(JNIEnv *env, jobject, jlong pl, jlong plate)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_plate_delete(plater_of(pl), orca_plate_id(plate), &rev));
+}
+
+JNI_FN(void, plateRename)(JNIEnv *env, jobject, jlong pl, jlong plate, jstring name)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_plate_rename(plater_of(pl), orca_plate_id(plate), utf8(env, name).c_str(), &rev));
+}
+
+JNI_FN(void, plateLock)(JNIEnv *env, jobject, jlong pl, jlong plate, jboolean lock)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_plate_lock(plater_of(pl), orca_plate_id(plate), lock ? 1 : 0, &rev));
+}
+
+JNI_FN(void, plateSelect)(JNIEnv *env, jobject, jlong pl, jlong plate)
+{
+    check(env, orca_plater_plate_select(plater_of(pl), orca_plate_id(plate), nullptr));
+}
+
+JNI_FN(void, plateDuplicate)(JNIEnv *env, jobject, jlong pl, jlong plate)
+{
+    orca_plate_id id = 0;
+    orca_revision rev = 0;
+    check(env, orca_plater_plate_duplicate(plater_of(pl), orca_plate_id(plate), &id, &rev));
+}
+
+JNI_FN(void, plateMoveToFront)(JNIEnv *env, jobject, jlong pl, jlong plate)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_plate_move_to_front(plater_of(pl), orca_plate_id(plate), &rev));
+}
+
+/** [bed type, print sequence, spiral mode, n1, first-layer order..., n2, other-layer order...]. */
+JNI_FN(jintArray, plateSettings)(JNIEnv *env, jobject, jlong pl, jlong plate)
+{
+    orca_plate_settings st{};
+    if (!check(env, orca_plater_plate_settings(plater_of(pl), orca_plate_id(plate), &st)))
+        return nullptr;
+    std::vector<jint> v = {st.bed_type, st.print_sequence, st.spiral_mode, st.first_layer_sequence_count};
+    v.insert(v.end(), st.first_layer_sequence, st.first_layer_sequence + std::clamp(st.first_layer_sequence_count, 0, 16));
+    v.push_back(st.other_layer_sequence_count);
+    v.insert(v.end(), st.other_layer_sequence, st.other_layer_sequence + std::clamp(st.other_layer_sequence_count, 0, 16));
+    jintArray out = env->NewIntArray(jsize(v.size()));
+    env->SetIntArrayRegion(out, 0, jsize(v.size()), v.data());
+    return out;
+}
+
+JNI_FN(void, plateSetSettings)(JNIEnv *env, jobject, jlong pl, jlong plate, jintArray values)
+{
+    const jsize n = env->GetArrayLength(values);
+    std::vector<jint> v(static_cast<size_t>(n));
+    env->GetIntArrayRegion(values, 0, n, v.data());
+    orca_plate_settings st{};
+    size_t i = 0;
+    auto next = [&]() { return i < v.size() ? v[i++] : 0; };
+    st.bed_type = next();
+    st.print_sequence = next();
+    st.spiral_mode = next();
+    st.first_layer_sequence_count = std::clamp(next(), 0, 16);
+    for (int k = 0; k < st.first_layer_sequence_count; ++k)
+        st.first_layer_sequence[k] = next();
+    st.other_layer_sequence_count = std::clamp(next(), 0, 16);
+    for (int k = 0; k < st.other_layer_sequence_count; ++k)
+        st.other_layer_sequence[k] = next();
+    orca_revision rev = 0;
+    check(env, orca_plater_plate_set_settings(plater_of(pl), orca_plate_id(plate), &st, &rev));
+}
+
+JNI_FN(void, setExtruder)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol, jint extruder)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_set_extruder(plater_of(pl), orca_object_id(obj), orca_volume_id(vol), extruder, &rev));
 }

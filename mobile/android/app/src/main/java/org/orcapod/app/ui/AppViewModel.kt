@@ -18,16 +18,28 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import org.orcapod.app.data.ProfileStore
+import org.orcapod.app.engine.BedTypeState
 import org.orcapod.app.engine.Engine
+import org.orcapod.app.engine.FilamentSlot
+import org.orcapod.app.engine.HeightRange
 import org.orcapod.app.engine.InstanceTransform
 import org.orcapod.app.engine.OrcaException
 import org.orcapod.app.engine.PresetEntry
 import org.orcapod.app.engine.PresetKind
+import org.orcapod.app.engine.PlateSettings
 import org.orcapod.app.engine.Scene
+import org.orcapod.app.engine.SceneObject
+import org.orcapod.app.engine.Shape
 import org.orcapod.app.engine.SliceReport
+import org.orcapod.app.engine.SliceTarget
 import org.orcapod.app.engine.Toolpath
+import org.orcapod.app.engine.VolumeType
+import org.orcapod.app.settings.OptionDef
+import org.orcapod.app.settings.OptionMode
+import org.orcapod.app.settings.SettingsLayout
+import org.orcapod.app.settings.parseKeys
+import org.orcapod.app.settings.parseValues
 import org.orcapod.app.ui.viewport.Selection
 import java.io.File
 
@@ -41,19 +53,15 @@ sealed interface Phase {
 sealed interface SliceState {
     data object Idle : SliceState
     data class Running(val percent: Int, val message: String) : SliceState
-    data class Done(val report: SliceReport, val gcode: File, val toolpath: Toolpath?) : SliceState
+    /**
+     * A finished slice. [plate] is the index of the sliced plate, or -1 when
+     * every plate went into one file (no layer preview then).
+     */
+    data class Done(val report: SliceReport, val gcode: File, val toolpath: Toolpath?, val plate: Int) : SliceState
 }
 
-/** A process or filament setting exposed for quick editing. */
-data class QuickSetting(
-    val kind: PresetKind,
-    val key: String,
-    val label: String,
-    val unit: String = "",
-    /** Allowed serialized values with labels; null for free numeric input. */
-    val choices: List<Pair<String, String>>? = null,
-    val isBool: Boolean = false,
-)
+/** The per-object or per-part settings target: [volumeId] 0 is the object itself. */
+data class OverrideTarget(val objectId: Long, val volumeId: Long)
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = ProfileStore(app)
@@ -85,49 +93,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var process by mutableStateOf("")
         private set
-    /** Current values of [quickSettings], keyed by config key. */
-    var settings by mutableStateOf<Map<String, String>>(emptyMap())
+    /** Engine option definitions, by key. */
+    var optionDefs by mutableStateOf<Map<String, OptionDef>>(emptyMap())
         private set
-    /** Keys edited away from the selected presets in this session. */
-    var editedKeys by mutableStateOf<Set<String>>(emptySet())
+    /** The desktop settings tabs' pages and groups. */
+    val layout: SettingsLayout by lazy {
+        SettingsLayout.parse(app.assets.open("settings_layout.json").bufferedReader().use { it.readText() })
+    }
+    /** Edited (working) values of each selected preset, as slicing uses them. */
+    var presetValues by mutableStateOf<Map<PresetKind, Map<String, String>>>(emptyMap())
         private set
+    /** Keys whose edited value differs from the saved preset, per kind. */
+    var modifiedKeys by mutableStateOf<Map<PresetKind, Set<String>>>(emptyMap())
+        private set
+    /** Keys a per-object (index 0) or per-part (index 1) override accepts. */
+    var overrideKeys by mutableStateOf(listOf<Set<String>>(emptySet(), emptySet()))
+        private set
+    var settingsMode by mutableStateOf(OptionMode.ADVANCED)
+        private set
+    var filamentSlots by mutableStateOf<List<FilamentSlot>>(emptyList())
+        private set
+    var bedType by mutableStateOf<BedTypeState?>(null)
+        private set
+    /** The part highlighted in the object list, if any. */
+    var selectedVolume by mutableStateOf<Long?>(null)
     var installedVendors by mutableStateOf<Set<String>>(emptySet())
         private set
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages
-
-    val quickSettings = listOf(
-        QuickSetting(PresetKind.PROCESS, "layer_height", "Layer height", "mm"),
-        QuickSetting(PresetKind.PROCESS, "wall_loops", "Wall loops"),
-        QuickSetting(PresetKind.PROCESS, "top_shell_layers", "Top shell layers"),
-        QuickSetting(PresetKind.PROCESS, "bottom_shell_layers", "Bottom shell layers"),
-        QuickSetting(PresetKind.PROCESS, "sparse_infill_density", "Infill density", "%"),
-        QuickSetting(
-            PresetKind.PROCESS, "sparse_infill_pattern", "Infill pattern",
-            choices = listOf(
-                "grid" to "Grid", "gyroid" to "Gyroid", "cubic" to "Cubic", "rectilinear" to "Rectilinear",
-                "line" to "Line", "triangles" to "Triangles", "honeycomb" to "Honeycomb",
-                "adaptivecubic" to "Adaptive cubic", "lightning" to "Lightning", "crosshatch" to "Cross hatch",
-            ),
-        ),
-        QuickSetting(PresetKind.PROCESS, "enable_support", "Supports", isBool = true),
-        QuickSetting(
-            PresetKind.PROCESS, "support_type", "Support type",
-            choices = listOf(
-                "normal(auto)" to "Normal (auto)", "tree(auto)" to "Tree (auto)",
-                "normal(manual)" to "Normal (manual)", "tree(manual)" to "Tree (manual)",
-            ),
-        ),
-        QuickSetting(
-            PresetKind.PROCESS, "brim_type", "Brim",
-            choices = listOf(
-                "auto_brim" to "Auto", "no_brim" to "None", "outer_only" to "Outer only",
-                "inner_only" to "Inner only", "outer_and_inner" to "Outer and inner", "brim_ears" to "Mouse ears",
-            ),
-        ),
-        QuickSetting(PresetKind.FILAMENT, "nozzle_temperature", "Nozzle temperature", "°C"),
-    )
 
     init {
         viewModelScope.launch { start() }
@@ -192,6 +186,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         phase = Phase.Loading("Loading printer profiles…")
         val e = Engine.open(store.dataDir.path)
         engine = e
+        settingsMode = OptionMode.of(prefs.getString("settings_mode", OptionMode.ADVANCED.code) ?: "")
+        val defs = e.optionDefs()
+        val objectKeys = e.overrideKeys(false)
+        val volumeKeys = e.overrideKeys(true)
+        withContext(Dispatchers.Default) {
+            optionDefs = OptionDef.parseAll(defs)
+            overrideKeys = listOf(parseKeys(objectKeys) - "extruder", parseKeys(volumeKeys) - "extruder")
+            layout.pages(PresetKind.PROCESS) // parse off the main thread
+        }
         restoreSelection(e)
         refreshScene()
         phase = Phase.Ready
@@ -226,58 +229,82 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         readSettings()
     }
 
+    /** Re-reads the selected presets' values, filament slots and plate type. */
     private suspend fun readSettings() {
         val e = engine ?: return
-        val json = withContext(Dispatchers.Default) { JSONObject(e.resolvedConfig()) }
-        settings = quickSettings.associate { s ->
-            // Filament options are per-extruder lists; show the first slot.
-            s.key to json.optString(s.key).substringBefore(',')
+        val dumps = PresetKind.entries.associateWith { e.presetConfig(it, edited = true) to e.presetConfig(it, edited = false) }
+        val (values, modified) = withContext(Dispatchers.Default) {
+            val v = HashMap<PresetKind, Map<String, String>>()
+            val m = HashMap<PresetKind, Set<String>>()
+            for ((kind, pair) in dumps) {
+                val edited = parseValues(pair.first)
+                val saved = parseValues(pair.second)
+                v[kind] = edited
+                m[kind] = edited.filter { (k, value) -> saved[k] != value }.keys
+            }
+            v to m
         }
+        presetValues = values
+        modifiedKeys = modified
+        filamentSlots = e.filamentSlots()
+        bedType = e.bedType()
+    }
+
+    /** Values of the edited preset of [kind] with defaults for keys it does not set. */
+    fun valueOf(kind: PresetKind, key: String): String =
+        presetValues[kind]?.get(key) ?: optionDefs[key]?.default.orEmpty()
+
+    fun changeSettingsMode(mode: OptionMode) {
+        settingsMode = mode
+        prefs.edit().putString("settings_mode", mode.code).apply()
     }
 
     // --- preset selection and editing ---
 
     fun selectPrinter(name: String) = engineAction("Switching printer…") { e ->
         e.selectPrinter(name)
-        editedKeys = emptySet()
         refreshPresets()
+        refreshScene()
         invalidateSlice()
     }
 
     fun selectFilament(name: String) = engineAction { e ->
         e.select(printer, name, process)
-        editedKeys = editedKeys.filterTo(HashSet()) { k -> quickSettings.first { it.key == k }.kind != PresetKind.FILAMENT }
         refreshPresets()
         invalidateSlice()
     }
 
     fun selectProcess(name: String) = engineAction { e ->
         e.select(printer, filament, name)
-        editedKeys = editedKeys.filterTo(HashSet()) { k -> quickSettings.first { it.key == k }.kind != PresetKind.PROCESS }
         refreshPresets()
         invalidateSlice()
     }
 
-    fun setSetting(setting: QuickSetting, value: String) = engineAction { e ->
-        e.setValue(setting.kind, setting.key, value)
-        editedKeys = editedKeys + setting.key
+    fun setValue(kind: PresetKind, key: String, value: String) = engineAction { e ->
+        e.setValue(kind, key, value)
         readSettings()
+        // Printable area and height change the bed.
+        if (kind == PresetKind.PRINTER) { e.refreshBed(); refreshScene() }
         invalidateSlice()
     }
 
-    fun resetSettings() = engineAction { e ->
-        e.resetEdits(PresetKind.PROCESS)
-        e.resetEdits(PresetKind.FILAMENT)
-        editedKeys = emptySet()
+    fun resetValue(kind: PresetKind, key: String) = engineAction { e ->
+        e.resetValue(kind, key)
         readSettings()
+        if (kind == PresetKind.PRINTER) { e.refreshBed(); refreshScene() }
         invalidateSlice()
     }
 
-    /** Saves the edited process (and filament, when edited) as user presets named [name]. */
-    fun saveEdits(name: String) = engineAction { e ->
-        val kinds = editedKeys.map { k -> quickSettings.first { it.key == k }.kind }.toSet()
-        for (kind in kinds) e.saveUserPreset(kind, name)
-        editedKeys = emptySet()
+    fun resetKind(kind: PresetKind) = engineAction { e ->
+        e.resetEdits(kind)
+        readSettings()
+        if (kind == PresetKind.PRINTER) { e.refreshBed(); refreshScene() }
+        invalidateSlice()
+    }
+
+    /** Saves the edited preset of [kind] as the user preset [name] and selects it. */
+    fun savePreset(kind: PresetKind, name: String, detach: Boolean = false) = engineAction { e ->
+        e.saveUserPreset(kind, name, detach)
         refreshPresets()
         _messages.tryEmit("Saved preset \"$name\"")
     }
@@ -318,11 +345,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         invalidateSlice()
     }
 
-    fun exportProject(uri: Uri) = engineAction("Exporting…") { e ->
+    /** Saves the whole project (model, plates, settings) as an OrcaSlicer 3MF. */
+    fun saveProject(uri: Uri) = engineAction("Saving…") { e ->
+        val tmp = File(getApplication<Application>().cacheDir, "project.3mf")
+        e.saveProject(tmp.path)
+        copyFromFile(tmp, uri)
+        _messages.tryEmit("Project saved")
+    }
+
+    /** Geometry-only 3MF that any slicer reads. */
+    fun exportGeneric3mf(uri: Uri) = engineAction("Exporting…") { e ->
         val tmp = File(getApplication<Application>().cacheDir, "export.3mf")
         e.export3mf(tmp.path)
         copyFromFile(tmp, uri)
         _messages.tryEmit("Exported the plate as 3MF")
+    }
+
+    /** One object's mesh, or every object's when [objectId] is null, as binary STL. */
+    fun exportStl(objectId: Long?, uri: Uri) = engineAction("Exporting…") { e ->
+        val tmp = File(getApplication<Application>().cacheDir, "export.stl")
+        e.exportStl(objectId, tmp.path)
+        copyFromFile(tmp, uri)
+        _messages.tryEmit("Exported STL")
     }
 
     fun arrange() = mutate("Arranging…") { e ->
@@ -379,11 +423,187 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         scene = e.scene()
         val sel = selection
         if (sel != null && transformOf(sel) == null) selection = null
+        val vol = selectedVolume
+        if (vol != null && scene.snapshot.objects.none { o -> o.volumes.any { it.id == vol } }) selectedVolume = null
+    }
+
+    // --- object list: objects, parts and modifiers ---
+
+    fun objectOf(id: Long): SceneObject? = scene.snapshot.objects.firstOrNull { it.id == id }
+
+    fun renameObject(objectId: Long, name: String) = mutate { it.renameObject(objectId, name) }
+
+    fun addShape(shape: Shape) = mutate { e ->
+        val id = e.addShapeObject(shape)
+        refreshScene()
+        objectOf(id)?.instances?.firstOrNull()?.let { selection = Selection(id, it.id) }
+    }
+
+    /** Desktop "Add part / modifier / negative part / support blocker or enforcer" with a built-in shape. */
+    fun addVolume(sel: Selection, type: VolumeType, shape: Shape) = mutate { e ->
+        selectedVolume = e.addVolumeShape(sel.objectId, sel.instanceId, type, shape)
+    }
+
+    /** The same, loading the volume's mesh from a model file. */
+    fun addVolumeFromFile(objectId: Long, type: VolumeType, uri: Uri) = mutate("Loading…") { e ->
+        val file = copyToCache(uri)
+        if (file.extension.lowercase() !in IMPORTABLE) {
+            _messages.tryEmit("${file.name}: not a model file (STL, 3MF, OBJ or AMF)")
+            return@mutate
+        }
+        selectedVolume = e.addVolumeFile(objectId, type, file.path)
+    }
+
+    fun setVolumeType(objectId: Long, volumeId: Long, type: VolumeType) = mutate { it.setVolumeType(objectId, volumeId, type) }
+    fun renameVolume(objectId: Long, volumeId: Long, name: String) = mutate { it.renameVolume(objectId, volumeId, name) }
+    fun deleteVolume(objectId: Long, volumeId: Long) = mutate { e ->
+        e.deleteVolume(objectId, volumeId)
+        if (selectedVolume == volumeId) selectedVolume = null
+    }
+
+    fun splitToObjects(objectId: Long) = mutate("Splitting…") { e ->
+        val n = e.splitToObjects(objectId)
+        selection = null
+        _messages.tryEmit("Split into $n objects")
+    }
+
+    fun splitToParts(objectId: Long, volumeId: Long) = mutate("Splitting…") { e ->
+        val n = e.splitToParts(objectId, volumeId)
+        _messages.tryEmit("Split into $n parts")
+    }
+
+    fun mirror(sel: Selection, axis: Int) = mutate { it.mirror(sel.objectId, sel.instanceId, axis) }
+    fun setPrintable(objectId: Long, instanceId: Long, printable: Boolean) = mutate { it.setPrintable(objectId, instanceId, printable) }
+    fun setInstanceCount(objectId: Long, count: Int) = mutate { it.setInstanceCount(objectId, count) }
+    fun cloneObject(objectId: Long, count: Int) = mutate { e ->
+        e.cloneObject(objectId, count)
+        val unfit = e.arrange()
+        if (unfit > 0) _messages.tryEmit("$unfit object(s) do not fit on the plate")
+    }
+    fun instanceToObject(sel: Selection) = mutate { it.instanceToObject(sel.objectId, sel.instanceId); selection = null }
+    fun mergeObjects(objectIds: List<Long>) = mutate { it.mergeObjects(objectIds); selection = null }
+    fun convertUnits(objectId: Long, conversion: Int) = mutate { it.convertUnits(objectId, conversion); selection = null }
+    fun drop(objectId: Long) = mutate { it.drop(objectId) }
+    fun fillBed(objectId: Long) = mutate("Filling the plate…") { e ->
+        val n = e.fillBed(objectId)
+        _messages.tryEmit(if (n == 1) "Added 1 copy" else "Added $n copies")
+    }
+
+    fun simplify(objectId: Long, volumeId: Long, targetTriangles: Int) = mutate("Simplifying…") { e ->
+        val n = e.simplify(objectId, volumeId, targetTriangles)
+        _messages.tryEmit("Simplified to $n triangles")
+    }
+
+    fun subdivide(objectId: Long, volumeId: Long) = mutate("Subdividing…") { e ->
+        val n = e.subdivide(objectId, volumeId)
+        _messages.tryEmit("Subdivided to $n triangles")
+    }
+
+    /** Assigns a filament slot (1-based) to an object, or to one of its parts when [volumeId] is not 0. */
+    fun setFilament(objectId: Long, volumeId: Long, slot: Int) = mutate { e ->
+        e.setExtruder(objectId, volumeId, slot)
+    }
+
+    // --- per-object / per-part settings ---
+
+    /** The target's overrides as {key: serialized value}. */
+    suspend fun overrides(target: OverrideTarget): Map<String, String> {
+        val e = engine ?: return emptyMap()
+        return try {
+            parseValues(e.overrides(target.objectId, target.volumeId)).filterKeys { it != "extruder" }
+        } catch (ex: OrcaException) {
+            emptyMap()
+        }
+    }
+
+    /** The value slicing would use for [key] without an override on the target. */
+    fun inheritedValue(key: String): String {
+        for (kind in listOf(PresetKind.PROCESS, PresetKind.FILAMENT, PresetKind.PRINTER))
+            presetValues[kind]?.get(key)?.let { return it }
+        return optionDefs[key]?.default.orEmpty()
+    }
+
+    fun setOverride(target: OverrideTarget, key: String, value: String) = mutate { e ->
+        e.setOverride(target.objectId, target.volumeId, key, value)
+    }
+
+    fun eraseOverride(target: OverrideTarget, key: String) = mutate { e ->
+        e.eraseOverride(target.objectId, target.volumeId, key)
+    }
+
+    /** Desktop "Copy settings": the target's overrides, pasted onto another with [pasteOverrides]. */
+    var copiedOverrides by mutableStateOf<Map<String, String>?>(null)
+        private set
+
+    fun copyOverrides(target: OverrideTarget) = viewModelScope.launch {
+        copiedOverrides = overrides(target)
+        _messages.tryEmit("Copied ${copiedOverrides?.size ?: 0} setting(s)")
+    }
+
+    fun pasteOverrides(target: OverrideTarget) = mutate { e ->
+        val values = copiedOverrides ?: return@mutate
+        val allowed = overrideKeys[if (target.volumeId == 0L) 0 else 1]
+        e.replaceOverrides(target.objectId, target.volumeId, values.filterKeys { it in allowed })
+    }
+
+    // --- height range modifiers ---
+
+    suspend fun heightRanges(objectId: Long): List<HeightRange> {
+        val e = engine ?: return emptyList()
+        return try { e.heightRanges(objectId) } catch (ex: OrcaException) { emptyList() }
+    }
+
+    fun setHeightRanges(objectId: Long, ranges: List<HeightRange>) = mutate { e ->
+        e.setHeightRanges(objectId, ranges.sortedBy { it.minZ })
+    }
+
+    // --- plates ---
+
+    fun addPlate() = mutate { it.addPlate() }
+    fun deletePlate(plateId: Long) = mutate { it.deletePlate(plateId) }
+    fun renamePlate(plateId: Long, name: String) = mutate { it.renamePlate(plateId, name) }
+    fun lockPlate(plateId: Long, lock: Boolean) = mutate { it.lockPlate(plateId, lock) }
+    fun duplicatePlate(plateId: Long) = mutate { it.duplicatePlate(plateId) }
+    fun movePlateToFront(plateId: Long) = mutate { it.movePlateToFront(plateId) }
+    fun selectPlate(plateId: Long) = mutate { it.selectPlate(plateId) }
+
+    suspend fun plateSettings(plateId: Long): PlateSettings =
+        engine?.let { e -> try { e.plateSettings(plateId) } catch (ex: OrcaException) { null } } ?: PlateSettings()
+
+    fun setPlateSettings(plateId: Long, settings: PlateSettings) = mutate { it.setPlateSettings(plateId, settings) }
+
+    // --- filament slots and plate type ---
+
+    /** Desktop "+"/"−" beside the filament list: new slots copy the last filament. */
+    fun setFilamentCount(count: Int) = engineAction { e ->
+        e.setFilamentCount(count.coerceIn(1, 16), if (count > filamentSlots.size) NEW_SLOT_COLOURS[(count - 1) % NEW_SLOT_COLOURS.size] else null)
+        refreshPresets()
+        refreshScene()
+        invalidateSlice()
+    }
+
+    fun selectFilamentSlot(slot: Int, name: String) = engineAction { e ->
+        e.selectFilamentSlot(slot, name)
+        refreshPresets()
+        invalidateSlice()
+    }
+
+    fun setFilamentColour(slot: Int, colour: String) = engineAction { e ->
+        e.setFilamentColour(slot, colour)
+        readSettings()
+        invalidateSlice()
+    }
+
+    fun setBedType(type: Int) = engineAction { e ->
+        e.setBedType(type)
+        readSettings()
+        invalidateSlice()
     }
 
     // --- slicing ---
 
-    fun startSlice() {
+    /** Slices the selected plate, or every plate into one G-code file with [allPlates]. */
+    fun startSlice(allPlates: Boolean = false) {
         val e = engine ?: return
         if (slice is SliceState.Running) return
         if (scene.snapshot.objects.isEmpty()) {
@@ -396,26 +616,56 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val out = File(dir, gcodeName())
             slice = SliceState.Running(0, "Preparing")
             try {
-                val report = e.slice(out.path) { percent, message ->
-                    viewModelScope.launch { if (slice is SliceState.Running) slice = SliceState.Running(percent, message) }
-                }
-                slice = SliceState.Running(100, "Loading preview")
-                val toolpath = try {
-                    e.loadToolpath(out.path)
-                } catch (ex: OrcaException) {
-                    Log.w(TAG, "preview failed", ex)
-                    null
-                } catch (ex: OutOfMemoryError) {
-                    Log.w(TAG, "preview too large", ex)
-                    null
-                }
-                slice = SliceState.Done(report, out, toolpath)
+                val target = if (allPlates) SliceTarget.ALL_PLATES else SliceTarget.PLATE
+                val report = e.slice(out.path, target, listener = progress())
+                // One file of several plates overlaps on the bed, so only a single plate is previewed.
+                val toolpath = if (allPlates) null else loadPreview(e, out)
+                slice = SliceState.Done(report, out, toolpath, if (allPlates) -1 else scene.snapshot.currentPlate)
                 previewLayer = (toolpath?.layerTotal ?: 1) - 1
                 showPreview = true
             } catch (ex: OrcaException) {
                 slice = SliceState.Idle
                 _messages.tryEmit(if (ex.code == OrcaException.CANCELLED) "Slicing cancelled" else "Slicing failed: ${ex.message}")
             }
+        }
+    }
+
+    /** Desktop "Export plate sliced file" / "Export all sliced file": G-code inside a 3MF, for Bambu-style printers. */
+    fun exportSliced3mf(uri: Uri, allPlates: Boolean) {
+        val e = engine ?: return
+        if (slice is SliceState.Running) return
+        sliceJob = viewModelScope.launch {
+            val tmp = File(getApplication<Application>().cacheDir, "sliced.3mf")
+            slice = SliceState.Running(0, "Preparing")
+            try {
+                val target = if (allPlates) SliceTarget.SLICED_3MF else SliceTarget.SLICED_3MF_PLATE
+                e.slice(tmp.path, target, scene.snapshot.currentPlate, progress())
+                copyFromFile(tmp, uri)
+                _messages.tryEmit("Sliced 3MF saved")
+            } catch (ex: OrcaException) {
+                _messages.tryEmit(if (ex.code == OrcaException.CANCELLED) "Slicing cancelled" else "Slicing failed: ${ex.message}")
+            } catch (ex: java.io.IOException) {
+                _messages.tryEmit(ex.message ?: "File error")
+            } finally {
+                if (slice is SliceState.Running) slice = SliceState.Idle
+            }
+        }
+    }
+
+    private fun progress() = org.orcapod.app.engine.ProgressListener { percent, message ->
+        viewModelScope.launch { if (slice is SliceState.Running) slice = SliceState.Running(percent, message) }
+    }
+
+    private suspend fun loadPreview(e: Engine, gcode: File): Toolpath? {
+        slice = SliceState.Running(100, "Loading preview")
+        return try {
+            e.loadToolpath(gcode.path)
+        } catch (ex: OrcaException) {
+            Log.w(TAG, "preview failed", ex)
+            null
+        } catch (ex: OutOfMemoryError) {
+            Log.w(TAG, "preview too large", ex)
+            null
         }
     }
 
@@ -492,5 +742,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val TAG = "OrcaPod"
         val IMPORTABLE = setOf("stl", "3mf", "obj", "amf")
+
+        /** Colours for new filament slots, like desktop's default palette. */
+        val NEW_SLOT_COLOURS = listOf("#00AE42", "#F4EE2A", "#2850E0", "#EC008C", "#FF6A13", "#FFFFFF", "#161616", "#A3D8E1")
     }
 }

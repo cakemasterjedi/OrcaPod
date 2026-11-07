@@ -276,7 +276,7 @@ static void test_md5_shim() {
 
 static void test_abi_version() {
     CHECK_EQ(orca_bridge_abi_version(), ORCA_BRIDGE_ABI_VERSION);
-    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 42);
+    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 43);
 }
 
 struct ProgressRecord {
@@ -1121,6 +1121,62 @@ static void test_group_transforms(const std::string &dir) {
 
     orca_plater_free(plater);
 }
+// ABI v43: object / part filament assignment.
+static void test_set_extruder(const std::string &dir) {
+    orca_plater *plater = nullptr;
+    GUARD(g0, orca_plater_new(&plater));
+    expect_ok(g0, "plater_new");
+    orca_revision revision = 0;
+    const std::string cube = write_cube_stl(dir, "extruder_cube.stl");
+    orca_object_id object_id = 0;
+    GUARD(g1, import_one(plater, cube.c_str(), 100, 100, &object_id, &revision));
+    expect_ok(g1, "import");
+    orca_scene_snapshot snap = take_snapshot(plater);
+    const orca_volume_id part = snap.objects[0].volumes[0].id;
+    orca_scene_snapshot_dispose(&snap);
+    GUARD(g2, orca_plater_set_extruder(plater, object_id, 0, 3, &revision));
+    expect_ok(g2, "object extruder");
+    GUARD(g3, orca_plater_set_extruder(plater, object_id, part, 2, &revision));
+    expect_ok(g3, "part extruder");
+    snap = take_snapshot(plater);
+    CHECK_EQ(snap.objects[0].extruder, 3);
+    CHECK_EQ(snap.objects[0].volumes[0].extruder, 2);
+    CHECK(snapshot_label(snap.undo_label) == "Change filament");
+    orca_scene_snapshot_dispose(&snap);
+    GUARD(g4, orca_plater_set_extruder(plater, object_id, part, 0, &revision));
+    expect_ok(g4, "part follows object");
+    snap = take_snapshot(plater);
+    CHECK_EQ(snap.objects[0].volumes[0].extruder, 0);
+    orca_scene_snapshot_dispose(&snap);
+    GUARD(g5, orca_plater_set_extruder(plater, object_id, 0, ORCA_FILAMENT_MAX + 1, &revision));
+    CHECK_EQ(g5.r.code, ORCA_STATUS_INVALID_ARGUMENT);
+    GUARD(g6, orca_plater_undo(plater, &revision));
+    expect_ok(g6, "undo");
+    snap = take_snapshot(plater);
+    CHECK_EQ(snap.objects[0].volumes[0].extruder, 2);
+    orca_scene_snapshot_dispose(&snap);
+    orca_plater_free(plater);
+}
+
+// ABI v43: option definitions for settings editors.
+static void test_option_defs() {
+    orca_owned_string defs{};
+    GUARD(g0, orca_config_option_defs("[\"layer_height\",\"sparse_infill_pattern\",\"no_such_key\"]", &defs));
+    expect_ok(g0, "option defs subset");
+    CHECK(defs.data && strstr(defs.data, "\"layer_height\"") != nullptr);
+    CHECK(defs.data && strstr(defs.data, "\"enum_values\"") != nullptr);
+    CHECK(defs.data && strstr(defs.data, "\"gyroid\"") != nullptr);
+    CHECK(defs.data && strstr(defs.data, "no_such_key") == nullptr);
+    orca_owned_string_dispose(&defs);
+    GUARD(g1, orca_config_option_defs(nullptr, &defs));
+    expect_ok(g1, "option defs all");
+    CHECK(defs.data && strstr(defs.data, "\"nozzle_temperature\"") != nullptr);
+    CHECK(defs.data && strstr(defs.data, "\"printable_area\"") != nullptr);
+    orca_owned_string_dispose(&defs);
+    GUARD(g2, orca_config_option_defs("{}", &defs));
+    CHECK_EQ(g2.r.code, ORCA_STATUS_INVALID_ARGUMENT);
+}
+
 // ABI v22: per-object / per-part setting overrides.
 static void test_object_settings(const std::string &dir) {
     orca_owned_string keys{};
@@ -5291,6 +5347,8 @@ int main() {
     test_mirror_clipboard(dir);
     test_group_transforms(dir);
     test_object_settings(dir);
+    test_option_defs();
+    test_set_extruder(dir);
     test_batch_operations(dir);
     test_plates(dir, data_dir);
     test_object_ops(dir, data_dir);

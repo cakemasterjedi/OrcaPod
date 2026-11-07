@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cfloat>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -1278,6 +1279,10 @@ orca_result orca_presets_select_filament(orca_presets *presets,
             return orcapad_fail(ORCA_STATUS_NOT_FOUND, operation,
                                 "filament preset was not found");
         presets->bundle->filament_presets[slot] = preset_name;
+        // desktop Sidebar: the first slot is the filament the settings tab
+        // edits, so it also becomes the collection's selected preset.
+        if (slot == 0)
+            presets->bundle->filaments.select_preset_by_name(preset_name, false);
         return orcapad_ok();
     });
 }
@@ -5494,6 +5499,93 @@ orca_result orca_plater_settings_keys(uint8_t for_volume, orca_owned_string *out
     });
 }
 
+static const char *orcapad_option_type_name(Slic3r::ConfigOptionType type) {
+    switch (static_cast<int>(type) & ~static_cast<int>(Slic3r::coVectorType)) {
+    case Slic3r::coFloat: return "float";
+    case Slic3r::coInt: return "int";
+    case Slic3r::coString: return "string";
+    case Slic3r::coPercent: return "percent";
+    case Slic3r::coFloatOrPercent: return "float_or_percent";
+    case Slic3r::coPoint: return "point";
+    case Slic3r::coBool: return "bool";
+    case Slic3r::coEnum: return "enum";
+    case 10: return "points_groups";
+    case 11: return "ints_groups";
+    default: return "none";
+    }
+}
+
+static const char *orcapad_option_gui_name(Slic3r::ConfigOptionDef::GUIType gui) {
+    using G = Slic3r::ConfigOptionDef::GUIType;
+    switch (gui) {
+    case G::i_enum_open: return "i_enum_open";
+    case G::f_enum_open: return "f_enum_open";
+    case G::color: return "color";
+    case G::select_open: return "select_open";
+    case G::slider: return "slider";
+    case G::legend: return "legend";
+    case G::one_string: return "one_string";
+    case G::plugin_picker: return "plugin_picker";
+    case G::plugin_config: return "plugin_config";
+    case G::printer_agent_select: return "printer_agent_select";
+    default: return "";
+    }
+}
+
+static nlohmann::json orcapad_option_def_json(const Slic3r::ConfigOptionDef &def) {
+    static const char *const modes[] = {"simple", "advanced", "expert", "develop"};
+    nlohmann::json j = nlohmann::json::object();
+    j["type"] = orcapad_option_type_name(def.type);
+    j["vector"] = (static_cast<int>(def.type) & Slic3r::coVectorType) != 0;
+    j["label"] = def.label;
+    j["full_label"] = def.full_label;
+    j["category"] = def.category;
+    j["tooltip"] = def.tooltip;
+    j["sidetext"] = def.sidetext;
+    const int mode = static_cast<int>(def.mode);
+    j["mode"] = (mode >= 0 && mode < 4) ? modes[mode] : "simple";
+    j["gui"] = orcapad_option_gui_name(def.gui_type);
+    if (def.min > -FLT_MAX) j["min"] = def.min;
+    if (def.max < FLT_MAX) j["max"] = def.max;
+    if (!def.enum_values.empty()) j["enum_values"] = def.enum_values;
+    if (!def.enum_labels.empty()) j["enum_labels"] = def.enum_labels;
+    j["multiline"] = def.multiline;
+    j["readonly"] = def.readonly;
+    j["nullable"] = def.nullable;
+    j["default"] = def.default_value ? def.default_value->serialize() : std::string();
+    return j;
+}
+
+orca_result orca_config_option_defs(const char *keys_json, orca_owned_string *out_json) {
+    constexpr const char *operation = "orca_config_option_defs";
+    if (out_json) *out_json = orcapad_empty_string();
+    if (!out_json)
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation, "output pointer is null");
+    return orcapad_guard(operation, [&]() -> orca_result {
+        nlohmann::json out = nlohmann::json::object();
+        if (keys_json) {
+            const nlohmann::json keys = nlohmann::json::parse(keys_json, nullptr, false);
+            if (!keys.is_array())
+                return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                                    "keys must be a JSON string array");
+            for (const nlohmann::json &key : keys) {
+                if (!key.is_string()) continue;
+                const Slic3r::ConfigOptionDef *def =
+                    Slic3r::print_config_def.get(key.get<std::string>());
+                if (def) out[def->opt_key] = orcapad_option_def_json(*def);
+            }
+        } else {
+            for (const auto &entry : Slic3r::print_config_def.options)
+                if (entry.second.printer_technology != Slic3r::ptSLA)
+                    out[entry.first] = orcapad_option_def_json(entry.second);
+        }
+        if (!orcapad_copy_string(out.dump().c_str(), out_json))
+            return orcapad_fail(ORCA_STATUS_OUT_OF_MEMORY, operation,
+                                "could not allocate the option definitions");
+        return orcapad_ok();
+    });
+}
+
 orca_result orca_plater_settings_dump(orca_plater *plater, orca_object_id object_id,
                                       orca_volume_id volume_id,
                                       orca_owned_string *out_json) {
@@ -5554,6 +5646,38 @@ orca_result orca_plater_settings_set(orca_plater *plater, orca_object_id object_
         } catch (const std::exception &error) {
             return orcapad_fail(ORCA_STATUS_INVALID_CONFIGURATION, operation, error.what());
         }
+        *out_revision = mutation.commit();
+        return orcapad_ok();
+    });
+}
+
+orca_result orca_plater_set_extruder(orca_plater *plater, orca_object_id object_id,
+                                     orca_volume_id volume_id, int32_t extruder,
+                                     orca_revision *out_revision) {
+    constexpr const char *operation = "orca_plater_set_extruder";
+    if (out_revision) *out_revision = 0;
+    if (!plater)
+        return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, operation, "plater handle is null");
+    if (!out_revision || extruder < 0 || extruder > ORCA_FILAMENT_MAX)
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "extruder is out of range or output pointer is null");
+    return orcapad_guard(operation, [&]() -> orca_result {
+        Slic3r::ModelConfig *config = nullptr;
+        bool is_volume = false;
+        const orca_result found = orcapad_settings_target(
+            plater, object_id, volume_id, operation, &config, &is_volume);
+        if (found.code != ORCA_STATUS_OK) return found;
+        if (!orcapad_revision_available(*plater))
+            return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
+                                "document revision is exhausted");
+        OrcapadMutation mutation(*plater, "Change filament");
+        // Desktop ObjectList::update_extruder_in_config: parts without their
+        // own value follow the object; objects always carry one.
+        if (is_volume && extruder == 0)
+            config->erase("extruder");
+        else
+            config->set_key_value("extruder",
+                                  new Slic3r::ConfigOptionInt(extruder == 0 ? 1 : extruder));
         *out_revision = mutation.commit();
         return orcapad_ok();
     });

@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 /// Version of the C ABI contract in this header. Callers verify it at runtime.
-#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)42)
+#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)43)
 
 typedef int32_t orca_status_code;
 #define ORCA_STATUS_OK                     ((orca_status_code)0)
@@ -877,6 +877,18 @@ orca_result orca_plater_instances_delete(
 /// Overrides are slice inputs (Print::apply consumes them).
 /// Allowed keys for objects (for_volume = 0) or volumes, JSON string array.
 orca_result orca_plater_settings_keys(uint8_t for_volume, orca_owned_string *out_json);
+/// Option definitions (desktop ConfigOptionDef, ABI v43), for building
+/// settings editors: a JSON object keyed by option key, each value
+/// {"type": "float|int|string|percent|float_or_percent|point|bool|enum|...",
+///  "vector": bool, "label", "full_label", "category", "tooltip", "sidetext",
+///  "mode": "simple|advanced|expert|develop", "gui": "" or the GUIType name
+///  ("color", "f_enum_open", "i_enum_open", "select_open", "one_string", ...),
+///  "min"/"max" (only when bounded), "enum_values"/"enum_labels" (when set),
+///  "multiline", "readonly", "nullable", "default" (serialized)}.
+/// `keys_json` is a JSON string array restricting the result, or NULL for
+/// every print/printer/filament option. Unknown keys are skipped. Labels
+/// are the engine's untranslated English.
+orca_result orca_config_option_defs(const char *keys_json, orca_owned_string *out_json);
 /// Current overrides of the target as a JSON object {"key": "serialized"}.
 orca_result orca_plater_settings_dump(orca_plater *plater, orca_object_id object_id,
                                       orca_volume_id volume_id,
@@ -903,6 +915,15 @@ orca_result orca_plater_settings_apply(orca_plater *plater, orca_object_id objec
                                        const char *const *keys,
                                        const char *const *serialized_values,
                                        int32_t count, orca_revision *out_revision);
+/// Desktop object-list filament column (ABI v43): sets the "extruder"
+/// option of the object (`volume_id` 0) or of one part / modifier, which
+/// slicing maps to a filament slot. `extruder` is 1-based; 0 clears a
+/// volume's own assignment (it follows the object) and resets an object to
+/// the first filament. Values above ORCA_FILAMENT_MAX are INVALID_ARGUMENT.
+/// One undo step "Change filament".
+orca_result orca_plater_set_extruder(orca_plater *plater, orca_object_id object_id,
+                                     orca_volume_id volume_id, int32_t extruder,
+                                     orca_revision *out_revision);
 /// Desktop printable toggle: `instance_id` 0 applies to the object and all
 /// its instances. Non-printable instances are skipped by slicing.
 orca_result orca_plater_set_printable(orca_plater *plater, orca_object_id object_id,
@@ -1238,7 +1259,9 @@ orca_result orca_presets_set_filament_count(orca_presets *presets,
                                             const char *new_colour);
 
 /// Desktop per-slot filament combo: assigns a different filament preset to
-/// one slot. Typed NOT_FOUND for an unknown preset or slot.
+/// one slot. Slot 0 also becomes the selected filament preset (the one
+/// the settings tab edits), discarding its unsaved edits. Typed NOT_FOUND
+/// for an unknown preset or slot.
 orca_result orca_presets_select_filament(orca_presets *presets,
                                          uint32_t slot,
                                          const char *preset_name);

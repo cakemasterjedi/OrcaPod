@@ -1,6 +1,10 @@
 package org.orcapod.app.engine
 
 import kotlinx.coroutines.runBlocking
+import org.orcapod.app.settings.OptionDef
+import org.orcapod.app.settings.SettingsLayout
+import org.orcapod.app.settings.parseKeys
+import org.orcapod.app.settings.parseValues
 import org.junit.AfterClass
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -187,6 +191,151 @@ class EngineHostTest {
         } catch (ex: OrcaException) {
             assertTrue(ex.code != 0)
         }
+    }
+
+    @Test
+    fun i_optionDefsCoverTheSettingsLayout() = runBlocking {
+        val defs = OptionDef.parseAll(e.optionDefs())
+        assertTrue("defs: ${defs.size}", defs.size > 500)
+        val layer = defs.getValue("layer_height")
+        assertEquals("float", layer.type)
+        assertTrue(layer.label.isNotEmpty() && layer.sidetext.isNotEmpty())
+        assertTrue(defs.getValue("sparse_infill_pattern").enumValues.contains("gyroid"))
+        assertTrue(defs.getValue("nozzle_temperature").vector)
+        // Every option of the desktop tab layout the app ships is known to the engine.
+        val layout = SettingsLayout.parse(File("src/main/assets/settings_layout.json").readText())
+        for (kind in PresetKind.entries) {
+            val keys = layout.pages(kind).flatMap { p -> p.groups.flatMap { it.keys } }
+            assertTrue("$kind has options", keys.size > 50)
+            val unknown = keys.filter { it !in defs }
+            assertTrue("$kind layout keys unknown to the engine: $unknown", unknown.isEmpty())
+        }
+    }
+
+    @Test
+    fun j_dumpsPresetsAndTracksEdits() = runBlocking {
+        val saved = parseValues(e.presetConfig(PresetKind.PROCESS, edited = false))
+        assertEquals("0.2", saved["layer_height"])
+        e.setValue(PresetKind.PROCESS, "wall_loops", "5")
+        assertEquals("5", parseValues(e.presetConfig(PresetKind.PROCESS, edited = true))["wall_loops"])
+        e.resetValue(PresetKind.PROCESS, "wall_loops")
+        assertEquals(saved["wall_loops"], parseValues(e.presetConfig(PresetKind.PROCESS, edited = true))["wall_loops"])
+    }
+
+    @Test
+    fun k_editsPartsAndPerObjectSettings() = runBlocking {
+        val obj = e.scene().snapshot.objects.single()
+        val objectKeys = parseKeys(e.overrideKeys(false))
+        val volumeKeys = parseKeys(e.overrideKeys(true))
+        assertTrue("layer_height" in objectKeys && "layer_height" !in volumeKeys && "sparse_infill_density" in volumeKeys)
+
+        // Object override.
+        e.setOverride(obj.id, 0, "sparse_infill_density", "40%")
+        assertEquals("40%", parseValues(e.overrides(obj.id, 0))["sparse_infill_density"])
+        assertEquals(1, e.scene().snapshot.objects.single().overrideCount)
+
+        // A modifier with its own setting, drawn from its own mesh.
+        val modifier = e.addVolumeShape(obj.id, obj.instances.first().id, VolumeType.MODIFIER, Shape.CUBE)
+        e.setOverride(obj.id, modifier, "sparse_infill_density", "80%")
+        val scene = e.scene()
+        val o = scene.snapshot.objects.single()
+        assertEquals(listOf(VolumeType.PART, VolumeType.MODIFIER), o.volumes.map { it.type })
+        assertEquals(1, o.volumes[1].overrideCount)
+        assertNotNull("modifier mesh", scene.meshes.getValue(o.id).volumes[modifier])
+        assertEquals(12, o.volumes[0].mergedTriangleCount)
+
+        e.setVolumeType(obj.id, modifier, VolumeType.SUPPORT_BLOCKER)
+        assertEquals(VolumeType.SUPPORT_BLOCKER, e.scene().snapshot.objects.single().volumes[1].type)
+        e.renameVolume(obj.id, modifier, "Blocker")
+        assertEquals("Blocker", e.scene().snapshot.objects.single().volumes[1].name)
+        e.deleteVolume(obj.id, modifier)
+        assertEquals(1, e.scene().snapshot.objects.single().volumes.size)
+
+        e.replaceOverrides(obj.id, 0, mapOf("wall_loops" to "4", "layer_height" to "0.16"))
+        assertEquals(mapOf("wall_loops" to "4", "layer_height" to "0.16"), parseValues(e.overrides(obj.id, 0)))
+        e.eraseOverride(obj.id, 0, "wall_loops")
+        e.eraseOverride(obj.id, 0, "layer_height")
+        assertEquals(0, e.scene().snapshot.objects.single().overrideCount)
+
+        e.renameObject(obj.id, "Cube")
+        assertEquals("Cube", e.scene().snapshot.objects.single().name)
+    }
+
+    @Test
+    fun l_setsHeightRanges() = runBlocking {
+        val obj = e.scene().snapshot.objects.single()
+        e.setHeightRanges(obj.id, listOf(HeightRange(0.0, 5.0, 0.1), HeightRange(5.0, 10.0, 0.3)))
+        assertEquals(listOf(HeightRange(0.0, 5.0, 0.1), HeightRange(5.0, 10.0, 0.3)), e.heightRanges(obj.id))
+        try {
+            e.setHeightRanges(obj.id, listOf(HeightRange(0.0, 5.0, 0.1), HeightRange(4.0, 10.0, 0.3)))
+            fail("overlapping ranges accepted")
+        } catch (ex: OrcaException) {
+            assertEquals(OrcaException.INVALID_ARGUMENT, ex.code)
+        }
+        e.setHeightRanges(obj.id, emptyList())
+        assertTrue(e.heightRanges(obj.id).isEmpty())
+    }
+
+    @Test
+    fun m_managesPlates() = runBlocking {
+        e.addPlate()
+        var snap = e.scene().snapshot
+        assertEquals(2, snap.plates.size)
+        val second = snap.plates[1]
+        e.renamePlate(second.id, "Spare")
+        e.lockPlate(second.id, true)
+        snap = e.scene().snapshot
+        assertEquals("Spare", snap.plates[1].name)
+        assertTrue(snap.plates[1].locked)
+        e.setPlateSettings(second.id, PlateSettings(printByObject = true, spiralMode = false))
+        assertEquals(PlateSettings(printByObject = true, spiralMode = false), e.plateSettings(second.id))
+        e.selectPlate(second.id)
+        assertEquals(1, e.scene().snapshot.currentPlate)
+        e.selectPlate(snap.plates[0].id)
+        e.deletePlate(second.id)
+        assertEquals(1, e.scene().snapshot.plates.size)
+    }
+
+    @Test
+    fun n_assignsFilaments() = runBlocking {
+        e.setFilamentCount(2, "#2850E0")
+        val slots = e.filamentSlots()
+        assertEquals(2, slots.size)
+        assertEquals("#2850E0", slots[1].colour.uppercase())
+        e.setFilamentColour(1, "#FF6A13")
+        assertEquals("#FF6A13", e.filamentSlots()[1].colour.uppercase())
+        val obj = e.scene().snapshot.objects.single()
+        e.setExtruder(obj.id, 0, 2)
+        assertEquals(2, e.scene().snapshot.objects.single().extruder)
+        e.setExtruder(obj.id, obj.volumes[0].id, 1)
+        assertEquals(1, e.scene().snapshot.objects.single().volumes[0].extruder)
+        e.setExtruder(obj.id, obj.volumes[0].id, 0)
+        e.setExtruder(obj.id, 0, 1)
+        // The first slot is the filament the settings tab edits.
+        val other = e.list(PresetKind.FILAMENT).first { it.compatible && it.name != slots[0].preset }.name
+        e.selectFilamentSlot(0, other)
+        assertEquals(other, e.filamentSlots()[0].preset)
+        assertEquals(other, e.current(PresetKind.FILAMENT))
+        e.setFilamentCount(1, null)
+        assertEquals(1, e.filamentSlots().size)
+        assertTrue(e.bedType().count > 1)
+    }
+
+    @Test
+    fun o_slicesAllPlatesAndSavesProjects() = runBlocking {
+        val all = File(work, "all.gcode")
+        val report = e.slice(all.path, SliceTarget.ALL_PLATES) { _, _ -> }
+        assertTrue(all.length() > 10_000)
+        assertEquals(all.length(), report.gcodeBytes)
+        val sliced = File(work, "plate.gcode.3mf")
+        e.slice(sliced.path, SliceTarget.SLICED_3MF_PLATE, 0) { _, _ -> }
+        assertTrue(sliced.length() > 1_000)
+        val project = File(work, "project.3mf")
+        e.saveProject(project.path)
+        assertTrue(project.length() > 1_000)
+        val stl = File(work, "all.stl")
+        e.exportStl(null, stl.path)
+        assertTrue(stl.length() > 84)
     }
 
     private suspend fun layerHeight() =

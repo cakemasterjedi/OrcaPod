@@ -7,6 +7,8 @@ import org.orcapod.app.engine.Mesh
 import org.orcapod.app.engine.Plate
 import org.orcapod.app.engine.Scene
 import org.orcapod.app.engine.Toolpath
+import org.orcapod.app.engine.TriMesh
+import org.orcapod.app.engine.VolumeType
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.sqrt
@@ -21,6 +23,12 @@ data class ViewportState(
     /** Highest toolpath layer shown (inclusive). */
     val layer: Int = 0,
     val showToolpath: Boolean = false,
+    /** Index of the plate the toolpath was sliced from; its G-code is in bed coordinates. */
+    val toolpathPlate: Int = 0,
+    /** The part or modifier highlighted in the object list. */
+    val selectedVolume: Long? = null,
+    /** Filament slot colours (#rrggbb); objects are drawn in their filament's colour when there are several. */
+    val filamentColours: List<String> = emptyList(),
 )
 
 data class Selection(val objectId: Long, val instanceId: Long)
@@ -35,6 +43,8 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
 
     private class GpuMesh(val revision: Long, val vbo: Int, val vertexCount: Int)
     private val meshes = HashMap<Long, GpuMesh>()
+    /** Modifier, negative part and support blocker/enforcer meshes, by volume id. */
+    private val volumeMeshes = HashMap<Long, GpuMesh>()
 
     private var bedKey: List<Float>? = null
     private var bedFillVbo = 0
@@ -55,6 +65,7 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
         colorProgram = ColorProgram()
         // A new EGL context drops every buffer; rebuild them lazily.
         meshes.clear()
+        volumeMeshes.clear()
         bedKey = null
         toolpathSource = null
         glEnable(GL_DEPTH_TEST)
@@ -71,8 +82,16 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
         camera.update()
         glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
         drawBed(s.scene.snapshot.plates, s.scene.snapshot.currentPlate)
-        if (s.showToolpath && s.toolpath != null) drawToolpath(s.toolpath, s.layer)
-        else drawObjects(s)
+        if (s.showToolpath && s.toolpath != null) {
+            val plates = s.scene.snapshot.plates
+            val p = plates.getOrNull(s.toolpathPlate)
+            val base = plates.firstOrNull()
+            val dx = if (p != null && base != null) p.origin[0] - base.origin[0] else 0f
+            val dy = if (p != null && base != null) p.origin[1] - base.origin[1] else 0f
+            drawToolpath(s.toolpath, s.layer, dx, dy)
+        } else {
+            drawObjects(s)
+        }
     }
 
     // --- bed ---
@@ -136,6 +155,10 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
         val live = snap.objects.map { it.id }.toSet()
         meshes.keys.filter { it !in live }.forEach { Gl.deleteVbo(meshes.remove(it)!!.vbo) }
 
+        val liveVolumes = snap.objects.flatMap { o -> o.volumes.map { it.id } }.toSet()
+        volumeMeshes.keys.filter { it !in liveVolumes }.forEach { Gl.deleteVbo(volumeMeshes.remove(it)!!.vbo) }
+        val colours = s.filamentColours.map { parseHex(it) }
+
         glUseProgram(meshProgram.id)
         glUniform3f(meshProgram.light, 0.3f, -0.5f, 0.81f)
         for (obj in snap.objects) {
@@ -143,27 +166,89 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
             val gpu = gpuMesh(obj.id, mesh)
             if (gpu.vertexCount == 0) continue
             bindInterleaved(gpu.vbo)
+            val parts = obj.volumes.filter { it.type == VolumeType.PART }
             for (inst in obj.instances) {
-                System.arraycopy(inst.matrix, 0, model, 0, 16)
-                val drag = s.drag
-                if (drag != null && drag.objectId == obj.id && drag.instanceId == inst.id) {
-                    model[12] += drag.dx
-                    model[13] += drag.dy
-                }
-                Matrix.multiplyMM(mvp, 0, camera.viewProjection, 0, model, 0)
-                glUniformMatrix4fv(meshProgram.mvp, 1, false, mvp, 0)
-                normalMatrix(model)
-                glUniformMatrix3fv(meshProgram.normalMat, 1, false, normal3, 0)
+                setInstance(s, obj.id, inst.id, inst.matrix)
                 val selected = s.selection?.let { it.objectId == obj.id && it.instanceId == inst.id } == true
-                when {
-                    selected -> glUniform4f(meshProgram.color, 1f, 0.62f, 0.15f, 1f)
-                    !inst.printable -> glUniform4f(meshProgram.color, 0.45f, 0.45f, 0.45f, 1f)
-                    inst.plate < 0 -> glUniform4f(meshProgram.color, 0.75f, 0.3f, 0.3f, 1f)
-                    else -> glUniform4f(meshProgram.color, 0.2f, 0.72f, 0.42f, 1f)
+                fun partColour(extruder: Int): FloatArray = when {
+                    !inst.printable -> GREY
+                    inst.plate < 0 -> OFF_PLATE
+                    colours.size > 1 -> colours.getOrElse((if (extruder > 0) extruder else 1) - 1) { DEFAULT }
+                    else -> DEFAULT
                 }
-                glDrawArrays(GL_TRIANGLES, 0, gpu.vertexCount)
+                // Parts own triangle ranges of the merged mesh, so each draws in its filament's colour.
+                if (parts.size <= 1 && obj.volumes.none { it.extruder > 0 }) {
+                    colour(if (selected) SELECTED else partColour(obj.extruder))
+                    glDrawArrays(GL_TRIANGLES, 0, gpu.vertexCount)
+                } else for (part in parts) {
+                    val first = part.mergedTriangleStart * 3
+                    val count = minOf(part.mergedTriangleCount * 3, gpu.vertexCount - first)
+                    if (count <= 0) continue
+                    val c = when {
+                        selected && s.selectedVolume == part.id -> HIGHLIGHT
+                        selected && s.selectedVolume == null -> SELECTED
+                        else -> partColour(part.extruder.takeIf { it > 0 } ?: obj.extruder)
+                    }
+                    colour(c)
+                    glDrawArrays(GL_TRIANGLES, first, count)
+                }
             }
         }
+        drawVolumes(s, mesh = { s.scene.meshes[it] })
+    }
+
+    /** Modifiers, negative parts and support blockers/enforcers, translucent over the parts like desktop. */
+    private fun drawVolumes(s: ViewportState, mesh: (Long) -> org.orcapod.app.engine.Mesh?) {
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glDepthMask(false)
+        for (obj in s.scene.snapshot.objects) {
+            val m = mesh(obj.id) ?: continue
+            for (v in obj.volumes) {
+                if (v.type == VolumeType.PART) continue
+                val tri = m.volumes[v.id] ?: continue
+                val gpu = volumeMesh(v.id, m.revision, tri)
+                if (gpu.vertexCount == 0) continue
+                bindInterleaved(gpu.vbo)
+                val base = when (v.type) {
+                    VolumeType.NEGATIVE -> NEGATIVE
+                    VolumeType.MODIFIER -> MODIFIER
+                    VolumeType.SUPPORT_BLOCKER -> BLOCKER
+                    else -> ENFORCER
+                }
+                val c = if (s.selectedVolume == v.id) floatArrayOf(HIGHLIGHT[0], HIGHLIGHT[1], HIGHLIGHT[2], 0.6f) else base
+                for (inst in obj.instances) {
+                    setInstance(s, obj.id, inst.id, inst.matrix)
+                    colour(c)
+                    glDrawArrays(GL_TRIANGLES, 0, gpu.vertexCount)
+                }
+            }
+        }
+        glDepthMask(true)
+        glDisable(GL_BLEND)
+    }
+
+    private fun setInstance(s: ViewportState, objectId: Long, instanceId: Long, matrix: FloatArray) {
+        System.arraycopy(matrix, 0, model, 0, 16)
+        val drag = s.drag
+        if (drag != null && drag.objectId == objectId && drag.instanceId == instanceId) {
+            model[12] += drag.dx
+            model[13] += drag.dy
+        }
+        Matrix.multiplyMM(mvp, 0, camera.viewProjection, 0, model, 0)
+        glUniformMatrix4fv(meshProgram.mvp, 1, false, mvp, 0)
+        normalMatrix(model)
+        glUniformMatrix3fv(meshProgram.normalMat, 1, false, normal3, 0)
+    }
+
+    private fun colour(c: FloatArray) = glUniform4f(meshProgram.color, c[0], c[1], c[2], c.getOrElse(3) { 1f })
+
+    private fun volumeMesh(id: Long, revision: Long, tri: TriMesh): GpuMesh {
+        volumeMeshes[id]?.let { if (it.revision == revision) return it else Gl.deleteVbo(it.vbo) }
+        val data = flatShaded(tri.positions, tri.indices)
+        val gpu = GpuMesh(revision, if (data.isEmpty()) 0 else Gl.vbo(data), data.size / 6)
+        volumeMeshes[id] = gpu
+        return gpu
     }
 
     private fun normalMatrix(m: FloatArray) {
@@ -182,7 +267,7 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
 
     // --- toolpath ---
 
-    private fun drawToolpath(tp: Toolpath, layer: Int) {
+    private fun drawToolpath(tp: Toolpath, layer: Int, dx: Float, dy: Float) {
         if (tp !== toolpathSource) {
             Gl.deleteVbo(toolpathVbo)
             toolpathVbo = if (tp.segmentCount > 0) Gl.vbo(toolpathVertices(tp)) else 0
@@ -193,7 +278,10 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
         val below = tp.layerFirst[l]
         val total = below + tp.layerCount[l]
         glUseProgram(colorProgram.id)
-        glUniformMatrix4fv(colorProgram.mvp, 1, false, camera.viewProjection, 0)
+        Matrix.setIdentityM(model, 0)
+        Matrix.translateM(model, 0, dx, dy, 0f)
+        Matrix.multiplyMM(mvp, 0, camera.viewProjection, 0, model, 0)
+        glUniformMatrix4fv(colorProgram.mvp, 1, false, mvp, 0)
         bindInterleaved(toolpathVbo)
         glLineWidth(2f)
         // Layers below the current one dimmed, the current one at full strength.
@@ -234,6 +322,21 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
 
         fun roleColor(role: Int): IntArray = ROLE_COLORS.getOrElse(role) { ROLE_COLORS[0] }
 
+        private val DEFAULT = floatArrayOf(0.2f, 0.72f, 0.42f, 1f)
+        private val SELECTED = floatArrayOf(1f, 0.62f, 0.15f, 1f)
+        private val HIGHLIGHT = floatArrayOf(1f, 0.85f, 0.2f, 1f)
+        private val GREY = floatArrayOf(0.45f, 0.45f, 0.45f, 1f)
+        private val OFF_PLATE = floatArrayOf(0.75f, 0.3f, 0.3f, 1f)
+        private val NEGATIVE = floatArrayOf(0.6f, 0.6f, 0.6f, 0.45f)
+        private val MODIFIER = floatArrayOf(0.95f, 0.8f, 0.25f, 0.35f)
+        private val BLOCKER = floatArrayOf(0.9f, 0.25f, 0.25f, 0.4f)
+        private val ENFORCER = floatArrayOf(0.25f, 0.45f, 0.95f, 0.4f)
+
+        internal fun parseHex(hex: String): FloatArray {
+            val v = hex.trim().removePrefix("#").take(6).toIntOrNull(16) ?: return DEFAULT
+            return floatArrayOf(((v shr 16) and 0xFF) / 255f, ((v shr 8) and 0xFF) / 255f, (v and 0xFF) / 255f, 1f)
+        }
+
         internal fun toolpathVertices(tp: Toolpath): FloatArray {
             val out = FloatArray(tp.segmentCount * 12)
             val p = tp.positions
@@ -252,10 +355,10 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
             return out
         }
 
-        /** De-indexes a mesh into interleaved position + face-normal vertices. */
-        internal fun flatShaded(mesh: Mesh): FloatArray {
-            val p = mesh.positions
-            val idx = mesh.indices
+        internal fun flatShaded(mesh: Mesh): FloatArray = flatShaded(mesh.positions, mesh.indices)
+
+        /** De-indexes a mesh into interleaved position + face-normal vertices, keeping triangle order. */
+        internal fun flatShaded(p: FloatArray, idx: IntArray): FloatArray {
             val tris = idx.size / 3
             val out = FloatArray(tris * 18)
             for (t in 0 until tris) {

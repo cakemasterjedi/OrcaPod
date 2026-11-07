@@ -49,10 +49,53 @@ After an app update the same brands are re-extracted, since the bundled
 profiles may have changed. User presets live beside them in `user/default`
 and survive both.
 
-The settings sheet edits a handful of common process and filament options on
-top of the selected presets through the engine's edited-preset mechanism, so
-slicing picks them up exactly as desktop does; they can be saved as user
-presets.
+## Settings editors
+
+The settings screen is desktop's three tabs (process, filament, printer)
+with every option, in desktop's pages and groups. The structure comes from
+`assets/settings_layout.json`, which `tools/gen_settings_layout.py` extracts
+from the desktop tab builders in `src/slic3r/GUI/Tab.cpp`, so the app does not
+keep its own copy of the option list. Labels, types, units, ranges, enum
+choices, tooltips and visibility levels come from the engine at run time
+(`orca_config_option_defs`, the same `ConfigOptionDef`s desktop renders),
+so options added upstream appear with their real metadata once they are in
+the layout. A Simple / Advanced / Expert switch filters by the option's
+mode, and search reaches every level, as on desktop.
+
+Edits go to the engine's edited presets (`orca_presets_set_value`), so slicing
+picks them up exactly as desktop does. A value is "modified" when the edited
+preset differs from the saved one (`orca_presets_config_dump`, both copies);
+it can be reset per option or per tab and saved as a user preset.
+
+The same option editor serves per-object and per-part settings: the object
+sheet lists the target's overrides (`orca_plater_settings_dump`) and adds any
+key the engine accepts for that target (`orca_plater_settings_keys`:
+object and region options for objects, region options for parts and
+modifiers), seeded with the value slicing would otherwise use.
+
+## Objects, parts and plates
+
+The object list and object sheet expose desktop's object-list features
+through the bridge: parts, negative parts, modifiers and support
+blockers/enforcers (built-in shapes or loaded files) with type changes,
+renames and deletes; per-part filament assignment; height range modifiers
+(layer height per Z band); split, mirror, unit conversion, simplify,
+subdivide, copies, clone and fill plate. The scene snapshot carries every
+volume: parts are triangle ranges of the object's merged mesh, so the
+viewport colours each part by its filament without a second copy of the
+geometry, and the other roles carry their own meshes, drawn translucent over
+the parts like desktop.
+
+Plates are desktop's plate tabs: add, rename, lock, duplicate, reorder,
+delete and per-plate settings (plate type, sequence, spiral vase, first-layer
+filament order). Slicing works on the selected plate or every plate into one
+file; the preview shows a single plate, offset to where it sits beside the
+bed. Projects save as OrcaSlicer 3MF with plates and settings, and sliced
+3MF files (G-code inside a 3MF) export per plate or for all plates.
+
+Filament slots (preset and colour per slot) follow desktop's sidebar list;
+objects and parts take a slot through the "extruder" option, which slicing
+maps to a tool.
 
 ## Viewport
 
@@ -69,7 +112,6 @@ lines coloured by extrusion role, up to the layer on the slider.
 
 - STEP import needs OCCT, which the bridge does not build; the app says so
   and asks for STL or 3MF instead.
-- One filament slot: multi-material assignment is not exposed yet.
 - G-code goes out through the Android share sheet or a saved file; there is
   no direct printer connection.
 
@@ -78,4 +120,8 @@ lines coloured by extrusion role, up to the layer on the slider.
 `mobile/android/tools/host-jni-test.sh` builds the engine for the desktop
 host, links the same `orcapod_jni.cpp` into a host JNI library and runs
 `EngineHostTest` on the JVM: profiles load, a model imports, moves, undoes
-and arranges, settings edit, and a plate slices, previews and cancels.
+and arranges, settings edit, and a plate slices, previews and cancels. It
+also checks that every option of the shipped settings layout is known to the
+engine, and exercises parts and modifiers, per-object and per-part settings,
+height ranges, plates, filament slots, slicing all plates and the project,
+sliced-3MF and STL exports.

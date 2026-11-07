@@ -59,6 +59,75 @@ internal object Native {
     external fun jobNew(): Long
     external fun jobCancel(job: Long)
     external fun jobFree(job: Long)
-    external fun platerSlice(plater: Long, presets: Long, path: String, job: Long, listener: ProgressListener): SliceReport
+    /** [target] is a [SliceTarget] code; [plateIndex] is used by SLICED_3MF_PLATE. */
+    external fun platerSlice(
+        plater: Long, presets: Long, path: String, job: Long, listener: ProgressListener, target: Int, plateIndex: Int,
+    ): SliceReport
     external fun toolpathLoad(gcodePath: String): Toolpath
+
+    // --- settings editors ---
+    /** Option definitions as JSON ({key: def}); null keys = every option. */
+    external fun optionDefs(keysJson: String?): String
+    external fun presetsConfigDump(presets: Long, kind: Int, edited: Boolean): String
+    external fun presetsResetValue(presets: Long, kind: Int, key: String)
+    external fun presetsSaveUserDetached(presets: Long, kind: Int, name: String, detach: Boolean)
+
+    // --- filament slots and plate type ---
+    /** [name0, colour0, name1, colour1, ...]. */
+    external fun presetsFilamentSlots(presets: Long): Array<String>
+    external fun presetsSetFilamentCount(presets: Long, count: Int, colour: String?)
+    external fun presetsSelectFilamentSlot(presets: Long, slot: Int, name: String)
+    external fun presetsSetFilamentColour(presets: Long, slot: Int, colour: String)
+    /** [current, machine default, count, selectable, supported mask]. */
+    external fun presetsBedType(presets: Long): IntArray
+    external fun presetsSetBedType(presets: Long, bedType: Int)
+
+    // --- per-object / per-part settings (volume 0 = the object) ---
+    external fun settingsKeys(forVolume: Boolean): String
+    external fun settingsDump(plater: Long, objectId: Long, volumeId: Long): String
+    external fun settingsSet(plater: Long, objectId: Long, volumeId: Long, key: String, value: String)
+    external fun settingsErase(plater: Long, objectId: Long, volumeId: Long, key: String)
+    /** Filament slot (1-based) of an object or part; 0 = follow the object / the first slot. */
+    external fun setExtruder(plater: Long, objectId: Long, volumeId: Long, extruder: Int)
+    external fun settingsApply(plater: Long, objectId: Long, volumeId: Long, keys: Array<String>, values: Array<String>)
+
+    // --- objects and parts ---
+    external fun objectRename(plater: Long, objectId: Long, name: String)
+    external fun addShapeObject(plater: Long, shape: Int, size: Double, cx: Double, cy: Double): Long
+    external fun volumeAddShape(plater: Long, objectId: Long, instanceId: Long, type: Int, shape: Int, size: Double): Long
+    external fun volumeAddFile(plater: Long, objectId: Long, type: Int, path: String): Long
+    external fun volumeSetType(plater: Long, objectId: Long, volumeId: Long, type: Int)
+    external fun volumeDelete(plater: Long, objectId: Long, volumeId: Long)
+    external fun volumeRename(plater: Long, objectId: Long, volumeId: Long, name: String)
+    external fun splitObjects(plater: Long, objectId: Long): Int
+    external fun splitParts(plater: Long, objectId: Long, volumeId: Long): Int
+    external fun instanceMirror(plater: Long, objectId: Long, instanceId: Long, axis: Int)
+    external fun setPrintable(plater: Long, objectId: Long, instanceId: Long, printable: Boolean)
+    external fun setInstanceCount(plater: Long, objectId: Long, count: Int)
+    external fun cloneObject(plater: Long, objectId: Long, count: Int)
+    external fun instanceToObject(plater: Long, objectId: Long, instanceId: Long)
+    external fun mergeObjects(plater: Long, objectIds: LongArray)
+    external fun convertUnits(plater: Long, objectId: Long, conversion: Int)
+    external fun objectDrop(plater: Long, objectId: Long)
+    external fun volumeSimplify(plater: Long, objectId: Long, volumeId: Long, useCount: Boolean, count: Int, maxError: Double): Int
+    external fun volumeSubdivide(plater: Long, objectId: Long, volumeId: Long): Int
+    external fun fillBed(plater: Long, presets: Long, objectId: Long): Int
+    external fun objectExportStl(plater: Long, objectId: Long, path: String)
+    external fun exportStlAll(plater: Long, path: String)
+    external fun projectSave(plater: Long, presets: Long, path: String)
+
+    // --- height range modifiers: flat (min z, max z, layer height) triples ---
+    external fun heightRanges(plater: Long, objectId: Long): DoubleArray
+    external fun setHeightRanges(plater: Long, objectId: Long, flat: DoubleArray)
+
+    // --- plates ---
+    external fun plateAdd(plater: Long)
+    external fun plateDelete(plater: Long, plateId: Long)
+    external fun plateRename(plater: Long, plateId: Long, name: String)
+    external fun plateLock(plater: Long, plateId: Long, lock: Boolean)
+    external fun plateSelect(plater: Long, plateId: Long)
+    external fun plateDuplicate(plater: Long, plateId: Long)
+    external fun plateMoveToFront(plater: Long, plateId: Long)
+    external fun plateSettings(plater: Long, plateId: Long): IntArray
+    external fun plateSetSettings(plater: Long, plateId: Long, values: IntArray)
 }

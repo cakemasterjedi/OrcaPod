@@ -244,6 +244,9 @@ engine_sources() {
     # STEP: the real reader over OpenCASCADE, or loud stubs without it
     if [ "$ORCAPOD_STEP" = real ]; then
         printf 'cxx\t%s\n' "$SRC/libslic3r/Format/STEP.cpp"
+        # boost::chrono's clocks (STEP.cpp polls its reader thread with
+        # boost::this_thread::sleep_for)
+        printf 'cxx\t%s\t-DBOOST_CHRONO_STATIC_LINK\n' "$BOOST_DIR/libs/chrono/src/chrono.cpp"
     else
         printf 'cxx\t%s\n' "$BRIDGE/engine-cxx/step_stubs.cpp"
     fi

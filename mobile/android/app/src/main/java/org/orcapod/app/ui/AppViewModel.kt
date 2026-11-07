@@ -30,6 +30,7 @@ import org.orcapod.app.engine.InstanceTransform
 import org.orcapod.app.engine.OrcaException
 import org.orcapod.app.engine.PresetEntry
 import org.orcapod.app.engine.PresetKind
+import org.orcapod.app.engine.CalibrationTest
 import org.orcapod.app.engine.PlateSettings
 import org.orcapod.app.engine.Scene
 import org.orcapod.app.engine.SceneObject
@@ -447,6 +448,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val e = engine ?: return
         scene = e.scene()
         customGcodes = e.customGcodes()
+        refreshCalibration(e)
         if (paint != null) refreshPaint()
         if (measure?.let { objectOf(it.objectId) } == null) measure = null
         layerHeights?.let { l ->
@@ -580,6 +582,56 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             cut = null
             selection = null
             _messages.tryEmit(if (n == 1) "Cut done" else "Cut into $n objects")
+        }
+    }
+
+    // --- calibration (desktop Calibration menu) ---
+
+    /** The test the plate is set up for, with its range; null for an ordinary plate. */
+    var calibration by mutableStateOf<Pair<CalibrationTest, DoubleArray>?>(null)
+        private set
+
+    /**
+     * Desktop Plater::calib_*: the test's model replaces the plate's objects,
+     * and the print, filament and printer settings change as desktop changes them.
+     */
+    fun startCalibration(test: CalibrationTest, start: Double, end: Double, step: Double, printNumbers: Boolean, resize: Boolean) =
+        engineAction("Setting up ${test.label.lowercase()}…") { e ->
+            val model = withContext(Dispatchers.IO) {
+                val file = File(File(getApplication<Application>().cacheDir, "calib").apply { mkdirs() }, test.model)
+                getApplication<Application>().assets.open("calib/${test.model}").use { input ->
+                    file.outputStream().use { input.copyTo(it) }
+                }
+                file
+            }
+            cut = null
+            paint = null
+            layerHeights = null
+            measure = null
+            selection = null
+            e.startCalibration(test, start, end, step, printNumbers, resize, model.path)
+            readSettings()
+            refreshScene()
+            invalidateSlice()
+            calibrationTest = test
+            _messages.tryEmit("${test.label} is on the plate. Slice it to print the test.")
+        }
+
+    fun clearCalibration() = engineAction { e ->
+        e.clearCalibration()
+        refreshScene()
+        invalidateSlice()
+    }
+
+    /** The menu entry last started, to tell flow rate passes apart (the engine keeps only the mode). */
+    private var calibrationTest: CalibrationTest? = null
+
+    private suspend fun refreshCalibration(e: Engine) {
+        val c = e.calibration()
+        val mode = c[0].toInt()
+        calibration = if (mode == 0) null else {
+            val test = calibrationTest?.takeIf { it.mode == mode } ?: CalibrationTest.entries.first { it.mode == mode }
+            test to c.copyOfRange(1, 4)
         }
     }
 

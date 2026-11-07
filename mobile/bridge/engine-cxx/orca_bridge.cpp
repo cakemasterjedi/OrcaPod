@@ -128,6 +128,8 @@ void orca_result_dispose(orca_result *result) {
 
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/Model.hpp"
+#include "libslic3r/Flow.hpp"
+#include "libslic3r/calib.hpp"
 #include "libslic3r/Geometry/ConvexHull.hpp"
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/Print.hpp"
@@ -1357,6 +1359,10 @@ struct orca_plater {
     /// orca_plater_set_bed; desktop resets plate size on machine change).
     double bed_origin_x = 0.0, bed_origin_y = 0.0;
     double bed_width = 200.0, bed_depth = 200.0, bed_height = 200.0;
+    /// Desktop calibration test this document was built for (Print::
+    /// set_calib_params): G-code generation varies PA, temperature, speed
+    /// or retraction along the test. Calib_None for ordinary documents.
+    Slic3r::Calib_Params calib;
 };
 
 /// Desktop keeps a memory-bounded undo stack; OrcaPad bounds it by steps.
@@ -1733,6 +1739,50 @@ orca_result orca_plater_new(orca_plater **out) {
 
 void orca_plater_free(orca_plater *plater) { delete plater; }
 
+/// Reads a model file for import (desktop "Import 3MF/STL/OBJ/AMF"): meshes
+/// centred on their pivots, the group centred on the bed and dropped onto it.
+static orca_result orcapad_read_import(const char *operation, const char *path,
+                                       double bed_center_x, double bed_center_y,
+                                       Slic3r::Model &temporary) {
+    // Geometry import (desktop "Import 3MF/STL/OBJ/AMF"): configs inside
+    // project files are NOT applied here — that is project open.
+    temporary = Slic3r::Model::read_from_file(
+        path, nullptr, nullptr,
+        Slic3r::LoadStrategy::AddDefaultInstances | Slic3r::LoadStrategy::LoadModel);
+    if (temporary.objects.empty())
+        return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
+                            "input contains no model object");
+
+    // 1) center meshes (desktop rotation/scale pivot) while preserving
+    //    each instance's world placement: o' = o - L * shift
+    Slic3r::BoundingBoxf3 group;
+    for (Slic3r::ModelObject *object : temporary.objects) {
+        if (object->instances.empty())
+            return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
+                                "imported object has no instance");
+        const Slic3r::Vec3d shift = -object->raw_mesh_bounding_box().center();
+        object->center_around_origin();
+        for (Slic3r::ModelInstance *instance : object->instances) {
+            const Slic3r::Vec3d delta = instance->get_matrix().linear() * shift;
+            instance->set_offset(instance->get_offset() - delta);
+        }
+        for (size_t i = 0; i < object->instances.size(); ++i)
+            group.merge(object->instance_bounding_box(i));
+    }
+    if (!group.defined)
+        return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
+                            "imported geometry has no bounds");
+    // 2) move the group's XY center to the bed center, 3) drop to bed
+    const Slic3r::Vec3d move(bed_center_x - group.center().x(),
+                             bed_center_y - group.center().y(), 0.0);
+    for (Slic3r::ModelObject *object : temporary.objects) {
+        object->translate_instances(move);
+        object->ensure_on_bed(false);
+    }
+
+    return orcapad_ok();
+}
+
 orca_result orca_plater_import_model(orca_plater *plater, const char *path,
                                      double bed_center_x, double bed_center_y,
                                      orca_object_id *out_first_object_id,
@@ -1761,42 +1811,10 @@ orca_result orca_plater_import_model(orca_plater *plater, const char *path,
         if (!orcapad_revision_available(*plater))
             return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
                                 "document revision is exhausted");
-        // Geometry import (desktop "Import 3MF/STL/OBJ/AMF"): configs inside
-        // project files are NOT applied here — that is project open.
-        Slic3r::Model temporary = Slic3r::Model::read_from_file(
-            path, nullptr, nullptr,
-            Slic3r::LoadStrategy::AddDefaultInstances | Slic3r::LoadStrategy::LoadModel);
-        if (temporary.objects.empty())
-            return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
-                                "input contains no model object");
-
-        // 1) center meshes (desktop rotation/scale pivot) while preserving
-        //    each instance's world placement: o' = o - L * shift
-        Slic3r::BoundingBoxf3 group;
-        for (Slic3r::ModelObject *object : temporary.objects) {
-            if (object->instances.empty())
-                return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
-                                    "imported object has no instance");
-            const Slic3r::Vec3d shift = -object->raw_mesh_bounding_box().center();
-            object->center_around_origin();
-            for (Slic3r::ModelInstance *instance : object->instances) {
-                const Slic3r::Vec3d delta = instance->get_matrix().linear() * shift;
-                instance->set_offset(instance->get_offset() - delta);
-            }
-            for (size_t i = 0; i < object->instances.size(); ++i)
-                group.merge(object->instance_bounding_box(i));
-        }
-        if (!group.defined)
-            return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
-                                "imported geometry has no bounds");
-        // 2) move the group's XY center to the bed center, 3) drop to bed
-        const Slic3r::Vec3d move(bed_center_x - group.center().x(),
-                                 bed_center_y - group.center().y(), 0.0);
-        for (Slic3r::ModelObject *object : temporary.objects) {
-            object->translate_instances(move);
-            object->ensure_on_bed(false);
-        }
-
+        Slic3r::Model temporary;
+        const orca_result read = orcapad_read_import(operation, path, bed_center_x, bed_center_y, temporary);
+        if (read.code != ORCA_STATUS_OK)
+            return read;
         OrcapadMutation mutation(*plater, "Import");
         std::vector<Slic3r::ModelObject *> added;
         for (Slic3r::ModelObject *source : temporary.objects) {
@@ -2176,6 +2194,7 @@ orca_result orca_plater_clear(orca_plater *plater, orca_revision *out_revision) 
         OrcapadMutation mutation(*plater, "Delete all");
         plater->model.clear_objects();
         plater->mesh_revisions.clear();
+        plater->calib = Slic3r::Calib_Params();
         // Plates survive "Delete all" (desktop parity); the pin sweep on
         // the next snapshot drops the dead pins.
         *out_revision = mutation.commit();
@@ -4921,6 +4940,475 @@ orca_result orca_plater_object_cut_connector_add(
         *out_revision = mutation.commit();
         return orcapad_ok();
     });
+}
+
+// --- calibration (desktop Calibration menu, ABI v44) ---------------------------
+
+/// Desktop set_config_values: every value of a vector option.
+template <typename OptionT, typename ValueT>
+static void orcapad_set_all(Slic3r::DynamicPrintConfig &config, const char *key, ValueT value) {
+    if (auto *option = config.option<OptionT>(key))
+        for (auto &v : option->values) v = value;
+}
+
+static double orcapad_first_float(const Slic3r::DynamicPrintConfig &config, const char *key,
+                                  double fallback) {
+    const auto *option = config.option<Slic3r::ConfigOptionFloats>(key);
+    return option && !option->values.empty() ? option->values.front() : fallback;
+}
+
+/// Desktop update_speed_parameter: the speed at which the profile's line
+/// width and layer height reach the filament's max volumetric speed.
+static void orcapad_calib_max_speed(Slic3r::PresetBundle &bundle, const char *key) {
+    auto &print = bundle.prints.get_edited_preset().config;
+    const auto &printer = bundle.printers.get_edited_preset().config;
+    const auto &filament = bundle.filaments.get_edited_preset().config;
+    const float nozzle = float(orcapad_first_float(printer, "nozzle_diameter", 0.4));
+    const float layer = float(print.opt_float("layer_height"));
+    float width = float(print.get_abs_value("line_width", nozzle));
+    if (width <= 0.f) width = Slic3r::Flow::auto_extrusion_width(Slic3r::frPerimeter, nozzle);
+    const Slic3r::Flow flow(width, layer, nozzle);
+    orcapad_set_all<Slic3r::ConfigOptionFloatsNullable>(
+        print, key, orcapad_first_float(filament, "filament_max_volumetric_speed", 10.0) / flow.mm3_per_mm());
+}
+
+/// Desktop generate_max_speed_parameter_value: the profile's speed, capped
+/// so the flow test's extrusion stays within the max volumetric speed.
+static std::vector<double> orcapad_calib_flow_speeds(const Slic3r::PresetBundle &bundle, const char *key,
+                                                     float width, float layer, bool linear, int pass) {
+    const auto &print = bundle.prints.get_edited_preset().config;
+    const auto &printer = bundle.printers.get_edited_preset().config;
+    const auto &filament = bundle.filaments.get_edited_preset().config;
+    const float nozzle = float(orcapad_first_float(printer, "nozzle_diameter", 0.4));
+    const Slic3r::Flow flow(width, layer, nozzle);
+    const double max_volumetric = orcapad_first_float(filament, "filament_max_volumetric_speed", 10.0);
+    const double flow_ratio = orcapad_first_float(filament, "filament_flow_ratio", 1.0);
+    const double max_speed = linear
+        ? max_volumetric / (flow.mm3_per_mm() * (flow_ratio + (pass == 2 ? 0.035 : 0.05)) / flow_ratio)
+        : max_volumetric / (flow.mm3_per_mm() * (pass == 1 ? 1.2 : 1));
+    std::vector<double> speeds;
+    if (const auto *option = print.option<Slic3r::ConfigOptionFloatsNullable>(key))
+        for (double v : option->values) speeds.push_back(std::floor(std::min(v, max_speed)));
+    if (speeds.empty()) speeds.push_back(std::floor(max_speed));
+    return speeds;
+}
+
+/// Desktop Plater::cut_horizontal on a calibration model: cuts object
+/// `index` at world height z, the kept part taking its place.
+static bool orcapad_calib_cut(orca_plater &plater, size_t index, double z,
+                              Slic3r::ModelObjectCutAttributes attributes) {
+    Slic3r::ModelObject *object = plater.model.objects[index];
+    const Slic3r::Vec3d offset = object->instances.front()->get_offset();
+    Slic3r::Cut cut(object, 0, Slic3r::Geometry::translation_transform(z * Slic3r::Vec3d::UnitZ() - offset),
+                    attributes);
+    const Slic3r::ModelObjectPtrs &results = cut.perform_with_plane();
+    if (results.empty()) return false;
+    const orca_object_id source_id = static_cast<orca_object_id>(object->id().id);
+    for (const Slic3r::ModelObject *result : results) {
+        Slic3r::ModelObject *clone = plater.model.add_object(*result);
+        if (!clone || !orcapad_register_object(plater, *clone)) return false;
+        clone->ensure_on_bed(false);
+    }
+    plater.mesh_revisions.erase(source_id);
+    return plater.model.delete_object(Slic3r::ObjectID(static_cast<size_t>(source_id)));
+}
+
+/// Desktop Selection::scale on the whole calibration model: each instance
+/// scales, and its place spreads from the group centre in XY.
+static void orcapad_calib_scale(orca_plater &plater, const Slic3r::Vec3d &factor) {
+    Slic3r::BoundingBoxf3 group;
+    for (const Slic3r::ModelObject *object : plater.model.objects)
+        for (size_t i = 0; i < object->instances.size(); ++i) group.merge(object->instance_bounding_box(i));
+    const Slic3r::Vec3d center = group.center();
+    for (Slic3r::ModelObject *object : plater.model.objects) {
+        for (Slic3r::ModelInstance *instance : object->instances) {
+            instance->set_scaling_factor(instance->get_scaling_factor().cwiseProduct(factor));
+            Slic3r::Vec3d offset = instance->get_offset();
+            for (int k = 0; k < 2; ++k) offset[k] = center[k] + factor[k] * (offset[k] - center[k]);
+            instance->set_offset(offset);
+        }
+        object->invalidate_bounding_box();
+        object->ensure_on_bed(false);
+    }
+}
+
+/// Desktop adjust_settings_for_flowrate_calib.
+static void orcapad_calib_flow_rate(orca_plater &plater, Slic3r::PresetBundle &bundle, bool linear, int pass,
+                                    Slic3r::InfillPattern pattern) {
+    using namespace Slic3r;
+    auto &print = bundle.prints.get_edited_preset().config;
+    const auto &printer = bundle.printers.get_edited_preset().config;
+    const auto &filament = bundle.filaments.get_edited_preset().config;
+    const float nozzle = float(orcapad_first_float(printer, "nozzle_diameter", 0.4));
+    const float xy_scale = nozzle / 0.6f;
+    const double layer = nozzle / 2.0;
+    const double first_layer = std::max(print.opt_float("initial_layer_print_height"), layer);
+    // Ten layers: 2 bottom, 5 top, 3 sparse infill; only enlarge in XY.
+    const double z_scale = (first_layer + 9 * layer) / 2;
+    orcapad_calib_scale(plater, xy_scale > 1.2f ? Vec3d(xy_scale, xy_scale, z_scale) : Vec3d(1, 1, z_scale));
+
+    const double flow_ratio = orcapad_first_float(filament, "filament_flow_ratio", 1.0);
+    const float infill_width = nozzle * 1.2f;
+    const std::vector<double> solid_speeds =
+        orcapad_calib_flow_speeds(bundle, "internal_solid_infill_speed", infill_width, float(layer), linear, pass);
+    const std::vector<double> top_speeds =
+        orcapad_calib_flow_speeds(bundle, "top_surface_speed", infill_width, float(layer), linear, pass);
+    for (ModelObject *object : plater.model.objects) {
+        object->ensure_on_bed();
+        ModelConfigObject &c = object->config;
+        c.set_key_value("wall_loops", new ConfigOptionInt(1));
+        c.set_key_value("only_one_wall_top", new ConfigOptionBool(true));
+        c.set_key_value("thick_internal_bridges", new ConfigOptionBool(false));
+        c.set_key_value("enable_extra_bridge_layer", new ConfigOptionEnum<EnableExtraBridgeLayer>(eblDisabled));
+        c.set_key_value("internal_bridge_density", new ConfigOptionPercent(100));
+        c.set_key_value("sparse_infill_density", new ConfigOptionPercent(35));
+        c.set_key_value("min_width_top_surface", new ConfigOptionFloatOrPercent(100, true));
+        c.set_key_value("bottom_shell_layers", new ConfigOptionInt(2));
+        c.set_key_value("top_shell_layers", new ConfigOptionInt(5));
+        c.set_key_value("top_shell_thickness", new ConfigOptionFloat(0));
+        c.set_key_value("bottom_shell_thickness", new ConfigOptionFloat(0));
+        c.set_key_value("detect_thin_wall", new ConfigOptionBool(true));
+        c.set_key_value("filter_out_gap_fill", new ConfigOptionFloat(0));
+        c.set_key_value("sparse_infill_pattern", new ConfigOptionEnum<InfillPattern>(ipRectilinear));
+        c.set_key_value("top_surface_line_width", new ConfigOptionFloatOrPercent(infill_width, false));
+        c.set_key_value("internal_solid_infill_line_width", new ConfigOptionFloatOrPercent(infill_width, false));
+        c.set_key_value("top_surface_pattern", new ConfigOptionEnum<InfillPattern>(pattern));
+        const auto *top_flow = dynamic_cast<const ConfigOptionFloatsNullable *>(c.option("top_solid_infill_flow_ratio"));
+        c.set_key_value("top_solid_infill_flow_ratio", new ConfigOptionFloatsNullable(top_flow ? top_flow->size() : 1, 1.0f));
+        c.set_key_value("infill_direction", new ConfigOptionFloat(45));
+        c.set_key_value("solid_infill_direction", new ConfigOptionFloat(135));
+        c.set_key_value("center_of_surface_pattern",
+                        new ConfigOptionEnum<CenterOfSurfacePattern>(CenterOfSurfacePattern::Each_Surface));
+        c.set_key_value("separated_infills", new ConfigOptionBool(false));
+        c.set_key_value("align_infill_direction_to_model", new ConfigOptionBool(true));
+        c.set_key_value("ironing_type", new ConfigOptionEnum<IroningType>(IroningType::NoIroning));
+        c.set_key_value("internal_solid_infill_speed", new ConfigOptionFloatsNullable(solid_speeds));
+        c.set_key_value("top_surface_speed", new ConfigOptionFloatsNullable(top_speeds));
+        c.set_key_value("seam_slope_type", new ConfigOptionEnum<SeamScarfType>(SeamScarfType::None));
+        c.set_key_value("gap_fill_target", new ConfigOptionEnum<GapFillTarget>(GapFillTarget::gftNowhere));
+        c.set_key_value("calib_flowrate_topinfill_special_order", new ConfigOptionBool(true));
+        c.set_key_value("top_surface_fill_order", new ConfigOptionEnum<SurfaceFillOrder>(SurfaceFillOrder::Default));
+        // The modifier is in the object name: flowrate_<value>, m for minus.
+        std::string modifier_text = object->name.size() > 9 ? object->name.substr(9) : std::string();
+        if (!modifier_text.empty() && modifier_text[0] == 'm') modifier_text[0] = '-';
+        double modifier = 0.0;
+        std::istringstream in(modifier_text);
+        in.imbue(std::locale::classic());
+        in >> modifier;
+        c.set_key_value("print_flow_ratio", new ConfigOptionFloat(linear ? (flow_ratio + modifier) / flow_ratio
+                                                                         : 1.0 + modifier / 100.0));
+    }
+    print.set_key_value("max_volumetric_extrusion_rate_slope", new ConfigOptionFloat(0));
+    print.set_key_value("layer_height", new ConfigOptionFloat(layer));
+    print.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));
+    print.set_key_value("initial_layer_print_height", new ConfigOptionFloat(first_layer));
+    print.set_key_value("reduce_crossing_wall", new ConfigOptionBool(true));
+    print.set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
+    bundle.printers.get_edited_preset().config.set_key_value("resonance_avoidance", new ConfigOptionBool{false});
+}
+
+/// The rest of desktop's calib_* for the modes the bridge offers: settings
+/// edits on the edited presets and the model, cuts to the tested range, and
+/// the parameters G-code generation reads.
+static orca_result orcapad_calib_setup(const char *operation, orca_plater &plater, Slic3r::PresetBundle &bundle,
+                                       const orca_calibration &in, Slic3r::Calib_Params &params) {
+    using namespace Slic3r;
+    auto &print = bundle.prints.get_edited_preset().config;
+    auto &printer = bundle.printers.get_edited_preset().config;
+    auto &filament = bundle.filaments.get_edited_preset().config;
+    const double nozzle = orcapad_first_float(printer, "nozzle_diameter", 0.4);
+    ModelObject *obj = plater.model.objects.front();
+    switch (params.mode) {
+    case CalibMode::Calib_PA_Line:
+    case CalibMode::Calib_PA_Tower: {
+        print.set_key_value("overhang_reverse", new ConfigOptionBool(false));
+        print.set_key_value("precise_z_height", new ConfigOptionBool(false));
+        print.set_key_value("wipe_inward", new ConfigOptionBool(false));
+        printer.set_key_value("resonance_avoidance", new ConfigOptionBool{false});
+        if (params.mode == CalibMode::Calib_PA_Line) break;
+        print.set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
+        filament.set_key_value("slow_down_layer_time", new ConfigOptionFloats{1.0f});
+        ModelConfigObject &c = obj->config;
+        c.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));
+        orcapad_calib_max_speed(bundle, "outer_wall_speed");
+        orcapad_calib_max_speed(bundle, "inner_wall_speed");
+        c.set_key_value("seam_position", new ConfigOptionEnum<SeamPosition>(spRear));
+        c.set_key_value("wall_loops", new ConfigOptionInt(2));
+        c.set_key_value("top_shell_layers", new ConfigOptionInt(0));
+        c.set_key_value("bottom_shell_layers", new ConfigOptionInt(0));
+        c.set_key_value("sparse_infill_density", new ConfigOptionPercent(0));
+        c.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btEar));
+        c.set_key_value("brim_object_gap", new ConfigOptionFloat(.0f));
+        c.set_key_value("brim_ears_max_angle", new ConfigOptionFloat(135.f));
+        c.set_key_value("brim_width", new ConfigOptionFloat(6.f));
+        c.set_key_value("seam_slope_type", new ConfigOptionEnum<SeamScarfType>(SeamScarfType::None));
+        print.set_key_value("max_volumetric_extrusion_rate_slope", new ConfigOptionFloat(0));
+        const double height = std::ceil((params.end - params.start) / params.step) + 1;
+        if (height < obj->bounding_box_exact().size().z() &&
+            !orcapad_calib_cut(plater, 0, height, ModelObjectCutAttribute::KeepLower))
+            return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation, "could not cut the tower to the PA range");
+        break;
+    }
+    case CalibMode::Calib_Flow_Rate:
+        // Desktop FlowRateCalibrationDialog's two patterns.
+        orcapad_calib_flow_rate(plater, bundle, in.flow_linear != 0, in.flow_pass,
+                                in.flow_pattern == 1 ? ipMonotonic : ipArchimedeanChords);
+        break;
+    case CalibMode::Calib_Temp_Tower: {
+        constexpr double block_height = 10.0;
+        constexpr int temp_step = 5;
+        const double scale = nozzle / 0.4;
+        // Cut the tower's 500 °C-down blocks to the range: the top first, then the bottom.
+        long blocks = std::lround((500 - params.end) / temp_step + 1);
+        if (blocks > 0) {
+            const double height = blocks * block_height - EPSILON;
+            if (height < plater.model.objects.front()->bounding_box_exact().size().z() &&
+                !orcapad_calib_cut(plater, 0, height, ModelObjectCutAttribute::KeepLower))
+                return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation, "could not cut the tower top");
+        }
+        blocks = std::lround((500 - params.start) / temp_step);
+        if (blocks > 0) {
+            const double height = blocks * block_height + EPSILON;
+            if (height < plater.model.objects.front()->bounding_box_exact().size().z() &&
+                !orcapad_calib_cut(plater, 0, height, ModelObjectCutAttribute::KeepUpper))
+                return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation, "could not cut the tower bottom");
+        }
+        obj = plater.model.objects.front();
+        if (params.nozzle_based_resize && std::abs(scale - 1.0) > EPSILON) obj->scale(scale, scale, scale);
+        obj->ensure_on_bed();
+        printer.set_key_value("resonance_avoidance", new ConfigOptionBool{false});
+        orcapad_set_all<ConfigOptionInts>(filament, "nozzle_temperature_initial_layer", int(std::lround(params.start)));
+        orcapad_set_all<ConfigOptionInts>(filament, "nozzle_temperature", int(std::lround(params.start)));
+        ModelConfigObject &c = obj->config;
+        if (params.nozzle_based_resize) c.set_key_value("layer_height", new ConfigOptionFloat(nozzle / 2));
+        c.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btOuterOnly));
+        c.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+        c.set_key_value("brim_object_gap", new ConfigOptionFloat(0.0));
+        c.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));
+        c.set_key_value("seam_slope_type", new ConfigOptionEnum<SeamScarfType>(SeamScarfType::None));
+        c.set_key_value("overhang_reverse", new ConfigOptionBool(false));
+        c.set_key_value("precise_z_height", new ConfigOptionBool(false));
+        print.set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
+        if (params.nozzle_based_resize) print.set_key_value("initial_layer_print_height", new ConfigOptionFloat(nozzle / 2));
+        break;
+    }
+    case CalibMode::Calib_Vol_speed_Tower: {
+        const auto &bed = printer.option<ConfigOptionPoints>("printable_area")->values;
+        const BoundingBoxf bed_box = get_extents(bed);
+        const double fit = (bed_box.size().x() - 10) / obj->bounding_box_exact().size().x();
+        if (fit < 1.0) obj->scale(fit, 1, 1);
+        const double width = nozzle * 1.75;
+        const double layer = nozzle * 0.8;
+        if (auto *max_layer = printer.option<ConfigOptionFloats>("max_layer_height"))
+            for (double &v : max_layer->values) v = std::max(v, layer);
+        orcapad_set_all<ConfigOptionFloats>(filament, "filament_max_volumetric_speed",
+                                            std::max(orcapad_first_float(filament, "filament_max_volumetric_speed", 0), 200.0));
+        filament.set_key_value("slow_down_layer_time", new ConfigOptionFloats{0.0});
+        printer.set_key_value("resonance_avoidance", new ConfigOptionBool{false});
+        ModelConfigObject &c = obj->config;
+        c.set_key_value("enable_overhang_speed", new ConfigOptionBoolsNullable(1, false));
+        c.set_key_value("wall_loops", new ConfigOptionInt(1));
+        c.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));
+        c.set_key_value("top_shell_layers", new ConfigOptionInt(0));
+        c.set_key_value("bottom_shell_layers", new ConfigOptionInt(0));
+        c.set_key_value("sparse_infill_density", new ConfigOptionPercent(0));
+        c.set_key_value("outer_wall_line_width", new ConfigOptionFloatOrPercent(width, false));
+        c.set_key_value("layer_height", new ConfigOptionFloat(layer));
+        c.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btOuterAndInner));
+        c.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+        c.set_key_value("brim_object_gap", new ConfigOptionFloat(0.0));
+        c.set_key_value("precise_z_height", new ConfigOptionBool(false));
+        print.set_key_value("timelapse_type", new ConfigOptionEnum<TimelapseType>(tlTraditional));
+        print.set_key_value("spiral_mode", new ConfigOptionBool(true));
+        print.set_key_value("max_volumetric_extrusion_rate_slope", new ConfigOptionFloat(0));
+        print.set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
+        const double height = (params.end - params.start + 1) / params.step;
+        if (height < obj->bounding_box_exact().size().z() &&
+            !orcapad_calib_cut(plater, 0, height, ModelObjectCutAttribute::KeepLower))
+            return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation, "could not cut the tower to the speed range");
+        // G-code steps speed, so the volumetric range becomes mm/s at this flow.
+        const double mm3_per_mm = Flow(float(width), float(layer), float(nozzle)).mm3_per_mm() *
+                                  orcapad_first_float(filament, "filament_flow_ratio", 1.0);
+        params.start /= mm3_per_mm;
+        params.end /= mm3_per_mm;
+        params.step /= mm3_per_mm;
+        break;
+    }
+    case CalibMode::Calib_VFA_Tower: {
+        const double layer = params.vfa_layer_height > 0.0 ? params.vfa_layer_height : nozzle / 2.0;
+        const double height = vfa_base_block_height * ((params.end - params.start) / params.step + 1) - EPSILON;
+        if (height < obj->bounding_box_exact().size().z() &&
+            !orcapad_calib_cut(plater, 0, height, ModelObjectCutAttribute::KeepLower))
+            return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation, "could not cut the tower to the speed range");
+        obj = plater.model.objects.front();
+        if (params.nozzle_based_resize) {
+            const double xy = nozzle / vfa_base_nozzle_diameter;
+            const double z = (vfa_layers_per_block * layer) / vfa_base_block_height;
+            if (std::abs(xy - 1.0) > EPSILON || std::abs(z - 1.0) > EPSILON) obj->scale(xy, xy, z);
+        }
+        obj->ensure_on_bed();
+        printer.set_key_value("resonance_avoidance", new ConfigOptionBool{false});
+        filament.set_key_value("slow_down_layer_time", new ConfigOptionFloats{0.0});
+        orcapad_set_all<ConfigOptionBoolsNullable>(print, "enable_overhang_speed", false);
+        print.set_key_value("timelapse_type", new ConfigOptionEnum<TimelapseType>(tlTraditional));
+        print.set_key_value("wall_loops", new ConfigOptionInt(1));
+        print.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));
+        print.set_key_value("top_shell_layers", new ConfigOptionInt(0));
+        print.set_key_value("bottom_shell_layers", new ConfigOptionInt(1));
+        print.set_key_value("sparse_infill_density", new ConfigOptionPercent(0));
+        print.set_key_value("detect_thin_wall", new ConfigOptionBool(false));
+        print.set_key_value("spiral_mode", new ConfigOptionBool(true));
+        print.set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
+        print.set_key_value("precise_z_height", new ConfigOptionBool(false));
+        if (params.nozzle_based_resize) {
+            print.set_key_value("initial_layer_print_height", new ConfigOptionFloat(layer));
+            obj->config.set_key_value("layer_height", new ConfigOptionFloat(layer));
+        }
+        obj->config.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btOuterOnly));
+        obj->config.set_key_value("brim_width", new ConfigOptionFloat(3.0));
+        obj->config.set_key_value("brim_object_gap", new ConfigOptionFloat(0.0));
+        params.vfa_layer_height = params.nozzle_based_resize ? layer : 0.0;
+        break;
+    }
+    case CalibMode::Calib_Retraction_tower: {
+        print.set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
+        print.set_key_value("wipe_inward", new ConfigOptionBool(false));
+        const double layer = nozzle <= 0.1 ? 0.05 : nozzle <= 0.2 ? 0.1 : 0.2;
+        if (auto *max_layer = printer.option<ConfigOptionFloats>("max_layer_height"))
+            for (double &v : max_layer->values) v = std::max(v, layer);
+        printer.set_key_value("resonance_avoidance", new ConfigOptionBool{false});
+        printer.set_key_value("use_firmware_retraction", new ConfigOptionBool(false));
+        ModelConfigObject &c = obj->config;
+        c.set_key_value("wall_loops", new ConfigOptionInt(2));
+        c.set_key_value("top_shell_layers", new ConfigOptionInt(0));
+        c.set_key_value("bottom_shell_layers", new ConfigOptionInt(3));
+        c.set_key_value("sparse_infill_density", new ConfigOptionPercent(0));
+        print.set_key_value("initial_layer_print_height", new ConfigOptionFloat(layer));
+        c.set_key_value("layer_height", new ConfigOptionFloat(layer));
+        c.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));
+        c.set_key_value("seam_position", new ConfigOptionEnum<SeamPosition>(spAligned));
+        c.set_key_value("wall_sequence", new ConfigOptionEnum<WallSequence>(WallSequence::InnerOuter));
+        c.set_key_value("overhang_reverse", new ConfigOptionBool(false));
+        c.set_key_value("precise_z_height", new ConfigOptionBool(false));
+        c.set_key_value("seam_slope_type", new ConfigOptionEnum<SeamScarfType>(SeamScarfType::None));
+        const double height = 1.0 + 0.4 + (params.end - params.start) / params.step - EPSILON;
+        if (height < obj->bounding_box_exact().size().z() &&
+            !orcapad_calib_cut(plater, 0, height, ModelObjectCutAttribute::KeepLower))
+            return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation, "could not cut the tower to the length range");
+        break;
+    }
+    default:
+        break;
+    }
+    return orcapad_ok();
+}
+
+orca_result orca_plater_start_calibration(orca_plater *plater, orca_presets *presets,
+                                          const orca_calibration *calibration, const char *model_path,
+                                          orca_revision *out_revision) {
+    constexpr const char *operation = "orca_plater_start_calibration";
+    if (out_revision) *out_revision = 0;
+    if (!plater || !presets)
+        return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, operation, "plater or presets handle is null");
+    if (!calibration || !model_path || !model_path[0] || !out_revision)
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "calibration, model path or output pointer is missing");
+    const orca_calibration &in = *calibration;
+    using Slic3r::CalibMode;
+    const CalibMode mode = static_cast<CalibMode>(in.mode);
+    switch (mode) {
+    case CalibMode::Calib_PA_Line:
+    case CalibMode::Calib_PA_Tower:
+    case CalibMode::Calib_Flow_Rate:
+    case CalibMode::Calib_Temp_Tower:
+    case CalibMode::Calib_Vol_speed_Tower:
+    case CalibMode::Calib_VFA_Tower:
+    case CalibMode::Calib_Retraction_tower:
+        break;
+    default:
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "mode must be PA line or tower, flow rate, temperature, volumetric speed, VFA or retraction");
+    }
+    if (!std::isfinite(in.start) || !std::isfinite(in.end) || !std::isfinite(in.step) ||
+        !std::isfinite(in.vfa_layer_height))
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation, "range contains a non-finite value");
+    if (mode == CalibMode::Calib_Flow_Rate) {
+        if (in.flow_pass != 1 && in.flow_pass != 2)
+            return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation, "flow rate pass must be 1 or 2");
+        if (in.flow_pattern < 0 || in.flow_pattern > 1)
+            return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                                "top surface pattern must be 0 (Archimedean chords) or 1 (monotonic)");
+    } else if (mode == CalibMode::Calib_Temp_Tower) {
+        // Desktop Temp_Calibration_Dlg limits.
+        if (in.start > 500 || in.end < 155 || in.end > in.start - 5)
+            return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                                "start must be at most 500, end at least 155 and 5 below the start");
+    } else if (in.step <= 0.0 || in.end <= in.start || in.start < 0.0) {
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "start must be at least 0, the step positive and the end above the start");
+    }
+    struct stat path_status;
+    if (stat(model_path, &path_status) != 0)
+        return orcapad_fail(ORCA_STATUS_IO_FAILURE, operation, "calibration model is not accessible");
+
+    return orcapad_guard(operation, [&]() -> orca_result {
+        if (!orcapad_revision_available(*plater))
+            return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation, "document revision is exhausted");
+        Slic3r::Model temporary;
+        const orca_result read = orcapad_read_import(operation, model_path,
+                                                     plater->bed_origin_x + plater->bed_width / 2,
+                                                     plater->bed_origin_y + plater->bed_depth / 2, temporary);
+        if (read.code != ORCA_STATUS_OK) return read;
+
+        Slic3r::Calib_Params params;
+        params.mode = mode;
+        params.start = in.start;
+        params.end = in.end;
+        params.step = mode == CalibMode::Calib_Temp_Tower ? 5.0 : in.step;
+        params.print_numbers = in.print_numbers != 0;
+        params.nozzle_based_resize = in.nozzle_based_resize != 0;
+        params.vfa_layer_height = in.vfa_layer_height;
+
+        // Desktop new_project: the test replaces the document.
+        OrcapadMutation mutation(*plater, "Calibration");
+        plater->model.clear_objects();
+        plater->mesh_revisions.clear();
+        for (const Slic3r::ModelObject *source : temporary.objects) {
+            Slic3r::ModelObject *object = plater->model.add_object(*source);
+            if (!object || !orcapad_register_object(*plater, *object))
+                return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
+                                    "engine did not create the calibration object");
+        }
+        const orca_result set_up = orcapad_calib_setup(operation, *plater, *presets->bundle, in, params);
+        if (set_up.code != ORCA_STATUS_OK) return set_up;
+        for (Slic3r::ModelObject *object : plater->model.objects) orcapad_touch_object(*plater, object->id().id);
+        plater->calib = params;
+        *out_revision = mutation.commit();
+        return orcapad_ok();
+    });
+}
+
+orca_result orca_plater_calibration(const orca_plater *plater, orca_calibration *out) {
+    constexpr const char *operation = "orca_plater_calibration";
+    if (out) *out = orca_calibration{};
+    if (!plater) return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, operation, "plater handle is null");
+    if (!out) return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation, "output pointer is null");
+    const Slic3r::Calib_Params &c = plater->calib;
+    out->mode = static_cast<int32_t>(c.mode);
+    out->start = c.start;
+    out->end = c.end;
+    out->step = c.step;
+    out->print_numbers = c.print_numbers ? 1 : 0;
+    out->nozzle_based_resize = c.nozzle_based_resize ? 1 : 0;
+    out->vfa_layer_height = c.vfa_layer_height;
+    return orcapad_ok();
+}
+
+orca_result orca_plater_calibration_clear(orca_plater *plater) {
+    if (!plater)
+        return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, "orca_plater_calibration_clear", "plater handle is null");
+    plater->calib = Slic3r::Calib_Params();
+    return orcapad_ok();
 }
 
 orca_result orca_plater_object_cut_connectors_clear(
@@ -7743,6 +8231,7 @@ orca_result orca_plater_slice_to_gcode(orca_plater *plater,
         print.set_plate_origin(
             orcapad_plate_origin(*plater, plater->current_plate));
         print.set_plate_index(plater->current_plate);
+        print.set_calib_params(plater->calib);
         orcapad_clamp_current_plate(*plater);
         print.set_plate_name(
             plater->plates[static_cast<size_t>(plater->current_plate)].name);
@@ -7793,6 +8282,7 @@ orca_result orca_plater_slice_to_gcode_with_presets(
         print.set_plate_origin(
             orcapad_plate_origin(*plater, plater->current_plate));
         print.set_plate_index(plater->current_plate);
+        print.set_calib_params(plater->calib);
         orcapad_clamp_current_plate(*plater);
         print.set_plate_name(
             plater->plates[static_cast<size_t>(plater->current_plate)].name);
@@ -7892,6 +8382,7 @@ static orca_result orcapad_slice_plate(
     // Desktop PartPlate::set_print: plate origin/index/name per plate.
     print.set_plate_origin(orcapad_plate_origin(plater, plate_index));
     print.set_plate_index(plate_index);
+    print.set_calib_params(plater.calib);
     print.set_plate_name(plate.name);
 
     const std::string temp =
@@ -8820,6 +9311,7 @@ orca_result orca_project_open(orca_plater *plater, orca_presets *presets,
         //    (unlocked membership derives from the absolute positions).
         plater->model = std::move(loaded);
         plater->mesh_revisions.swap(revisions);
+        plater->calib = Slic3r::Calib_Params();  // an opened project is not a test
         plater->next_mesh_revision = next_mesh_revision;
         plater->undo.clear();
         plater->redo.clear();

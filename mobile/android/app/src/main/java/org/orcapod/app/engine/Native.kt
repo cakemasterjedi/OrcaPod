@@ -108,6 +108,9 @@ internal object Native {
     external fun heightProfileAdaptive(plater: Long, presets: Long, objectId: Long, quality: Double): DoubleArray
     external fun heightProfileSmooth(plater: Long, presets: Long, objectId: Long, radius: Int, keepMin: Boolean): DoubleArray
     external fun heightProfileAdjust(plater: Long, presets: Long, objectId: Long, z: Double, delta: Double, band: Double, action: Int)
+    external fun calibrationStart(plater: Long, presets: Long, ints: IntArray, doubles: DoubleArray, model: String)
+    external fun calibration(plater: Long): DoubleArray
+    external fun calibrationClear(plater: Long)
     external fun measureCreate(plater: Long, objectId: Long): Long
     external fun measureFree(measure: Long)
     external fun measurePick(measure: Long, face: Int, x: Double, y: Double, z: Double): DoubleArray?

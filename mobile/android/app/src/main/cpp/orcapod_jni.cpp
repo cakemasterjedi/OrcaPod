@@ -1222,6 +1222,47 @@ JNI_FN(jdoubleArray, measureBetween)(JNIEnv *env, jobject, jlong m, jdoubleArray
     return arr;
 }
 
+// --- calibration (desktop Calibration menu) ----------------------------------------
+
+/** ints: mode, flow pass, flow pattern, print numbers, nozzle resize, flow linear; doubles: start, end, step, VFA layer. */
+JNI_FN(void, calibrationStart)(JNIEnv *env, jobject, jlong pl, jlong pr, jintArray ints, jdoubleArray doubles, jstring model)
+{
+    jint i[6] = {};
+    jdouble d[4] = {};
+    env->GetIntArrayRegion(ints, 0, 6, i);
+    env->GetDoubleArrayRegion(doubles, 0, 4, d);
+    orca_calibration c{};
+    c.mode = i[0];
+    c.flow_pass = i[1];
+    c.flow_pattern = i[2];
+    c.print_numbers = uint8_t(i[3] != 0);
+    c.nozzle_based_resize = uint8_t(i[4] != 0);
+    c.flow_linear = uint8_t(i[5] != 0);
+    c.start = d[0];
+    c.end = d[1];
+    c.step = d[2];
+    c.vfa_layer_height = d[3];
+    const char *path = env->GetStringUTFChars(model, nullptr);
+    orca_revision rev = 0;
+    check(env, orca_plater_start_calibration(plater_of(pl), presets_of(pr), &c, path, &rev));
+    env->ReleaseStringUTFChars(model, path);
+}
+
+/** mode, start, end, step of the document's test. */
+JNI_FN(jdoubleArray, calibration)(JNIEnv *env, jobject, jlong pl)
+{
+    orca_calibration c{};
+    if (!check(env, orca_plater_calibration(plater_of(pl), &c)))
+        return nullptr;
+    const double v[4] = {double(c.mode), c.start, c.end, c.step};
+    jdoubleArray out = env->NewDoubleArray(4);
+    if (out)
+        env->SetDoubleArrayRegion(out, 0, 4, v);
+    return out;
+}
+
+JNI_FN(void, calibrationClear)(JNIEnv *env, jobject, jlong pl) { check(env, orca_plater_calibration_clear(plater_of(pl))); }
+
 JNI_FN(jint, splitParts)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol)
 {
     uint32_t count = 0;

@@ -22,6 +22,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <set>
 #include <string>
 #include <sys/stat.h>
 #include <thread>
@@ -276,7 +278,7 @@ static void test_md5_shim() {
 
 static void test_abi_version() {
     CHECK_EQ(orca_bridge_abi_version(), ORCA_BRIDGE_ABI_VERSION);
-    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 43);
+    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 44);
 }
 
 struct ProgressRecord {
@@ -5359,6 +5361,150 @@ static void test_gcode_toolpath(const std::string &dir) {
     orca_gcode_free(nullptr);
 }
 
+// ABI v44: desktop calibration tests (Plater::calib_*).
+static std::string calib_model(const char *name) {
+    const char *profiles = getenv("ORCAPAD_TEST_PROFILES_DIR");
+    // resources/profiles -> mobile/android/app/src/main/assets/calib
+    return std::string(profiles ? profiles : ".") +
+           "/../../mobile/android/app/src/main/assets/calib/" + name;
+}
+
+static std::string resolved_value(orca_presets *presets, const char *key) {
+    orca_owned_string json{};
+    if (orca_presets_resolved_config(presets, &json).code != ORCA_STATUS_OK || !json.data) return {};
+    const std::string body(json.data, size_t(json.length));
+    orca_owned_string_dispose(&json);
+    const std::string needle = std::string("\"") + key + "\":\"";
+    size_t at = body.find(needle);
+    if (at == std::string::npos) {
+        at = body.find(std::string("\"") + key + "\": \"");
+        if (at == std::string::npos) return {};
+        at += strlen(key) + 5;
+    } else {
+        at += needle.size();
+    }
+    return body.substr(at, body.find('"', at) - at);
+}
+
+static float object_height(orca_plater *plater, int32_t index) {
+    orca_scene_snapshot snapshot{};
+    if (orca_plater_snapshot(plater, &snapshot).code != ORCA_STATUS_OK) return -1;
+    float h = -1;
+    if (index < snapshot.object_count) {
+        const orca_scene_object &o = snapshot.objects[index];
+        const double *m = o.instances[0].matrix;
+        h = (o.bbox_max[2] - o.bbox_min[2]) * float(m[10]);
+    }
+    orca_scene_snapshot_dispose(&snapshot);
+    return h;
+}
+
+static void test_calibration(const std::string &dir, const std::string &data_dir) {
+    orca_presets *presets = nullptr;
+    GUARD(c0, orca_presets_new(data_dir.c_str(), &presets));
+    expect_ok(c0, "presets_new");
+    GUARD(c1, orca_presets_select(presets, "Bambu Lab X1 Carbon 0.4 nozzle",
+                                  "Bambu PLA Basic @BBL X1C", "0.20mm Standard @BBL X1C"));
+    expect_ok(c1, "select X1C triple");
+    orca_plater *plater = nullptr;
+    GUARD(c2, orca_plater_new(&plater));
+    expect_ok(c2, "plater_new");
+    orca_revision revision = 0;
+
+    orca_calibration none{};
+    GUARD(c3, orca_plater_calibration(plater, &none));
+    expect_ok(c3, "calibration of a plain document");
+    CHECK_EQ(none.mode, ORCA_CALIB_NONE);
+
+    // Desktop dialog limits.
+    orca_calibration bad{};
+    bad.mode = ORCA_CALIB_TEMP_TOWER;
+    bad.start = 190;
+    bad.end = 230;
+    GUARD(e1, orca_plater_start_calibration(plater, presets, &bad, calib_model("temperature_tower.3mf").c_str(), &revision));
+    expect_code(e1, ORCA_STATUS_INVALID_ARGUMENT, "temperature tower going up");
+    bad.mode = 2 /* desktop PA pattern */;
+    GUARD(e2, orca_plater_start_calibration(plater, presets, &bad, calib_model("pa_tower.3mf").c_str(), &revision));
+    expect_code(e2, ORCA_STATUS_INVALID_ARGUMENT, "PA pattern is not offered");
+
+    // Temperature tower 230 -> 190 C: nine 10 mm blocks, filament at the start temperature.
+    orca_calibration temp{};
+    temp.mode = ORCA_CALIB_TEMP_TOWER;
+    temp.start = 230;
+    temp.end = 190;
+    temp.nozzle_based_resize = 1;
+    GUARD(t1, orca_plater_start_calibration(plater, presets, &temp, calib_model("temperature_tower.3mf").c_str(), &revision));
+    expect_ok(t1, "temperature tower");
+    CHECK_NEAR(object_height(plater, 0), 90.0, 0.5);
+    CHECK(resolved_value(presets, "nozzle_temperature") == "230");
+    orca_calibration kept{};
+    GUARD(t2, orca_plater_calibration(plater, &kept));
+    expect_ok(t2, "kept calibration");
+    CHECK_EQ(kept.mode, ORCA_CALIB_TEMP_TOWER);
+    CHECK_NEAR(kept.step, 5.0, 1e-9);
+
+    // Flow rate pass 1: nine plates, each with its own flow ratio; ten 0.2 mm layers.
+    orca_calibration flow{};
+    flow.mode = ORCA_CALIB_FLOW_RATE;
+    flow.flow_pass = 1;
+    GUARD(f1, orca_plater_start_calibration(plater, presets, &flow, calib_model("flowrate_pass1.3mf").c_str(), &revision));
+    expect_ok(f1, "flow rate pass 1");
+    orca_scene_snapshot snapshot{};
+    GUARD(f2, orca_plater_snapshot(plater, &snapshot));
+    expect_ok(f2, "flow snapshot");
+    CHECK_EQ(snapshot.object_count, 9);
+    for (int32_t i = 0; i < snapshot.object_count; ++i) CHECK(snapshot.objects[i].override_count > 20);
+    orca_scene_snapshot_dispose(&snapshot);
+    CHECK(resolved_value(presets, "layer_height") == "0.2");
+    CHECK_NEAR(object_height(plater, 0), 2.0, 0.05);
+
+    // PA tower 0 -> 0.1 by 0.002: a 51 mm tower whose G-code steps PA.
+    orca_calibration pa{};
+    pa.mode = ORCA_CALIB_PA_TOWER;
+    pa.start = 0;
+    pa.end = 0.1;
+    pa.step = 0.002;
+    GUARD(p1, orca_plater_start_calibration(plater, presets, &pa, calib_model("pa_tower.3mf").c_str(), &revision));
+    expect_ok(p1, "PA tower");
+    CHECK_NEAR(object_height(plater, 0), 51.0, 0.5);
+    orca_slice_report report;
+    const std::string gcode = dir + "/calib_pa_tower.gcode";
+    GUARD(p2, orca_plater_slice_to_gcode_with_presets(plater, presets, gcode.c_str(), nullptr, nullptr, nullptr, &report));
+    expect_ok(p2, "slice PA tower");
+    orca_slice_report_dispose(&report);
+    std::ifstream in(gcode);
+    std::set<std::string> pa_commands;
+    for (std::string line; std::getline(in, line);)
+        if (line.rfind("M900 K", 0) == 0 || line.rfind("SET_PRESSURE_ADVANCE", 0) == 0) pa_commands.insert(line);
+    CHECK(pa_commands.size() > 20); // one PA per step up the tower
+
+    // The other towers set up with desktop's defaults.
+    struct Tower { int32_t mode; double start, end, step; const char *model; float height; } towers[] = {
+        {ORCA_CALIB_VOLUMETRIC_SPEED, 5, 20, 0.5, "volumetric_speed.3mf", 32.0f},
+        {ORCA_CALIB_VFA, 40, 200, 10, "vfa.3mf", 85.0f},
+        {ORCA_CALIB_RETRACTION, 0, 2, 0.1, "retraction_tower.3mf", 21.4f},
+    };
+    for (const Tower &t : towers) {
+        orca_calibration c{};
+        c.mode = t.mode;
+        c.start = t.start;
+        c.end = t.end;
+        c.step = t.step;
+        c.nozzle_based_resize = 1;
+        GUARD(tw, orca_plater_start_calibration(plater, presets, &c, calib_model(t.model).c_str(), &revision));
+        expect_ok(tw, t.model);
+        CHECK_NEAR(object_height(plater, 0), t.height, 0.5);
+    }
+
+    GUARD(x1, orca_plater_clear(plater, &revision));
+    expect_ok(x1, "clear ends the test");
+    GUARD(x2, orca_plater_calibration(plater, &kept));
+    expect_ok(x2, "calibration after clear");
+    CHECK_EQ(kept.mode, ORCA_CALIB_NONE);
+    orca_plater_free(plater);
+    orca_presets_free(presets);
+}
+
 int main() {
     const std::string dir = test_dir();
     // One data directory per PROCESS (the Bridge contract is initialize-once).
@@ -5413,6 +5559,7 @@ int main() {
     test_physical_printers(data_dir);
     test_arrange_orient(dir, data_dir);
     test_gcode_toolpath(dir);
+    test_calibration(dir, data_dir);
 
     fprintf(stderr, "\n═══ contract tests: %d checks, %d failures ═══\n",
             checks, failures);

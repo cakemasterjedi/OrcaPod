@@ -271,6 +271,19 @@ class Engine private constructor(private var presets: Long, private val plater: 
     suspend fun adjustHeightProfile(objectId: Long, z: Double, delta: Double, band: Double, action: Int) =
         onEngine { Native.heightProfileAdjust(plater, presets, objectId, z, delta, band, action) }
 
+    /** Desktop Plater::calib_*: replaces the document with [test]'s model at [modelPath] and sets the test up. */
+    suspend fun startCalibration(test: CalibrationTest, start: Double, end: Double, step: Double,
+                                 printNumbers: Boolean, resize: Boolean, modelPath: String) = onEngine {
+        endMeasureNow()
+        val ints = intArrayOf(test.mode, test.flowPass, test.flowPattern, if (printNumbers) 1 else 0, if (resize) 1 else 0, if (test.flowLinear) 1 else 0)
+        Native.calibrationStart(plater, presets, ints, doubleArrayOf(start, end, step, 0.0), modelPath)
+    }
+
+    /** The test the document is set up for, by engine mode (0 for none), with its range. */
+    suspend fun calibration(): DoubleArray = onEngine { Native.calibration(plater) }
+
+    suspend fun clearCalibration() = onEngine { Native.calibrationClear(plater) }
+
     /** The measure context of one object's mesh revision; building it segments the mesh, so it is kept. */
     private var measure: Triple<Long, Long, Long>? = null
 

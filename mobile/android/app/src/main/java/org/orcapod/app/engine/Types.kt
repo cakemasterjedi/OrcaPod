@@ -415,3 +415,47 @@ class Measurement(
         )
     }
 }
+
+/**
+ * Desktop's Calibration menu tests the engine sets up: the engine mode
+ * (CalibMode), the model shipped in assets/calib, the dialog's default range
+ * and its unit. Flow rate passes are separate entries, as in the menu.
+ */
+enum class CalibrationTest(
+    val label: String,
+    val mode: Int,
+    val model: String,
+    val start: Double,
+    val end: Double,
+    val step: Double,
+    val unit: String,
+    val flowPass: Int = 0,
+    val flowLinear: Boolean = false,
+    val flowPattern: Int = 0,
+) {
+    TEMPERATURE("Temperature tower", 6, "temperature_tower.3mf", 230.0, 190.0, 5.0, "°C"),
+    FLOW_PASS_1("Flow rate: pass 1", 5, "flowrate_pass1.3mf", 0.0, 0.0, 0.0, "", flowPass = 1),
+    FLOW_PASS_2("Flow rate: pass 2", 5, "flowrate_pass2.3mf", 0.0, 0.0, 0.0, "", flowPass = 2),
+    FLOW_YOLO("Flow rate: YOLO", 5, "flowrate_yolo.3mf", 0.0, 0.0, 0.0, "", flowPass = 1, flowLinear = true),
+    FLOW_YOLO_FINE("Flow rate: YOLO (perfectionist)", 5, "flowrate_yolo_fine.3mf", 0.0, 0.0, 0.0, "", flowPass = 2, flowLinear = true),
+    PA_TOWER("Pressure advance: tower", 3, "pa_tower.3mf", 0.0, 0.1, 0.002, ""),
+    PA_LINE("Pressure advance: line", 1, "pa_line.3mf", 0.0, 0.1, 0.002, ""),
+    VOLUMETRIC_SPEED("Max volumetric speed", 7, "volumetric_speed.3mf", 5.0, 20.0, 0.5, "mm³/s"),
+    VFA("VFA", 8, "vfa.3mf", 40.0, 200.0, 10.0, "mm/s"),
+    RETRACTION("Retraction test", 9, "retraction_tower.3mf", 0.0, 2.0, 0.1, "mm");
+
+    val hasRange get() = mode != 5
+    val isFlow get() = mode == 5
+
+    companion object {
+        /** Desktop Temp_Calibration_Dlg ranges by filament type. */
+        fun temperatureRange(filamentType: String): Pair<Double, Double> = when (filamentType.uppercase()) {
+            "ABS", "ASA" -> 270.0 to 230.0
+            "PETG" -> 250.0 to 230.0
+            "PCTG" -> 280.0 to 240.0
+            "TPU" -> 240.0 to 210.0
+            "PA-CF", "PET-CF", "PA", "PAHT-CF" -> 320.0 to 280.0
+            else -> 230.0 to 190.0
+        }
+    }
+}

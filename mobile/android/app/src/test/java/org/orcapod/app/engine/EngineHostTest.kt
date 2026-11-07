@@ -533,6 +533,29 @@ class EngineHostTest {
         e.endMeasure()
     }
 
+    @Test
+    fun u_setsUpCalibration() = runBlocking {
+        val assets = File("src/main/assets/calib")
+        assumeTrue("calibration models are in the app assets", assets.isDirectory)
+        val t = CalibrationTest.TEMPERATURE
+        e.startCalibration(t, 230.0, 190.0, 5.0, printNumbers = false, resize = true, modelPath = File(assets, t.model).path)
+        val c = e.calibration()
+        assertEquals(t.mode, c[0].toInt())
+        assertEquals(230.0, c[1], 1e-9)
+        val obj = e.scene().snapshot.objects.single()
+        val b = worldBounds(e.scene().meshes.getValue(obj.id).positions, obj.instances.first().matrix)
+        assertEquals(90f, b[5] - b[2], 0.5f)
+        assertTrue(e.presetConfig(PresetKind.FILAMENT, edited = true).contains("230"))
+        val flow = CalibrationTest.FLOW_PASS_1
+        e.startCalibration(flow, 0.0, 0.0, 0.0, printNumbers = false, resize = false, modelPath = File(assets, flow.model).path)
+        assertEquals(9, e.scene().snapshot.objects.size)
+        e.clearCalibration()
+        assertEquals(0, e.calibration()[0].toInt())
+        e.resetEdits(PresetKind.PROCESS)
+        e.resetEdits(PresetKind.FILAMENT)
+        e.resetEdits(PresetKind.PRINTER)
+    }
+
     private suspend fun layerHeight() =
         Regex("\"layer_height\"\\s*:\\s*\"([^\"]*)\"").find(e.resolvedConfig())?.groupValues?.get(1)
 

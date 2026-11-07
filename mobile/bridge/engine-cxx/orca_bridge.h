@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 /// Version of the C ABI contract in this header. Callers verify it at runtime.
-#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)43)
+#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)44)
 
 typedef int32_t orca_status_code;
 #define ORCA_STATUS_OK                     ((orca_status_code)0)
@@ -581,6 +581,52 @@ orca_result orca_plater_object_height_profile_adjust(
     orca_plater *plater, orca_presets *presets, orca_object_id object_id,
     double z, double thickness_delta, double band_width, int32_t action,
     orca_revision *out_revision);
+
+// --- calibration (desktop Calibration menu, ABI v44) ---------------------------
+
+/// Desktop calibration modes (CalibMode) the bridge can set up.
+#define ORCA_CALIB_NONE              ((int32_t)0)
+#define ORCA_CALIB_PA_LINE           ((int32_t)1)
+#define ORCA_CALIB_PA_TOWER          ((int32_t)3)
+#define ORCA_CALIB_FLOW_RATE         ((int32_t)5)
+#define ORCA_CALIB_TEMP_TOWER        ((int32_t)6)
+#define ORCA_CALIB_VOLUMETRIC_SPEED  ((int32_t)7)
+#define ORCA_CALIB_VFA               ((int32_t)8)
+#define ORCA_CALIB_RETRACTION        ((int32_t)9)
+
+/// One test's parameters (desktop Calib_Params and its dialogs). start,
+/// end and step are the tested range in the mode's unit: PA, degrees C
+/// (start hotter; the step is always 5), mm3/s, mm/s or mm.
+typedef struct {
+    int32_t mode;                 // ORCA_CALIB_*
+    int32_t flow_pass;            // flow rate: 1 or 2
+    double start, end, step;
+    uint8_t print_numbers;        // PA line: print the PA values
+    uint8_t nozzle_based_resize;  // temperature tower, VFA: scale to the nozzle
+    uint8_t flow_linear;          // flow rate: Orca YOLO (pass 2 = perfectionist)
+    uint8_t reserved;
+    int32_t flow_pattern;         // flow rate top surface: 0 Archimedean chords, 1 monotonic
+    double vfa_layer_height;      // VFA: 0 = nozzle diameter / 2
+} orca_calibration;
+
+/// Desktop Plater::calib_*: replaces the document with the test model at
+/// `model_path` (the desktop resources/calib file, as STL or 3MF), edits
+/// the session's edited print, filament and printer presets and the
+/// objects' settings as desktop does, cuts the model to the tested range,
+/// and keeps the parameters so slicing this plater generates the test.
+/// One undo step "Calibration"; the preset edits are not undone.
+orca_result orca_plater_start_calibration(orca_plater *plater, orca_presets *presets,
+                                          const orca_calibration *calibration,
+                                          const char *model_path,
+                                          orca_revision *out_revision);
+
+/// The test the document was set up for; mode ORCA_CALIB_NONE otherwise.
+/// Flow rate pass, linear and pattern are not kept (they only shape setup).
+orca_result orca_plater_calibration(const orca_plater *plater, orca_calibration *out);
+
+/// Slices this plater as an ordinary document again. orca_plater_clear
+/// also ends the test.
+orca_result orca_plater_calibration_clear(orca_plater *plater);
 
 // --- per-plate settings (desktop PlateSettingsDialog, ABI v41) -----------------
 

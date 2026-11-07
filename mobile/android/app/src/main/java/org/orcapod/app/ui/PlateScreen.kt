@@ -76,6 +76,7 @@ fun PlateScreen(vm: AppViewModel) {
     var filamentSlots by remember { mutableStateOf(false) }
     var shapeMenu by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
+    var calibrating by remember { mutableStateOf(false) }
     var layFlat by remember { mutableStateOf(false) }
     var viewRef by remember { mutableStateOf<PlateView?>(null) }
 
@@ -168,6 +169,7 @@ fun PlateScreen(vm: AppViewModel) {
                                 onClick = { menuOpen = false; exportStl.launch("plate.stl") },
                             )
                             HorizontalDivider()
+                            DropdownMenuItem(text = { Text("Calibration…") }, onClick = { menuOpen = false; calibrating = true })
                             DropdownMenuItem(
                                 text = { Text("Clear plate") },
                                 enabled = hasObjects,
@@ -256,6 +258,10 @@ fun PlateScreen(vm: AppViewModel) {
                             ObjectPanel(vm, sel, layFlat = layFlat, onLayFlat = { layFlat = !layFlat }, onEdit = { objectSheet = sel })
                             Spacer(Modifier.height(8.dp))
                         }
+                        if (vm.calibration != null) {
+                            CalibrationBanner(vm)
+                            Spacer(Modifier.height(8.dp))
+                        }
                         ActionBar(
                             hasObjects = vm.scene.snapshot.objects.isNotEmpty(),
                             hasResult = done != null,
@@ -297,6 +303,7 @@ fun PlateScreen(vm: AppViewModel) {
     settingsFor?.let { kind -> SettingsScreen(vm, kind) { settingsFor = null } }
     if (objectList) ObjectListSheet(vm, onOpen = { objectList = false; vm.selection = it; objectSheet = it }) { objectList = false }
     objectSheet?.let { sel -> ObjectSheet(vm, sel) { objectSheet = null } }
+    if (calibrating) CalibrationDialog(vm) { calibrating = false }
     if (filamentSlots) {
         FilamentSlotsSheet(vm, onEdit = { filamentSlots = false; settingsFor = PresetKind.FILAMENT }) { filamentSlots = false }
     }

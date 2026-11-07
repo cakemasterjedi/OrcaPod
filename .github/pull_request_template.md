@@ -1,29 +1,13 @@
-# Description
+## What this changes
 
-<!--
-> Please read How to Contribute: https://www.orcaslicer.com/wiki/developer_reference/how_to_contribute
-> Please provide a summary of the changes made in this PR. Include details such as:
-  > * What issue does this PR address or fix?
-  > * What new features or enhancements does this PR introduce?
-  > * Are there any breaking changes or dependencies that need to be considered?
--->
+<!-- What does this PR change, and why? Link the issue it fixes with "Fixes #123". -->
 
-# Screenshots/Recordings/Graphs
+## Screenshots
 
-<!--
-> UI changes need before and after screenshots, on each platform you tested.
-> See what each kind of PR needs: https://github.com/OrcaSlicer/OrcaSlicer/blob/main/CONTRIBUTING.md#what-each-kind-of-pr-needs
-> For other changes, please attach images that can help explain them.
--->
+<!-- For UI changes: before and after, on a phone and, if it changes layout, a tablet. -->
 
 ## Tests
 
-<!--
-> Please describe the tests that you have conducted to verify the changes made in this PR.
--->
+<!-- How did you test it? Device and Android version, steps, and any automated tests you added. Say what you couldn't test. -->
 
-<!--
-> A guide for users on how to download the artifacts from this PR.
--->
-
-[How to Download Pull Requests Artifacts for Testing](https://www.orcaslicer.com/wiki/how_to_download_pr_artifacts)
+<!-- The Android workflow attaches a debug APK to every PR run as "orcapod-debug-apk". -->

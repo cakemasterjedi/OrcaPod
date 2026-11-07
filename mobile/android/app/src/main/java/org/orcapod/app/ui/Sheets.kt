@@ -1,6 +1,7 @@
 package org.orcapod.app.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -23,9 +25,11 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
@@ -50,7 +54,11 @@ import androidx.compose.ui.unit.dp
 import org.orcapod.app.engine.PresetEntry
 import org.orcapod.app.engine.PresetKind
 
-/** Searchable preset list; printers show their vendor, user presets can be deleted. */
+/**
+ * Searchable preset list; printers show their vendor, user presets can be deleted.
+ * With more than one [brands], a row of chips above the list switches the loaded
+ * brand through [onBrand]; [loading] shows while that brand loads.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PresetPickerSheet(
@@ -60,6 +68,10 @@ fun PresetPickerSheet(
     onPick: (String) -> Unit,
     onDelete: ((String) -> Unit)?,
     onDismiss: () -> Unit,
+    brands: List<String> = emptyList(),
+    brand: String? = null,
+    loading: Boolean = false,
+    onBrand: (String) -> Unit = {},
 ) {
     var query by remember { mutableStateOf("") }
     val words = query.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
@@ -67,6 +79,14 @@ fun PresetPickerSheet(
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxHeight(0.9f).padding(horizontal = 16.dp)) {
             Text(title, style = MaterialTheme.typography.titleLarge)
+            if (brands.size > 1) {
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (b in brands) {
+                        FilterChip(selected = b == brand, onClick = { onBrand(b) }, enabled = !loading, label = { Text(b) })
+                    }
+                }
+            }
+            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 4.dp))
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = query,
@@ -96,94 +116,6 @@ fun PresetPickerSheet(
                     HorizontalDivider()
                 }
             }
-        }
-    }
-}
-
-/** The most used process and filament settings, edited on top of the selected presets. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun SettingsSheet(viewModel: AppViewModel, onDismiss: () -> Unit) {
-    var saving by remember { mutableStateOf(false) }
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        Column(Modifier.fillMaxHeight(0.9f).padding(horizontal = 16.dp)) {
-            Text("Print settings", style = MaterialTheme.typography.titleLarge)
-            Text(
-                "Changes apply on top of \"${viewModel.process}\" and \"${viewModel.filament}\".",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            LazyColumn(Modifier.weight(1f).padding(top = 8.dp)) {
-                items(viewModel.quickSettings, key = { it.key }) { s ->
-                    SettingRow(
-                        setting = s,
-                        value = viewModel.settings[s.key].orEmpty(),
-                        edited = s.key in viewModel.editedKeys,
-                        onChange = { viewModel.setSetting(s, it) },
-                    )
-                }
-            }
-            Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = viewModel::resetSettings, enabled = viewModel.editedKeys.isNotEmpty()) { Text("Reset") }
-                Spacer(Modifier.width(8.dp))
-                OutlinedButton(onClick = { saving = true }, enabled = viewModel.editedKeys.isNotEmpty()) { Text("Save as preset") }
-            }
-        }
-    }
-    if (saving) {
-        var name by remember { mutableStateOf(viewModel.process.substringBefore(" @") + " (mine)") }
-        AlertDialog(
-            onDismissRequest = { saving = false },
-            title = { Text("Save preset") },
-            text = {
-                Column {
-                    Text("Saves the edited settings as a user preset and selects it.")
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, label = { Text("Name") })
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { viewModel.saveEdits(name.trim()); saving = false }, enabled = name.isNotBlank()) { Text("Save") }
-            },
-            dismissButton = { TextButton(onClick = { saving = false }) { Text("Cancel") } },
-        )
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SettingRow(setting: QuickSetting, value: String, edited: Boolean, onChange: (String) -> Unit) {
-    val label = if (edited) "${setting.label} •" else setting.label
-    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
-        when {
-            setting.isBool -> Switch(checked = value == "1" || value == "true", onCheckedChange = { onChange(if (it) "1" else "0") })
-            setting.choices != null -> {
-                var open by remember { mutableStateOf(false) }
-                ExposedDropdownMenuBox(expanded = open, onExpandedChange = { open = it }, modifier = Modifier.width(190.dp)) {
-                    OutlinedTextField(
-                        value = setting.choices.firstOrNull { it.first == value }?.second ?: value,
-                        onValueChange = {},
-                        readOnly = true,
-                        singleLine = true,
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = open) },
-                        modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable),
-                    )
-                    ExposedDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-                        for ((v, text) in setting.choices) {
-                            DropdownMenuItem(text = { Text(text) }, onClick = { open = false; if (v != value) onChange(v) })
-                        }
-                    }
-                }
-            }
-            else -> NumberField(
-                value = value.removeSuffix("%"),
-                suffix = setting.unit,
-                modifier = Modifier.width(130.dp),
-                onCommit = { text ->
-                    val v = if (setting.unit == "%") "$text%" else text
-                    if (v != value) onChange(v)
-                },
-            )
         }
     }
 }

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108" role="img" aria-label="OrcaPod icon">
+  <!-- The app's launcher icon: a cube resting on a build plate. -->
+  <rect width="108" height="108" rx="24" fill="#00AE42"/>
+  <path fill="#FFFFFF" fill-opacity="0.45" d="M30,72 L54,84 L78,72 L54,60 Z"/>
+  <path fill="#FFFFFF" d="M54,30 L72,39 L54,48 L36,39 Z"/>
+  <path fill="#E8F5EC" d="M36,39 L54,48 L54,70 L36,61 Z"/>
+  <path fill="#C8E6D2" d="M54,48 L72,39 L72,61 L54,70 Z"/>
+</svg>

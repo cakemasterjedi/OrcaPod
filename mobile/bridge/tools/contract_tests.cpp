@@ -5614,6 +5614,7 @@ static void test_step_import(const std::string &dir) {
     }
     orca_scene_snapshot_dispose(&snap);
     orca_plater_free(plater);
+}
 
 // ABI v44: desktop calibration tests (Plater::calib_*).
 static std::string calib_model(const char *name) {

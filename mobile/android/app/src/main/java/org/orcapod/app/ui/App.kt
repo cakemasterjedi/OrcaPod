@@ -70,6 +70,19 @@ fun OrcaPodApp(viewModel: AppViewModel, pendingImports: List<Uri>, onImportsTake
                         }
                     }
                     PlateScreen(viewModel)
+                    // Drawn over the plate so the 3D view keeps its state while the library is open.
+                    viewModel.library?.let { request ->
+                        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                            LibraryScreen(
+                                startUrl = request.url,
+                                onImport = { files ->
+                                    viewModel.importFiles(files)
+                                    viewModel.closeLibrary()
+                                },
+                                onClose = viewModel::closeLibrary,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -102,7 +115,8 @@ fun VendorSetupScreen(
         Spacer(Modifier.height(4.dp))
         Text(
             "Pick the brands of the printers you own. Their printer, filament and process profiles " +
-                "are installed; \"Custom\" holds generic printers you can adapt.",
+                "are installed and you switch brands in the printer picker; \"Custom\" holds generic " +
+                "printers you can adapt.",
             style = MaterialTheme.typography.bodyMedium,
         )
         Spacer(Modifier.height(12.dp))

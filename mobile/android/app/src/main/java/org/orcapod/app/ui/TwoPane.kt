@@ -1,6 +1,5 @@
 package org.orcapod.app.ui
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -8,18 +7,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import org.orcapod.app.ui.viewport.Selection
@@ -72,39 +64,15 @@ fun SidePane(
     }
 }
 
-/** The selected instance's controls above every instance on the plate, tap one to select it. */
+/** The selected object's controls above the plate's object list; tapping an object selects it. */
 @Composable
-fun ObjectsTab(vm: AppViewModel, layFlat: Boolean, onLayFlat: () -> Unit) {
-    val objects = vm.scene.snapshot.objects
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(8.dp)) {
+fun ObjectsTab(vm: AppViewModel, layFlat: Boolean, onLayFlat: () -> Unit, onEdit: (Selection) -> Unit) {
+    Column(Modifier.fillMaxSize().padding(8.dp)) {
         val sel = vm.selection
         if (sel != null && vm.transformOf(sel) != null) {
-            ObjectPanel(vm, sel, layFlat = layFlat, onLayFlat = onLayFlat)
+            ObjectPanel(vm, sel, layFlat = layFlat, onLayFlat = onLayFlat, onEdit = { onEdit(sel) })
             Spacer(Modifier.height(8.dp))
         }
-        if (objects.isEmpty()) {
-            Text(
-                "No models on the plate. Import STL, 3MF, OBJ or AMF files with the + button.",
-                Modifier.padding(8.dp),
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        }
-        for (obj in objects) {
-            obj.instances.forEachIndexed { i, inst ->
-                val item = Selection(obj.id, inst.id)
-                val name = if (obj.instances.size > 1) "${obj.name} (${i + 1})" else obj.name
-                ListItem(
-                    modifier = Modifier.clickable { vm.selection = item },
-                    headlineContent = { Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    supportingContent = if (inst.plate < 0) ({ Text("Off the plate") }) else null,
-                    colors = if (item == sel) {
-                        ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
-                    } else {
-                        ListItemDefaults.colors()
-                    },
-                )
-                HorizontalDivider()
-            }
-        }
+        ObjectListContent(vm, onOpen = { vm.selection = it }, modifier = Modifier.weight(1f), showTitle = false)
     }
 }

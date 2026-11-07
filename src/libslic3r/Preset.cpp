@@ -4409,14 +4409,22 @@ std::vector<std::vector<std::string>> PresetCollection::merge_presets(const std:
 
 void PresetCollection::update_vendor_ptrs_after_copy(const VendorMap &new_vendors)
 {
-    for (Preset &preset : m_presets)
+    auto update = [&new_vendors](Preset &preset) {
         if (preset.vendor != nullptr) {
-            assert(! preset.is_default && ! preset.is_external);
             // Re-assign a pointer to the vendor structure in the new PresetBundle.
             auto it = new_vendors.find(preset.vendor->id);
             assert(it != new_vendors.end());
             preset.vendor = &it->second;
         }
+    };
+    for (Preset &preset : m_presets) {
+        assert(preset.vendor == nullptr || (! preset.is_default && ! preset.is_external));
+        update(preset);
+    }
+    // The edited and saved copies carry the selected preset's vendor too; left alone they would
+    // point into the source bundle and dangle once it is destroyed.
+    update(m_edited_preset);
+    update(m_saved_preset);
 }
 
 void PresetCollection::update_map_alias_to_profile_name()

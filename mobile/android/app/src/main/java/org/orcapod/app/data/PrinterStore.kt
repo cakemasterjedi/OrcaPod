@@ -37,6 +37,7 @@ class PrinterStore(context: Context) {
             .put("apiKey", c.apiKey).put("username", c.username).put("password", c.password)
             .put("serial", c.serial).put("accessCode", c.accessCode)
             .put("allowSelfSigned", c.allowSelfSigned).put("printerPreset", c.printerPreset)
+            .put("cameraUrl", c.cameraUrl)
 
         fun fromJson(j: JSONObject): PrinterConnection? {
             val type = runCatching { HostType.valueOf(j.optString("type")) }.getOrNull() ?: return null
@@ -52,6 +53,7 @@ class PrinterStore(context: Context) {
                 accessCode = j.optString("accessCode"),
                 allowSelfSigned = j.optBoolean("allowSelfSigned"),
                 printerPreset = j.optString("printerPreset"),
+                cameraUrl = j.optString("cameraUrl"),
             )
         }
     }

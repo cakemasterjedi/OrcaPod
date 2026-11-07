@@ -91,10 +91,67 @@ class BambuLanHostTest {
                     host.upload(gcode, "cube.gcode", true, PrintOptions(), { _, _ -> true })
                     fail()
                 } catch (e: PrintHostException) {
-                    assertEquals("The printer refused the job: sdcard is busy", e.message)
+                    assertTrue(e.message!!, e.message!!.startsWith("The printer refused the job: sdcard is busy. "))
                 }
             }
         }
+    }
+
+    @Test
+    fun readsTheSerialFromTheCertificateWhenLeftEmpty() {
+        MockBambu().use { printer ->
+            val host = BambuLanHost(conn().copy(serial = ""), printer.mqttPort, printer.ftpPort)
+            assertEquals("Bambu Lab printer · $SERIAL", host.test())
+            assertEquals(SERIAL, host.serial)
+            host.close()
+        }
+    }
+
+    @Test
+    fun refusedCommandPointsToDeveloperMode() {
+        MockBambu().use { printer ->
+            printer.rejectJobs = true
+            BambuLanHost(conn(), printer.mqttPort, printer.ftpPort).use { host ->
+                try {
+                    host.pause()
+                    fail()
+                } catch (e: PrintHostException) {
+                    assertTrue(e.message!!, e.message!!.startsWith("The printer refused the pause command: error 84033545."))
+                    assertTrue(e.message!!.contains("Developer mode"))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun cameraIsJpegFramesOnP1AndRtspsOnX1() {
+        MockBambu().use { printer ->
+            // No RTSP port open: a P1/A1 camera on the JPEG port.
+            val closedPort = ServerSocket(0).use { it.localPort }
+            val p1 = BambuLanHost(conn(), printer.mqttPort, printer.ftpPort, rtspPort = closedPort, jpegPort = printer.jpegPort).camera()
+            val feed = (p1 as CameraSource.Frames).feed
+            val frames = mutableListOf<ByteArray>()
+            feed.run { frames += it; frames.size < FRAMES.size }
+            assertEquals(FRAMES.map { it.toList() }, frames.map { it.toList() })
+            val login = printer.cameraLogin!!
+            assertEquals(0x40, BambuCameraFeed.le32(login, 0))
+            assertEquals(0x3000, BambuCameraFeed.le32(login, 4))
+            assertEquals(BambuLanHost.USER, String(login, 16, 4))
+            assertEquals(CODE, String(login, 48, CODE.length))
+
+            // An open RTSP port: an X1/H2 camera, played as RTSPS with the access code.
+            ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { rtsp ->
+                val x1 = BambuLanHost(conn(), printer.mqttPort, printer.ftpPort, rtspPort = rtsp.localPort).camera()
+                assertEquals(CameraSource.Rtsp("rtsps://bblp:$CODE@127.0.0.1:${rtsp.localPort}/streaming/live/1", tls = true), x1)
+            }
+        }
+    }
+
+    @Test
+    fun readsH2PackedNozzleTemperatures() {
+        val s = BambuLanHost.parse(JSONObject("""{"gcode_state":"RUNNING","device":{"extruder":{"info":[{"id":0,"temp":${(250 shl 16) or 248}}]}}}"""))
+        assertEquals(248.0, s.nozzleTemp!!, 0.0)
+        assertEquals(250.0, s.nozzleTarget!!, 0.0)
     }
 
     @Test
@@ -140,10 +197,26 @@ class BambuLanHostTest {
         @Volatile var storedBytes: ByteArray? = null
         @Volatile var dataSessionResumed = false
         @Volatile var rejectJobs = false
+        /** The P1/A1 camera: JPEG frames over TLS after an 80-byte login. */
+        private val jpegServer = tls.serverSocketFactory.createServerSocket(0, 50, InetAddress.getLoopbackAddress()) as SSLServerSocket
+        val jpegPort get() = jpegServer.localPort
+        @Volatile var cameraLogin: ByteArray? = null
 
         init {
             serve(mqttServer, ::mqtt)
             serve(ftpServer, ::ftp)
+            serve(jpegServer, ::camera)
+        }
+
+        private fun camera(s: Socket) {
+            val login = ByteArray(80).also { DataInputStream(s.getInputStream()).readFully(it) }
+            cameraLogin = login
+            val out = s.getOutputStream()
+            for (frame in FRAMES) {
+                val header = ByteArray(16)
+                for (i in 0 until 4) header[i] = (frame.size shr (8 * i)).toByte()
+                out.write(header); out.write(frame); out.flush()
+            }
         }
 
         private fun serve(server: ServerSocket, session: (Socket) -> Unit) {
@@ -195,6 +268,8 @@ class BambuLanHostTest {
                             json.optJSONObject("pushing")?.optString("command") == "pushall" -> JSONObject().put("print", REPORT)
                             json.optJSONObject("print")?.optString("command") == "project_file" && rejectJobs ->
                                 JSONObject("""{"print":{"command":"project_file","result":"FAIL","reason":"sdcard is busy"}}""")
+                            json.optJSONObject("print")?.optString("command") == "pause" && rejectJobs ->
+                                JSONObject("""{"print":{"command":"pause","result":"failed","err_code":84033545}}""")
                             else -> null
                         }
                         if (reply != null && topic == "device/$SERIAL/report") publish(out, topic, reply.toString())
@@ -271,10 +346,12 @@ class BambuLanHostTest {
         override fun close() {
             mqttServer.close()
             ftpServer.close()
+            jpegServer.close()
         }
     }
 
     companion object {
+        val FRAMES = listOf(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 1, 2, 3, 0xFF.toByte(), 0xD9.toByte()), byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 9, 0xFF.toByte(), 0xD9.toByte()))
         const val SERIAL = "01P00A123456789"
         const val CODE = "12345678"
         val REPORT = JSONObject(

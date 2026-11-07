@@ -24,22 +24,32 @@ class BambuLanHost(
     private val c: PrinterConnection,
     private val mqttPort: Int = 8883,
     private val ftpPort: Int = 990,
+    private val rtspPort: Int = 322,
+    private val jpegPort: Int = 6000,
 ) : PrintHost {
     private val host = c.host.trim().substringAfter("://").substringBefore('/').substringBefore(':')
     private val lock = Object()
     private var mqtt: MqttClient? = null
     private val report = JSONObject()
     private var reports = 0
-    private var commandFailure: String? = null
+    /** Command name to the reason the printer refused it, from its reports. */
+    private val failures = HashMap<String, String>()
     private var sequence = 0
 
+    /**
+     * The printer's serial, which names its MQTT topics. When the user left
+     * it empty it is read from the printer's TLS certificate, whose common
+     * name is the serial, so an IP address and access code are enough.
+     */
+    @Volatile var serial: String = c.serial.trim()
+        private set
+
     override fun test(): String {
-        if (c.serial.isBlank()) throw PrintHostException("Enter the printer's serial number")
         connect()
         if (!awaitReport(8000)) {
             throw PrintHostException("Logged in, but the printer sent no status; check the serial number")
         }
-        return "Bambu Lab printer · ${c.serial}"
+        return "Bambu Lab printer · $serial"
     }
 
     override fun upload(file: File, remoteName: String, startPrint: Boolean, options: PrintOptions, progress: UploadProgress): String {
@@ -51,17 +61,7 @@ class BambuLanHost(
         } finally {
             pkg.delete()
         }
-        if (startPrint) {
-            connect()
-            synchronized(lock) { commandFailure = null }
-            publish(projectFile(name, options))
-            // The printer answers a refused job on the report topic within a moment.
-            val deadline = System.currentTimeMillis() + 4000
-            synchronized(lock) {
-                while (commandFailure == null && System.currentTimeMillis() < deadline) lock.wait(250)
-                commandFailure?.let { throw PrintHostException("The printer refused the job: $it") }
-            }
-        }
+        if (startPrint) send("project_file", projectFile(name, options), 4000)
         return name
     }
 
@@ -75,6 +75,17 @@ class BambuLanHost(
     override fun resume() = command("resume")
     override fun cancel() = command("stop")
 
+    /**
+     * X1, X1E and H2 printers stream H.264 over RTSPS on port 322 (with
+     * "LAN mode liveview" on); P1 and A1 printers send JPEG frames on port
+     * 6000. The open port tells which kind this printer is.
+     */
+    override fun camera(): CameraSource {
+        val rtsp = runCatching { java.net.Socket().use { it.connect(InetSocketAddress(host, rtspPort), 1500) } }.isSuccess
+        return if (rtsp) CameraSource.Rtsp(rtspUrl(host, c.accessCode, rtspPort), tls = true)
+        else CameraSource.Frames(BambuCameraFeed(host, c.accessCode, jpegPort))
+    }
+
     override fun close() {
         synchronized(lock) {
             mqtt?.close()
@@ -82,15 +93,24 @@ class BambuLanHost(
         }
     }
 
-    private fun command(name: String) {
+    private fun command(name: String) =
+        send(name, JSONObject().put("print", JSONObject().put("sequence_id", seq()).put("command", name).put("param", "")), 2000)
+
+    /** Publishes [json] and waits [waitMs] for the printer to report that it refused [command]. */
+    private fun send(command: String, json: JSONObject, waitMs: Long) {
         connect()
-        publish(JSONObject().put("print", JSONObject().put("sequence_id", seq()).put("command", name).put("param", "")))
+        synchronized(lock) { failures.remove(command) }
+        publish(json)
+        val deadline = System.currentTimeMillis() + waitMs
+        synchronized(lock) {
+            while (failures[command] == null && mqtt != null && System.currentTimeMillis() < deadline) lock.wait(100)
+            failures[command]?.let { throw PrintHostException(refusal(command, it)) }
+        }
     }
 
     private fun connect() {
         synchronized(lock) {
             if (mqtt?.isOpen == true) return
-            if (c.serial.isBlank()) throw PrintHostException("Enter the printer's serial number")
             if (c.accessCode.isBlank()) throw PrintHostException("Enter the printer's access code")
             val socket = Tls.trustAll.createSocket() as SSLSocket
             try {
@@ -98,12 +118,18 @@ class BambuLanHost(
                 socket.startHandshake()
             } catch (e: java.io.IOException) {
                 socket.close()
-                throw PrintHostException("Cannot reach the printer at $host; check the IP address and that LAN mode is on", 0, e)
+                throw PrintHostException("Cannot reach the printer at $host; check the IP address and that LAN only mode is on", 0, e)
+            }
+            if (serial.isEmpty()) {
+                serial = serialFromCertificate(socket) ?: run {
+                    socket.close()
+                    throw PrintHostException("Enter the printer's serial number (Settings › Device on the printer)")
+                }
             }
             val client = MqttClient(socket)
             try {
                 client.connect("orcapod-" + UUID.randomUUID().toString().take(8), USER, c.accessCode)
-                client.subscribe("device/${c.serial}/report")
+                client.subscribe("device/$serial/report")
             } catch (e: Exception) {
                 client.close()
                 throw if (e is PrintHostException) e else PrintHostException("The printer dropped the connection: ${e.message}", 0, e)
@@ -123,8 +149,9 @@ class BambuLanHost(
         val msg = runCatching { JSONObject(String(payload, Charsets.UTF_8)) }.getOrNull() ?: return
         val print = msg.optJSONObject("print") ?: return
         synchronized(lock) {
-            if (print.optString("command") == "project_file" && print.optString("result").equals("fail", true)) {
-                commandFailure = print.optString("reason").ifEmpty { "unknown reason" }
+            val command = print.optString("command")
+            if (command.isNotEmpty() && print.optString("result").startsWith("fail", true)) {
+                failures[command] = print.optString("reason").ifEmpty { print.optStringOrNull("err_code")?.let { "error $it" } ?: "no reason given" }
             }
             for (key in print.keys()) report.put(key, print.get(key))
             reports++
@@ -143,7 +170,7 @@ class BambuLanHost(
     private fun publish(json: JSONObject) {
         val client = synchronized(lock) { mqtt } ?: throw PrintHostException("Lost the connection to the printer")
         try {
-            client.publish("device/${c.serial}/request", json.toString().toByteArray())
+            client.publish("device/$serial/request", json.toString().toByteArray())
         } catch (e: java.io.IOException) {
             throw PrintHostException("Lost the connection to the printer", 0, e)
         }
@@ -173,6 +200,23 @@ class BambuLanHost(
 
     companion object {
         const val USER = "bblp"
+
+        fun rtspUrl(host: String, accessCode: String, port: Int = 322) =
+            "rtsps://$USER:${HttpClient.encode(accessCode)}@$host:$port/streaming/live/1"
+
+        /** The common name of the printer's certificate, which Bambu sets to the serial number. */
+        fun serialFromCertificate(socket: SSLSocket): String? {
+            val cert = runCatching { socket.session.peerCertificates.firstOrNull() as? java.security.cert.X509Certificate }.getOrNull() ?: return null
+            val cn = cert.subjectX500Principal.name.split(',').map { it.trim() }.firstOrNull { it.startsWith("CN=", true) }?.substring(3)
+            return cn?.takeIf { it.matches(Regex("[0-9A-Z]{8,20}")) }
+        }
+
+        private fun refusal(command: String, reason: String): String {
+            val what = if (command == "project_file") "the job" else "the $command command"
+            // Bambu firmware with authorization control only takes commands from other apps in Developer mode.
+            return "The printer refused $what: $reason. In LAN only mode, turn on Developer mode on the printer " +
+                "(Settings › Network) so it accepts commands from apps other than Bambu's."
+        }
 
         /** Wraps plain G-code in the smallest .gcode.3mf the printer accepts: plate 1 and its MD5. */
         fun packageGcode(gcode: File, out: File) {
@@ -214,14 +258,18 @@ class BambuLanHost(
             }
             val error = p.optLong("print_error", 0)
             val active = state == PrintState.PRINTING || state == PrintState.PAUSED || state == PrintState.PREPARING
+            // H2 printers (two nozzles) report each extruder under device.extruder.info, current
+            // and target temperature packed into the low and high 16 bits of "temp".
+            val packed = p.optJSONObject("device")?.optJSONObject("extruder")?.optJSONArray("info")?.optJSONObject(0)
+                ?.takeIf { it.has("temp") }?.optLong("temp")
             return PrinterStatus(
                 state = state,
                 stateText = text.lowercase().replaceFirstChar { it.uppercase() },
                 fileName = (p.optStringOrNull("subtask_name") ?: p.optStringOrNull("gcode_file"))?.takeIf { active || state == PrintState.FINISHED },
                 progress = p.optDoubleOrNull("mc_percent")?.div(100.0),
                 remainingSeconds = p.optDoubleOrNull("mc_remaining_time")?.times(60)?.toLong()?.takeIf { active },
-                nozzleTemp = p.optDoubleOrNull("nozzle_temper"),
-                nozzleTarget = p.optDoubleOrNull("nozzle_target_temper"),
+                nozzleTemp = p.optDoubleOrNull("nozzle_temper") ?: packed?.let { (it and 0xFFFF).toDouble() },
+                nozzleTarget = p.optDoubleOrNull("nozzle_target_temper") ?: packed?.let { ((it shr 16) and 0xFFFF).toDouble() },
                 bedTemp = p.optDoubleOrNull("bed_temper"),
                 bedTarget = p.optDoubleOrNull("bed_target_temper"),
                 layer = p.optIntOrNull("layer_num")?.takeIf { active },

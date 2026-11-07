@@ -236,6 +236,10 @@ fun PrintersSheet(vm: PrinterViewModel, printerPreset: String, onDismiss: () -> 
 fun PrinterMonitor(vm: PrinterViewModel) {
     val s = vm.status
     var confirmStop by remember { mutableStateOf(false) }
+    var cameraOpen by remember { mutableStateOf(false) }
+    var historyOpen by remember { mutableStateOf(false) }
+    val id = vm.monitored
+    val name = vm.connections.firstOrNull { it.id == id }?.name.orEmpty()
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Column(Modifier.padding(12.dp)) {
             when {
@@ -246,6 +250,10 @@ fun PrinterMonitor(vm: PrinterViewModel) {
                 }
                 s == null -> Text(vm.statusError.orEmpty(), color = MaterialTheme.colorScheme.error)
                 else -> StatusDetails(s, vm.statusError)
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                TextButton(onClick = { cameraOpen = true }) { Icon(AppIcons.Camera, null); Spacer(Modifier.width(4.dp)); Text("Camera") }
+                TextButton(onClick = { historyOpen = true }) { Icon(AppIcons.History, null); Spacer(Modifier.width(4.dp)); Text("History") }
             }
             if (s != null && (s.state == PrintState.PRINTING || s.state == PrintState.PAUSED || s.state == PrintState.PREPARING)) {
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
@@ -260,6 +268,8 @@ fun PrinterMonitor(vm: PrinterViewModel) {
             }
         }
     }
+    if (cameraOpen && id != null) CameraDialog(vm, id, name) { cameraOpen = false }
+    if (historyOpen && id != null) HistorySheet(vm, id, name) { historyOpen = false }
     if (confirmStop) {
         AlertDialog(
             onDismissRequest = { confirmStop = false },
@@ -408,13 +418,21 @@ fun ConnectionEditor(vm: PrinterViewModel, initial: PrinterConnection, onDismiss
                 }
                 if (c.type.usesPassword) Field("Password", c.password, secret = true, hint = "Leave empty if none is set") { update(c.copy(password = it)) }
                 if (c.type.usesSerial) {
-                    Field("Serial number", c.serial, hint = "Settings › Device on the printer") { update(c.copy(serial = it.trim())) }
-                    Field("Access code", c.accessCode, secret = true, hint = "Settings › Network › LAN only mode") { update(c.copy(accessCode = it.trim())) }
+                    Field("Access code", c.accessCode, secret = true, hint = "Settings › Network › LAN only mode on the printer") { update(c.copy(accessCode = it.trim())) }
+                    Field("Serial number", c.serial, hint = "Filled in by Test when left empty") { update(c.copy(serial = it.trim())) }
+                    Text(
+                        "No Bambu account needed: turn on LAN only mode, and Developer mode so the printer takes jobs and " +
+                            "commands from this app. On X1 and H2 printers, also turn on LAN mode liveview for the camera.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Accept self-signed certificates", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                         Switch(checked = c.allowSelfSigned, onCheckedChange = { update(c.copy(allowSelfSigned = it)) })
                     }
+                }
+                Field("Camera URL (optional)", c.cameraUrl, hint = "Overrides the camera the printer reports", keyboard = KeyboardType.Uri) {
+                    update(c.copy(cameraUrl = it.trim()))
                 }
                 when {
                     testing -> Row(verticalAlignment = Alignment.CenterVertically) {
@@ -436,7 +454,9 @@ fun ConnectionEditor(vm: PrinterViewModel, initial: PrinterConnection, onDismiss
                         testing = true
                         scope.launch {
                             result = try {
-                                true to vm.test(c)
+                                val (what, filled) = vm.test(c)
+                                c = filled
+                                true to what
                             } catch (e: java.io.IOException) {
                                 false to (e.message ?: "Connection failed")
                             }

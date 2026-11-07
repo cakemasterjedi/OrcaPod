@@ -42,6 +42,8 @@ data class PrinterConnection(
     val allowSelfSigned: Boolean = false,
     /** The printer preset this connection was last used with, to preselect it. */
     val printerPreset: String = "",
+    /** A camera stream or snapshot URL that overrides what the printer reports. */
+    val cameraUrl: String = "",
 )
 
 enum class PrintState { IDLE, PREPARING, PRINTING, PAUSED, FINISHED, CANCELLED, ERROR, BUSY, OFFLINE, UNKNOWN }
@@ -66,6 +68,19 @@ data class PrinterStatus(
 ) {
     val isActive get() = state == PrintState.PRINTING || state == PrintState.PAUSED || state == PrintState.PREPARING
 }
+
+enum class JobOutcome { UPLOADED, PRINTING, FINISHED, CANCELLED, FAILED, UPLOAD_FAILED }
+
+/** One job in a printer's history, or in the app's own log of what it sent. */
+data class JobRecord(
+    val fileName: String,
+    val outcome: JobOutcome,
+    /** Epoch milliseconds. */
+    val startedAt: Long,
+    val durationSeconds: Long? = null,
+    val filamentMm: Double? = null,
+    val message: String? = null,
+)
 
 /** A failure the user should see as is; [status] is the HTTP status when there was one. */
 class PrintHostException(message: String, val status: Int = 0, cause: Throwable? = null) : IOException(message, cause)
@@ -109,9 +124,25 @@ interface PrintHost : Closeable {
     fun resume()
     fun cancel()
 
+    /** The printer's camera, or null when it reports none. */
+    fun camera(): CameraSource? = null
+
+    /** Past jobs as the printer records them, newest first; null when it keeps no history. */
+    fun history(limit: Int = 50): List<JobRecord>? = null
+
     override fun close() {}
 
     companion object {
+        /** The camera to show for [c]: its own URL if set, else what [host] reports. */
+        fun cameraFor(c: PrinterConnection, host: PrintHost): CameraSource? {
+            val url = c.cameraUrl.trim()
+            if (url.isEmpty()) return host.camera()
+            val full = HttpCameraFeed.resolve(HttpClient.normalize(c.host), url)
+            val snapshot = Regex("snapshot|\\.jpe?g(\\?|$)", RegexOption.IGNORE_CASE).containsMatchIn(url)
+            if (full!!.startsWith("rtsp", true)) return CameraSource.Rtsp(full, tls = full.startsWith("rtsps", true))
+            return CameraSource.Frames(HttpCameraFeed(if (snapshot) CameraUrls(null, full) else CameraUrls(full, null), c.allowSelfSigned))
+        }
+
         fun create(c: PrinterConnection): PrintHost = when (c.type) {
             HostType.OCTOPRINT -> OctoPrintHost(c)
             HostType.MOONRAKER -> MoonrakerHost(c)

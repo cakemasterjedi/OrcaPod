@@ -14,9 +14,15 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.orcapod.app.data.PrintLog
 import org.orcapod.app.data.PrinterDiscovery
 import org.orcapod.app.data.PrinterStore
+import org.orcapod.app.printhost.BambuLanHost
+import org.orcapod.app.printhost.CameraSource
 import org.orcapod.app.printhost.DiscoveredPrinter
+import org.orcapod.app.printhost.JobOutcome
+import org.orcapod.app.printhost.JobRecord
+import org.orcapod.app.printhost.PrintState
 import org.orcapod.app.printhost.PrintHost
 import org.orcapod.app.printhost.PrintOptions
 import org.orcapod.app.printhost.PrinterConnection
@@ -36,6 +42,7 @@ sealed interface UploadState {
 /** Printer connections, sending G-code and watching a print: desktop's physical printers and device tab. */
 class PrinterViewModel(app: Application) : AndroidViewModel(app) {
     private val store = PrinterStore(app)
+    private val log = PrintLog(File(app.filesDir, "print-log.json"))
     private val hosts = HashMap<String, PrintHost>()
     private var uploadJob: Job? = null
     @Volatile private var uploadCancelled = false
@@ -80,10 +87,31 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         store.save(connections)
     }
 
-    /** Checks [c] without saving it; returns what answered, or throws with the reason. */
-    suspend fun test(c: PrinterConnection): String = withContext(Dispatchers.IO) {
-        PrintHost.create(c).use { it.test() }
+    /**
+     * Checks [c] without saving it; returns what answered and the connection
+     * with anything the printer told us filled in (a Bambu printer's serial),
+     * or throws with the reason.
+     */
+    suspend fun test(c: PrinterConnection): Pair<String, PrinterConnection> = withContext(Dispatchers.IO) {
+        PrintHost.create(c).use { h -> h.test() to if (h is BambuLanHost) c.copy(serial = h.serial) else c }
     }
+
+    /** The camera to show for [id]; throws with the reason when there is none. */
+    suspend fun camera(id: String): CameraSource = withContext(Dispatchers.IO) {
+        val c = connections.firstOrNull { it.id == id } ?: throw IOException("Unknown printer")
+        PrintHost.cameraFor(c, host(c)) ?: throw IOException("The printer reports no camera. Set its camera URL in the printer's settings here.")
+    }
+
+    /** Jobs the printer itself records (Moonraker only), newest first; null when it keeps none. */
+    suspend fun printerHistory(id: String): List<JobRecord>? = withContext(Dispatchers.IO) {
+        val c = connections.firstOrNull { it.id == id } ?: return@withContext null
+        host(c).history()
+    }
+
+    /** Jobs this app sent to [id], newest first. */
+    suspend fun sentHistory(id: String): List<JobRecord> = withContext(Dispatchers.IO) { log.forConnection(id).map { it.job } }
+
+    fun clearSentHistory(id: String) = viewModelScope.launch(Dispatchers.IO) { log.clear(id) }
 
     fun send(c: PrinterConnection, gcode: File, remoteName: String, start: Boolean, options: PrintOptions, printerPreset: String) {
         if (upload is UploadState.Running) return
@@ -99,6 +127,9 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
                         !uploadCancelled
                     }
                 }
+                withContext(Dispatchers.IO) {
+                    log.add(c.id, c.name, JobRecord(stored, if (start) JobOutcome.PRINTING else JobOutcome.UPLOADED, System.currentTimeMillis()))
+                }
                 store.lastUsed = c.id
                 if (printerPreset.isNotEmpty() && c.printerPreset != printerPreset) save(c.copy(printerPreset = printerPreset))
                 if (start) watch(c.id)
@@ -106,6 +137,9 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: UploadCancelled) {
                 UploadState.Idle
             } catch (e: IOException) {
+                withContext(Dispatchers.IO) {
+                    log.add(c.id, c.name, JobRecord(name, JobOutcome.UPLOAD_FAILED, System.currentTimeMillis(), message = e.message))
+                }
                 UploadState.Failed(e.message ?: "Upload failed")
             }
         }
@@ -128,7 +162,8 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         monitorJob = viewModelScope.launch {
             while (isActive) {
                 try {
-                    status = withContext(Dispatchers.IO) { host(c).status() }
+                    val s = withContext(Dispatchers.IO) { host(c).status().also { record(c.id, it) } }
+                    status = s
                     statusError = null
                 } catch (e: IOException) {
                     statusError = e.message ?: "The printer did not answer"
@@ -136,6 +171,17 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
                 delay(if (status?.isActive == true) 2000 else 4000)
             }
         }
+    }
+
+    // Carries the job this app started through to its end in the log.
+    private fun record(id: String, s: PrinterStatus) {
+        val outcome = when (s.state) {
+            PrintState.FINISHED -> JobOutcome.FINISHED
+            PrintState.CANCELLED -> JobOutcome.CANCELLED
+            PrintState.ERROR -> JobOutcome.FAILED
+            else -> return
+        }
+        log.update(id, s.fileName, outcome)
     }
 
     fun stopMonitor() {

@@ -21,7 +21,7 @@ class MockHttpServer(private val handler: (Request) -> Response) : Closeable {
         fun header(name: String) = headers[name.lowercase()]
     }
 
-    class Response(val status: Int = 200, val body: String = "{}", val headers: Map<String, String> = emptyMap())
+    class Response(val status: Int = 200, val body: String = "{}", val headers: Map<String, String> = emptyMap(), val bytes: ByteArray = body.toByteArray())
 
     val requests = mutableListOf<Request>()
     private val server = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
@@ -50,7 +50,7 @@ class MockHttpServer(private val handler: (Request) -> Response) : Closeable {
         val req = Request(method, target, headers, body)
         synchronized(requests) { requests += req }
         val r = handler(req)
-        val bytes = r.body.toByteArray()
+        val bytes = r.bytes
         val head = buildString {
             append("HTTP/1.1 ${r.status} X\r\n")
             for ((k, v) in r.headers) append("$k: $v\r\n")

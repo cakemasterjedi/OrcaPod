@@ -5,6 +5,7 @@ import java.io.File
 
 /** Klipper through Moonraker's API, following desktop's Moonraker host. */
 class MoonrakerHost(c: PrinterConnection) : PrintHost {
+    private val allowSelfSigned = c.allowSelfSigned
     private val http = HttpClient(c.host, c.allowSelfSigned, mapOf("X-Api-Key" to c.apiKey))
 
     override fun test(): String {
@@ -43,7 +44,46 @@ class MoonrakerHost(c: PrinterConnection) : PrintHost {
     override fun resume() { http.post("printer/print/resume", null) }
     override fun cancel() { http.post("printer/print/cancel", null) }
 
+    /** The first enabled webcam from Moonraker's list (crowsnest and Mainsail register theirs there). */
+    override fun camera(): CameraSource? {
+        val list = http.get("server/webcams/list").json().optJSONObject("result")?.optJSONArray("webcams") ?: return null
+        for (i in 0 until list.length()) {
+            val w = list.optJSONObject(i) ?: continue
+            if (!w.optBoolean("enabled", true)) continue
+            val urls = CameraUrls(
+                HttpCameraFeed.resolve(http.baseUrl, w.optStringOrNull("stream_url"), keepPort = false),
+                HttpCameraFeed.resolve(http.baseUrl, w.optStringOrNull("snapshot_url"), keepPort = false),
+            )
+            if (urls.stream != null || urls.snapshot != null) return CameraSource.Frames(HttpCameraFeed(urls, allowSelfSigned))
+        }
+        return null
+    }
+
+    override fun history(limit: Int): List<JobRecord> =
+        parseHistory(http.get("server/history/list?limit=$limit&order=desc").json())
+
     companion object {
+        fun parseHistory(json: JSONObject): List<JobRecord> {
+            val jobs = json.optJSONObject("result")?.optJSONArray("jobs") ?: return emptyList()
+            return (0 until jobs.length()).mapNotNull { i ->
+                val j = jobs.optJSONObject(i) ?: return@mapNotNull null
+                val status = j.optString("status")
+                JobRecord(
+                    fileName = j.optString("filename"),
+                    outcome = when (status) {
+                        "completed" -> JobOutcome.FINISHED
+                        "cancelled" -> JobOutcome.CANCELLED
+                        "in_progress" -> JobOutcome.PRINTING
+                        else -> JobOutcome.FAILED
+                    },
+                    startedAt = ((j.optDoubleOrNull("start_time") ?: 0.0) * 1000).toLong(),
+                    durationSeconds = j.optDoubleOrNull("print_duration")?.toLong(),
+                    filamentMm = j.optDoubleOrNull("filament_used"),
+                    message = status.takeIf { it !in setOf("completed", "cancelled", "in_progress") }?.replace('_', ' '),
+                )
+            }
+        }
+
         fun parse(query: JSONObject): PrinterStatus {
             val s = query.optJSONObject("result")?.optJSONObject("status") ?: JSONObject()
             val stats = s.optJSONObject("print_stats") ?: JSONObject()

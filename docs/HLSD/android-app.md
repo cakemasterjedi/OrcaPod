@@ -100,10 +100,40 @@ printers use self-signed certificates and the access code is the
 credential, so their TLS is not verified; HTTP hosts verify certificates
 unless the connection allows self-signed ones.
 
+Bambu printers need no Bambu account: LAN only mode and the access code are
+enough, and the serial number, which names the MQTT topics, is read from the
+printer's TLS certificate (its common name) when the user leaves it empty.
+Firmware with Bambu's authorization control accepts jobs and commands from
+other apps only in Developer mode; the printer reports a refused command on
+its report topic, and the app waits briefly for that report after each job,
+pause, resume or stop so the refusal reaches the user with that hint. H2
+printers report nozzle temperatures per extruder, packed into one value.
+
 Printers are found by Bambu's UDP announcements on port 2021 and by the
 `_octoprint._tcp` and `_moonraker._tcp` mDNS services; others are added by
 address. Status is polled every few seconds while a printer sheet is open
 (Bambu's MQTT connection stays open and pushes reports instead).
+
+### Camera and history
+
+`PrintHost.camera()` describes the printer's camera as either JPEG frames
+(`CameraFeed`) or an RTSP stream. OctoPrint (`/api/settings`) and Moonraker
+(`/server/webcams/list`) publish MJPEG stream and snapshot URLs, often as
+paths: OctoPrint's resolve against its own origin like the browser page
+would, Moonraker's against the host's default port, where Mainsail or Fluidd
+serve the webcam rather than Moonraker's API port. MJPEG is split into frames
+by the JPEG start and end markers, so parts with or without a length work; a
+snapshot URL alone is polled. Bambu P1 and A1 printers send JPEG frames over
+TLS on port 6000 after an 80-byte login; X1 and H2 printers stream H.264 over
+RTSPS on port 322, which Media3's RTSP player plays over a TLS socket
+factory. Which one a Bambu printer has is told by whether port 322 is open.
+A camera URL on the connection overrides all of this for any printer.
+
+Only Moonraker keeps a job history the app can read
+(`/server/history/list`). So that every printer has one, `PrintLog` records
+each job the app sends, and while a printer is watched, the entry of the job
+it is printing follows the print to finished, cancelled or failed, matched by
+file name stem (printers report "cube", "cube.gcode" or "cube.gcode.3mf").
 
 The hosts are plain JVM code over `HttpURLConnection` and sockets, with no
 Android or third-party network library, so `HttpHostsTest` and
@@ -118,6 +148,7 @@ session reuse.
 - One filament slot: multi-material assignment is not exposed yet.
 - Bambu printers are reached in LAN mode only; Bambu's cloud needs its
   closed network plugin. The AMS maps the single filament to one tray.
+- Prints the app did not send appear in its history only for Klipper.
 
 ## Verification
 

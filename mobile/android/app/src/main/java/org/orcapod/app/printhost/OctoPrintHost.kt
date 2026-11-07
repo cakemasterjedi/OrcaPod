@@ -5,6 +5,7 @@ import java.io.File
 
 /** OctoPrint's REST API, as desktop's OctoPrint host uses it: X-Api-Key and /api/files/local. */
 class OctoPrintHost(c: PrinterConnection) : PrintHost {
+    private val allowSelfSigned = c.allowSelfSigned
     private val http = HttpClient(c.host, c.allowSelfSigned, mapOf("X-Api-Key" to c.apiKey))
 
     override fun test(): String {
@@ -37,6 +38,16 @@ class OctoPrintHost(c: PrinterConnection) : PrintHost {
     override fun pause() = command(JSONObject().put("command", "pause").put("action", "pause"))
     override fun resume() = command(JSONObject().put("command", "pause").put("action", "resume"))
     override fun cancel() = command(JSONObject().put("command", "cancel"))
+
+    override fun camera(): CameraSource? {
+        val webcam = http.get("api/settings").json().optJSONObject("webcam") ?: return null
+        if (!webcam.optBoolean("webcamEnabled", true)) return null
+        val urls = CameraUrls(
+            HttpCameraFeed.resolve(http.baseUrl, webcam.optStringOrNull("streamUrl")),
+            HttpCameraFeed.resolve(http.baseUrl, webcam.optStringOrNull("snapshotUrl")),
+        )
+        return if (urls.stream == null && urls.snapshot == null) null else CameraSource.Frames(HttpCameraFeed(urls, allowSelfSigned))
+    }
 
     private fun command(json: JSONObject) {
         http.post("api/job", Body.Json(json))

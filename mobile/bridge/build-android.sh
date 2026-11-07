@@ -37,7 +37,9 @@ set -euo pipefail
 RUN_TESTS=0
 [ "${1:-}" = "--test" ] && RUN_TESTS=1
 
+# shellcheck disable=SC1091 # sourced from this directory at run time
 source "$(dirname "$0")/engine-sources.sh"   # sets BRIDGE, REPO and the dep pins
+# shellcheck disable=SC1091 # sourced from this directory at run time
 source "$BRIDGE/compile-lib.sh"
 engine_fetch_deps
 
@@ -69,7 +71,8 @@ MPFR_VER=4.2.2
 build_autotools_dep() { # <name> <url> <sha256|-> <sentinel lib> [configure args...]
     local name="$1" url="$2" sha="$3" lib="$4"; shift 4
     [ -f "$PREFIX/lib/$lib" ] && return 0
-    local dl="$BRIDGE/cache/$(basename "$url")"
+    local dl
+    dl="$BRIDGE/cache/$(basename "$url")"
     if [ ! -f "$dl" ]; then
         echo "==> downloading $(basename "$url") into mobile/bridge/cache/" >&2
         curl -fsSL "$url" -o "$dl.part" && mv "$dl.part" "$dl"
@@ -170,6 +173,7 @@ while IFS=$'\t' read -r kind src extra_str; do
     extra_args=()
     [ -n "${extra_str:-}" ] && read -ra extra_args <<< "$extra_str"
     rel="${src#"$REPO"/}"
+    # shellcheck disable=SC2153 # OBJ comes from compile-lib.sh
     o="$OBJ/${rel//\//_}.o"
     if [ "$kind" = "cxx" ]; then
         compile_one "$src" "$o" "$CXX" "${CFLAGS[@]}" "${extra_args[@]}"
@@ -215,6 +219,7 @@ fi
 RUNNER="$BUILD/orcapod-slice-run"
 # libc++ on Android falls back to /data/local/tmp when TMPDIR is unset; on a
 # host that path does not exist (an app sets TMPDIR to its cache dir).
+# shellcheck disable=SC2016 # expanded by the generated script
 printf '#!/bin/sh\nTMPDIR="${TMPDIR:-/tmp}" exec %s %q "$@"\n' "$QEMU" "$BUILD/orcapod-slice" > "$RUNNER"
 chmod +x "$RUNNER"
 echo "==> running CLI smoke test on the $ABI binary" >&2

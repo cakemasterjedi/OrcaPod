@@ -34,6 +34,7 @@ set -euo pipefail
 RUN_TESTS=0
 [ "${1:-}" = "--test" ] && RUN_TESTS=1
 
+# shellcheck disable=SC1091 # sourced from this directory at run time
 source "$(dirname "$0")/engine-sources.sh"   # sets BRIDGE, REPO and the dep pins
 engine_fetch_deps
 

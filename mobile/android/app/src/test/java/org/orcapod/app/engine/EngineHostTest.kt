@@ -189,6 +189,33 @@ class EngineHostTest {
         }
     }
 
+    @Test
+    fun i_importsStep() = runBlocking {
+        // tests/data of this repository, next to the profiles directory.
+        val fixture = File(System.getProperty("orcapod.profilesDir"), "../../tests/data/named_compound_bodies.step")
+        e.clear()
+        val step = e.openStep(fixture.path)
+        try {
+            assertTrue(step.hasOriginalNames)
+            assertTrue(step.hasMultiBodyCompound)
+            assertEquals(12L, e.stepTriangleCount(step, StepImportOptions.LINEAR_DEFAULT, StepImportOptions.ANGLE_DEFAULT))
+            assertEquals(1, e.importStep(step, StepImportOptions()))
+        } finally {
+            e.closeStep(step)
+        }
+        val scene = e.scene()
+        val obj = scene.snapshot.objects.single()
+        assertEquals("named_compound_bodies.step", obj.name)
+        // three tetrahedra, one part each
+        assertEquals(36, scene.meshes.getValue(obj.id).indices.size)
+        try {
+            e.openStep(File(work, "cube.stl").path)
+            fail("STL opened as STEP")
+        } catch (ex: OrcaException) {
+            assertEquals(OrcaException.INVALID_MODEL, ex.code)
+        }
+    }
+
     private suspend fun layerHeight() =
         Regex("\"layer_height\"\\s*:\\s*\"([^\"]*)\"").find(e.resolvedConfig())?.groupValues?.get(1)
 

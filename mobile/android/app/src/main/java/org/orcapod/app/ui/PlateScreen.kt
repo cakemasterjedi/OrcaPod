@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -125,6 +126,11 @@ fun PlateScreen(vm: AppViewModel) {
                             HorizontalDivider()
                             DropdownMenuItem(text = { Text("Reset view") }, onClick = { menuOpen = false; viewRef?.resetView() })
                             DropdownMenuItem(text = { Text("Printer brands") }, onClick = { menuOpen = false; vm.manageVendors() })
+                            DropdownMenuItem(
+                                text = { Text("Ask for STEP import options") },
+                                trailingIcon = { Checkbox(checked = vm.askStepOptions, onCheckedChange = null) },
+                                onClick = { vm.setAskStepOptions(!vm.askStepOptions) },
+                            )
                         }
                     }
                 },
@@ -219,6 +225,7 @@ fun PlateScreen(vm: AppViewModel) {
         )
     }
     if (settingsOpen) SettingsSheet(vm) { settingsOpen = false }
+    vm.stepImport?.let { StepImportDialog(it, vm::stepTriangleCountAsync, vm::answerStepImport) }
 }
 
 @Composable

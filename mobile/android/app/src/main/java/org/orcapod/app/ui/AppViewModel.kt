@@ -12,6 +12,9 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -27,6 +30,8 @@ import org.orcapod.app.engine.PresetEntry
 import org.orcapod.app.engine.PresetKind
 import org.orcapod.app.engine.Scene
 import org.orcapod.app.engine.SliceReport
+import org.orcapod.app.engine.StepFile
+import org.orcapod.app.engine.StepImportOptions
 import org.orcapod.app.engine.Toolpath
 import org.orcapod.app.ui.viewport.Selection
 import java.io.File
@@ -37,6 +42,17 @@ sealed interface Phase {
     data object Ready : Phase
     data class Failed(val message: String) : Phase
 }
+
+/** The STEP import dialog's question, open while [AppViewModel.stepImport] holds it. */
+class StepImportRequest(
+    val fileName: String,
+    val step: StepFile,
+    val initial: StepImportOptions,
+    internal val reply: CompletableDeferred<StepImportAnswer?>,
+)
+
+/** The dialog's answer: the options, and whether to keep them as defaults and stop asking. */
+data class StepImportAnswer(val options: StepImportOptions, val remember: Boolean, val dontAsk: Boolean)
 
 sealed interface SliceState {
     data object Idle : SliceState
@@ -71,6 +87,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var slice by mutableStateOf<SliceState>(SliceState.Idle)
         private set
     var showPreview by mutableStateOf(false)
+    /** The open STEP import dialog, if any. */
+    var stepImport by mutableStateOf<StepImportRequest?>(null)
+        private set
     var previewLayer by mutableStateOf(0)
 
     var printers by mutableStateOf<List<PresetEntry>>(emptyList())
@@ -292,15 +311,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Copies picked files into the cache (the engine reads by extension) and imports them. */
     fun importUris(uris: List<Uri>, asProject: Boolean = false) = engineAction("Importing…") { e ->
         var imported = 0
+        // Desktop asks once per import for all its STEP files.
+        var stepOptions: StepImportOptions? = null
         for (uri in uris) {
             val file = copyToCache(uri)
             val ext = file.extension.lowercase()
-            if (ext == "step" || ext == "stp") {
-                _messages.tryEmit("STEP files are not supported yet; export the model as STL or 3MF")
+            if (ext !in IMPORTABLE) {
+                _messages.tryEmit("${file.name}: not a model file (STL, 3MF, OBJ, AMF or STEP)")
                 continue
             }
-            if (ext !in IMPORTABLE) {
-                _messages.tryEmit("${file.name}: not a model file (STL, 3MF, OBJ or AMF)")
+            if (ext in STEP_EXTENSIONS) {
+                busy = "Reading ${file.name}…"
+                val step = e.openStep(file.path)
+                try {
+                    val options = stepOptions ?: askStepOptions(file.name, step) ?: break
+                    stepOptions = options
+                    busy = "Meshing ${file.name}…"
+                    imported += e.importStep(step, options)
+                } finally {
+                    e.closeStep(step)
+                    busy = "Importing…"
+                }
                 continue
             }
             if (asProject && ext == "3mf") {
@@ -316,6 +347,75 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         refreshScene()
         invalidateSlice()
+    }
+
+    // --- STEP import dialog ---
+
+    /** The saved STEP choices (desktop's linear_deflection, angle_deflection, is_split_compound, ...). */
+    private fun savedStepOptions() = StepImportOptions(
+        linearDeflection = prefs.getFloat(KEY_STEP_LINEAR, StepImportOptions.LINEAR_DEFAULT.toFloat()).toDouble()
+            .takeIf { it in StepImportOptions.LINEAR_MIN..StepImportOptions.LINEAR_MAX } ?: StepImportOptions.LINEAR_DEFAULT,
+        angleDeflection = prefs.getFloat(KEY_STEP_ANGLE, StepImportOptions.ANGLE_DEFAULT.toFloat()).toDouble()
+            .takeIf { it in StepImportOptions.ANGLE_MIN..StepImportOptions.ANGLE_MAX } ?: StepImportOptions.ANGLE_DEFAULT,
+        splitCompound = prefs.getBoolean(KEY_STEP_SPLIT, true),
+        keepNames = prefs.getBoolean(KEY_STEP_KEEP_NAMES, true),
+        asAssembly = prefs.getBoolean(KEY_STEP_ASSEMBLY, true),
+    )
+
+    /** Desktop StepMeshDialog: null when the user cancelled the import. */
+    private suspend fun askStepOptions(fileName: String, step: StepFile): StepImportOptions? {
+        val saved = savedStepOptions()
+        if (!askStepOptions) return saved
+        val reply = CompletableDeferred<StepImportAnswer?>()
+        val label = busy
+        busy = null
+        stepImport = StepImportRequest(fileName, step, saved, reply)
+        val answer = try {
+            reply.await()
+        } finally {
+            stepImport = null
+            busy = label
+        }
+        if (answer == null) return null
+        if (answer.remember || answer.dontAsk) {
+            val o = answer.options
+            prefs.edit()
+                .putFloat(KEY_STEP_LINEAR, o.linearDeflection.toFloat())
+                .putFloat(KEY_STEP_ANGLE, o.angleDeflection.toFloat())
+                .putBoolean(KEY_STEP_SPLIT, o.splitCompound)
+                .putBoolean(KEY_STEP_KEEP_NAMES, o.keepNames)
+                .putBoolean(KEY_STEP_ASSEMBLY, o.asAssembly)
+                .apply()
+        }
+        if (answer.dontAsk) setAskStepOptions(false)
+        return answer.options
+    }
+
+    /** Answers the open STEP dialog; null cancels the import. */
+    fun answerStepImport(answer: StepImportAnswer?) {
+        stepImport?.reply?.complete(answer)
+    }
+
+    /**
+     * Counts the triangles the import would produce, for the dialog. Runs
+     * outside the caller's scope so the caller can stop waiting at once; it
+     * then calls [StepFile.cancel] to stop the count. Null when cancelled or failed.
+     */
+    fun stepTriangleCountAsync(step: StepFile, linear: Double, angle: Double): Deferred<Long?> = viewModelScope.async {
+        try {
+            engine?.stepTriangleCount(step, linear, angle)
+        } catch (ex: OrcaException) {
+            null
+        }
+    }
+
+    /** Desktop Preferences "Show the STEP mesh parameter setting dialog". */
+    var askStepOptions by mutableStateOf(prefs.getBoolean(KEY_STEP_SHOW_DIALOG, true))
+        private set
+
+    fun setAskStepOptions(ask: Boolean) {
+        askStepOptions = ask
+        prefs.edit().putBoolean(KEY_STEP_SHOW_DIALOG, ask).apply()
     }
 
     fun exportProject(uri: Uri) = engineAction("Exporting…") { e ->
@@ -491,6 +591,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val TAG = "OrcaPod"
-        val IMPORTABLE = setOf("stl", "3mf", "obj", "amf")
+        val STEP_EXTENSIONS = setOf("step", "stp")
+        val IMPORTABLE = setOf("stl", "3mf", "obj", "amf") + STEP_EXTENSIONS
+        private const val KEY_STEP_LINEAR = "step_linear_deflection"
+        private const val KEY_STEP_ANGLE = "step_angle_deflection"
+        private const val KEY_STEP_SPLIT = "step_split_compound"
+        private const val KEY_STEP_KEEP_NAMES = "step_keep_names"
+        private const val KEY_STEP_ASSEMBLY = "step_load_as_assembly"
+        private const val KEY_STEP_SHOW_DIALOG = "step_show_dialog"
     }
 }

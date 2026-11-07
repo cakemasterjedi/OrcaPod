@@ -128,6 +128,23 @@ esac
 # it too. BOOST_FILESYSTEM_NO_CXX20_ATOMIC_REF: the NDK's libc++ has no
 # std::atomic_ref yet, so Boost.Filesystem falls back to boost::atomic_ref, as
 # its CMake configure check would choose.
+# STEP import: OpenCASCADE cross-built with the NDK toolchain.
+case "$ORCAPOD_STEP" in
+    real)
+        OCCT_PREFIX="$(engine_build_occt "$BUILD" \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="$ABI" -DANDROID_PLATFORM="android-$API" -DANDROID_STL=c++_static)"
+        OCCT_FLAGS=(-isystem "$OCCT_PREFIX/include/occt")
+        OCCT_LIBS=(-Wl,--start-group)
+        for tk in "${OCCT_TOOLKITS[@]}"; do OCCT_LIBS+=("$OCCT_PREFIX/lib/lib$tk.a"); done
+        OCCT_LIBS+=(-Wl,--end-group)
+        ;;
+    stub)
+        OCCT_FLAGS=(-I"$BRIDGE/shim/occt-stub" -DORCAPOD_STEP_STUB)
+        OCCT_LIBS=()
+        ;;
+esac
+
 CFLAGS=(
     -std=c++17 -O2 -DNDEBUG -fPIC -fsigned-char -Wno-deprecated-declarations
     -DBOOST_FILESYSTEM_NO_CXX20_ATOMIC_REF
@@ -135,7 +152,7 @@ CFLAGS=(
     # platform shims (boost/log, boost/nowide, occt stub) and TBB, and only
     # then the real Boost headers.
     -I"$BRIDGE/shim-host"
-    -I"$BRIDGE/shim" -I"$BRIDGE/shim/occt-stub"
+    -I"$BRIDGE/shim" "${OCCT_FLAGS[@]}"
     "${TBB_FLAGS[@]}"
     -I"$SRC" -I"$SRC/libslic3r" -I"$BUILD/gen"
     -I"$DEPS" -I"$DEPS/admesh"
@@ -187,7 +204,7 @@ mapfile -t OBJS < <(grep -v -e 'orcapod_slice\.o$' "$MANIFEST")
 ARCHIVE="$BUILD/libengine.a"
 rm -f "$ARCHIVE"
 "$AR" rcs "$ARCHIVE" "${OBJS[@]}"
-LIBS=("${TBB_LIBS[@]}" "$PREFIX/lib/libmpfr.a" "$PREFIX/lib/libgmp.a" -ldl -lm)
+LIBS=("${OCCT_LIBS[@]}" "${TBB_LIBS[@]}" "$PREFIX/lib/libmpfr.a" "$PREFIX/lib/libgmp.a" -ldl -lm)
 
 # The app loads one self-contained library: libc++ is linked in statically and
 # only the bridge's C API is exported. --whole-archive keeps every orca_*

@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 /// Version of the C ABI contract in this header. Callers verify it at runtime.
-#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)42)
+#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)43)
 
 typedef int32_t orca_status_code;
 #define ORCA_STATUS_OK                     ((orca_status_code)0)
@@ -193,7 +193,8 @@ void orca_plater_free(orca_plater *plater);
 /// project starts a new history. Mesh revisions are unique per session, so
 /// (object id, mesh revision) identifies mesh content across undo/redo.
 /// Imports EVERY object of a model file through upstream
-/// `Model::read_from_file` (STL, OBJ, AMF, 3MF geometry — desktop "Import").
+/// `Model::read_from_file` (STL, OBJ, AMF, 3MF geometry — desktop "Import"),
+/// or `Model::read_from_step` with the desktop defaults for .step/.stp.
 /// Each mesh is centered via `center_around_origin()` with instance offsets
 /// compensated (file placements are preserved); the imported group's XY
 /// bounding-box center is then moved to the caller's bed center (engine
@@ -205,6 +206,80 @@ orca_result orca_plater_import_model(orca_plater *plater, const char *path,
                                      orca_object_id *out_first_object_id,
                                      uint32_t *out_object_count,
                                      orca_revision *out_revision);
+// --- STEP import (desktop StepMeshDialog, ABI v43) ---------------------------
+
+/// A parsed STEP document. Desktop reads the file once, lets the user pick
+/// the meshing quality while it shows the resulting triangle count, then
+/// meshes it into the plater; the handle keeps the parsed document between
+/// those steps. orca_plater_import_model also imports STEP with the desktop
+/// defaults below, for callers that show no dialog.
+typedef struct orca_step orca_step;
+
+/// Desktop defaults (AppConfig linear_deflection / angle_deflection) and the
+/// ranges StepMeshDialog accepts.
+#define ORCA_STEP_LINEAR_DEFLECTION_DEFAULT 0.003
+#define ORCA_STEP_LINEAR_DEFLECTION_MIN     0.001
+#define ORCA_STEP_LINEAR_DEFLECTION_MAX     0.1
+#define ORCA_STEP_ANGLE_DEFLECTION_DEFAULT  0.5
+#define ORCA_STEP_ANGLE_DEFLECTION_MIN      0.01
+#define ORCA_STEP_ANGLE_DEFLECTION_MAX      1.0
+
+typedef struct orca_step_info {
+    /// The file names its bodies, so keep_names can apply them.
+    uint8_t has_original_names;
+    /// Some compound holds several bodies: their names survive only with
+    /// split_compound.
+    uint8_t has_multi_body_compound;
+} orca_step_info;
+
+typedef struct orca_step_import_options {
+    /// Chordal deflection in mm and angular deflection in radians, inside
+    /// the ORCA_STEP_*_MIN..MAX ranges (else ORCA_STATUS_INVALID_ARGUMENT).
+    double linear_deflection;
+    double angle_deflection;
+    /// Desktop "Split compound and compsolid into multiple objects": each
+    /// body of a multi-body part becomes its own part.
+    uint8_t split_compound;
+    /// Desktop "Keep original names": parts take the body names stored in
+    /// the file, where it has any (multi-body compounds need split_compound).
+    uint8_t keep_names;
+    /// Desktop "Load as an assembly" (1) or "Load as a single object (can be
+    /// split later)" (0): the latter hides the parts of a multi-part object
+    /// (ModelObject::imported_parts_hidden).
+    uint8_t load_as_assembly;
+} orca_step_import_options;
+
+/// Fills `out_options` with the desktop defaults (assembly, split compound
+/// and keep names on).
+void orca_step_import_options_default(orca_step_import_options *out_options);
+
+/// Reads and parses a .step/.stp file (the slow part of a STEP import).
+/// A file that is not a readable STEP document is ORCA_STATUS_INVALID_MODEL.
+orca_result orca_step_open(const char *path, orca_step **out_step,
+                           orca_step_info *out_info);
+void orca_step_free(orca_step *step);
+
+/// Meshes the document with the given deflections and returns the triangle
+/// count the import would produce (desktop "Number of triangular facets").
+/// ORCA_STATUS_CANCELLED after orca_step_cancel.
+orca_result orca_step_triangle_count(orca_step *step, double linear_deflection,
+                                     double angle_deflection,
+                                     uint32_t *out_triangle_count);
+
+/// Stops a running orca_step_triangle_count from any thread. The next call
+/// on the handle runs normally.
+void orca_step_cancel(orca_step *step);
+
+/// Meshes the document into the plater as one object whose parts are the
+/// file's bodies (desktop STEP import), placed as orca_plater_import_model
+/// places its objects. One mutation; the handle stays usable.
+orca_result orca_plater_import_step(orca_plater *plater, orca_step *step,
+                                    const orca_step_import_options *options,
+                                    double bed_center_x, double bed_center_y,
+                                    orca_object_id *out_first_object_id,
+                                    uint32_t *out_object_count,
+                                    orca_revision *out_revision);
+
 orca_result orca_plater_object_delete(orca_plater *plater,
                                       orca_object_id object_id,
                                       orca_revision *out_revision);

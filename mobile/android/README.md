@@ -1,6 +1,6 @@
 # OrcaPod for Android
 
-The Android app: import STL, 3MF, OBJ or AMF models onto a 3D build plate,
+The Android app: import STL, 3MF, OBJ, AMF or STEP models onto a 3D build plate,
 move, rotate and scale them, pick printer, filament and process profiles,
 slice with OrcaSlicer's engine, preview the layers and send or save the
 G-code. See [docs/HLSD/android-app.md](../../docs/HLSD/android-app.md) for

@@ -15,6 +15,32 @@ class OrcaException(val code: Int, message: String) : Exception(message) {
     }
 }
 
+/**
+ * Desktop STEP import options (StepMeshDialog); ranges and defaults are
+ * the bridge's ORCA_STEP_* values.
+ */
+data class StepImportOptions(
+    /** Chordal deflection, mm. */
+    val linearDeflection: Double = LINEAR_DEFAULT,
+    /** Angular deflection, radians. */
+    val angleDeflection: Double = ANGLE_DEFAULT,
+    /** Each body of a multi-body part becomes its own part. */
+    val splitCompound: Boolean = true,
+    /** Parts take the body names stored in the file. */
+    val keepNames: Boolean = true,
+    /** Load as an assembly; false loads a single object whose parts are hidden. */
+    val asAssembly: Boolean = true,
+) {
+    companion object {
+        const val LINEAR_DEFAULT = 0.003
+        const val LINEAR_MIN = 0.001
+        const val LINEAR_MAX = 0.1
+        const val ANGLE_DEFAULT = 0.5
+        const val ANGLE_MIN = 0.01
+        const val ANGLE_MAX = 1.0
+    }
+}
+
 enum class PresetKind(val code: Int) { PRINTER(0), FILAMENT(1), PROCESS(2) }
 
 class PresetEntry(

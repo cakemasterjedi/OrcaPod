@@ -55,6 +55,19 @@ internal object Native {
     external fun platerLayFlat(plater: Long, objectId: Long, instanceId: Long, nx: Double, ny: Double, nz: Double)
     external fun platerExport3mf(plater: Long, path: String)
 
+    // --- STEP import ---
+    /** Returns the handle, has-original-names (0/1) and has-multi-body-compound (0/1). */
+    external fun stepOpen(path: String): LongArray
+    external fun stepFree(step: Long)
+    /** Stops a running [stepTriangleCount]; callable from any thread. */
+    external fun stepCancel(step: Long)
+    external fun stepTriangleCount(step: Long, linear: Double, angle: Double): Long
+    /** Returns the first imported object id and the object count. */
+    external fun platerImportStep(
+        plater: Long, step: Long, linear: Double, angle: Double,
+        splitCompound: Boolean, keepNames: Boolean, asAssembly: Boolean, cx: Double, cy: Double,
+    ): LongArray
+
     // --- slicing ---
     external fun jobNew(): Long
     external fun jobCancel(job: Long)

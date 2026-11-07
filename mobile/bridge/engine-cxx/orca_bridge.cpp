@@ -24,6 +24,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <strings.h>
 #include <sys/stat.h>
 
 // --- adapter: translation hook --------------------------------------
@@ -135,6 +136,7 @@ void orca_result_dispose(orca_result *result) {
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Utils.hpp"
 #include "libslic3r/Format/3mf.hpp"
+#include "libslic3r/Format/STEP.hpp"
 #include "libslic3r/Format/STL.hpp"
 #include "libslic3r/CutUtils.hpp"
 #include "libslic3r/TriangleSelector.hpp"
@@ -1728,6 +1730,130 @@ orca_result orca_plater_new(orca_plater **out) {
 
 void orca_plater_free(orca_plater *plater) { delete plater; }
 
+/// Places a freshly read model's objects on the bed and adds them to the
+/// document as one "Import" mutation (orca_plater_import_model and
+/// orca_plater_import_step).
+static orca_result orcapad_import_objects(orca_plater *plater, const char *operation,
+                                          Slic3r::Model &temporary,
+                                          double bed_center_x, double bed_center_y,
+                                          orca_object_id *out_first_object_id,
+                                          uint32_t *out_object_count,
+                                          orca_revision *out_revision) {
+    if (temporary.objects.empty())
+        return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
+                            "input contains no model object");
+
+    // 1) center meshes (desktop rotation/scale pivot) while preserving
+    //    each instance's world placement: o' = o - L * shift
+    Slic3r::BoundingBoxf3 group;
+    for (Slic3r::ModelObject *object : temporary.objects) {
+        if (object->instances.empty())
+            return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
+                                "imported object has no instance");
+        const Slic3r::Vec3d shift = -object->raw_mesh_bounding_box().center();
+        object->center_around_origin();
+        for (Slic3r::ModelInstance *instance : object->instances) {
+            const Slic3r::Vec3d delta = instance->get_matrix().linear() * shift;
+            instance->set_offset(instance->get_offset() - delta);
+        }
+        for (size_t i = 0; i < object->instances.size(); ++i)
+            group.merge(object->instance_bounding_box(i));
+    }
+    if (!group.defined)
+        return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
+                            "imported geometry has no bounds");
+    // 2) move the group's XY center to the bed center, 3) drop to bed
+    const Slic3r::Vec3d move(bed_center_x - group.center().x(),
+                             bed_center_y - group.center().y(), 0.0);
+    for (Slic3r::ModelObject *object : temporary.objects) {
+        object->translate_instances(move);
+        object->ensure_on_bed(false);
+    }
+
+    OrcapadMutation mutation(*plater, "Import");
+    std::vector<Slic3r::ModelObject *> added;
+    for (Slic3r::ModelObject *source : temporary.objects) {
+        Slic3r::ModelObject *object = plater->model.add_object(*source);
+        if (!object)
+            return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
+                                "engine did not create a document object");
+        added.push_back(object);
+        if (!orcapad_register_object(*plater, *object))
+            return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
+                                "engine returned an invalid or reused object ID");
+    }
+    const orca_object_id first = static_cast<orca_object_id>(added.front()->id().id);
+    *out_revision = mutation.commit();
+    *out_first_object_id = first;
+    *out_object_count = static_cast<uint32_t>(added.size());
+    return orcapad_ok();
+}
+
+static bool orcapad_is_step_path(const char *path) {
+    const auto ends_with = [path](const char *suffix) {
+        const size_t n = strlen(path), m = strlen(suffix);
+        return n >= m && strncasecmp(path + n - m, suffix, m) == 0;
+    };
+    return ends_with(".step") || ends_with(".stp");
+}
+
+struct orca_step {
+    std::unique_ptr<Slic3r::Step> step;
+    orca_step_info info{};
+};
+
+/// Desktop Plater::load_files for one STEP file once StepMeshDialog closed:
+/// apply the name choice, mesh with the chosen quality, then the
+/// read_from_step epilogue and the import presentation choice.
+static orca_result orcapad_step_mesh(orca_step &handle, const char *operation,
+                                     const orca_step_import_options &options,
+                                     Slic3r::Model &model) {
+    Slic3r::Step &step = *handle.step;
+    // Names of bodies merged by an unsplit compound cannot be kept.
+    step.set_keep_original_names(options.keep_names && step.has_original_names() &&
+                                 (options.split_compound || !step.has_multi_body_compound()));
+    // A triangle count may have left a triangulation of other quality.
+    step.clean_mesh_data();
+    step.m_stop_mesh.store(false);
+    bool cancelled = false;
+    const Slic3r::Step::Step_Status status =
+        step.mesh(&model, cancelled, options.split_compound != 0, options.linear_deflection,
+                  options.angle_deflection, step.keep_original_names());
+    if (status == Slic3r::Step::Step_Status::CANCEL)
+        return orcapad_fail(ORCA_STATUS_CANCELLED, operation, "STEP meshing was cancelled");
+    if (status != Slic3r::Step::Step_Status::MESH_SUCCESS || model.objects.empty())
+        return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
+                            "meshing of the STEP file failed or it has no valid shape");
+    model.add_default_instances();
+    for (Slic3r::ModelObject *object : model.objects)
+        object->imported_parts_hidden = !options.load_as_assembly && object->volumes.size() > 1 &&
+                                        !object->has_individual_part_settings();
+    return orcapad_ok();
+}
+
+static bool orcapad_valid_step_options(const orca_step_import_options &options) {
+    return std::isfinite(options.linear_deflection) && std::isfinite(options.angle_deflection) &&
+           options.linear_deflection >= ORCA_STEP_LINEAR_DEFLECTION_MIN &&
+           options.linear_deflection <= ORCA_STEP_LINEAR_DEFLECTION_MAX &&
+           options.angle_deflection >= ORCA_STEP_ANGLE_DEFLECTION_MIN &&
+           options.angle_deflection <= ORCA_STEP_ANGLE_DEFLECTION_MAX;
+}
+
+/// Reads and parses `path` into `out` (inside orcapad_guard).
+static orca_result orcapad_step_load(const char *operation, const char *path,
+                                     std::unique_ptr<orca_step> &out) {
+    auto handle = std::make_unique<orca_step>();
+    handle->step = std::make_unique<Slic3r::Step>(std::string(path));
+    // Collect body names for keep_names, as desktop does for its dialog.
+    if (handle->step->load(true) != Slic3r::Step::Step_Status::LOAD_SUCCESS)
+        return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
+                            "the file is not a readable STEP document");
+    handle->info.has_original_names = handle->step->has_original_names() ? 1 : 0;
+    handle->info.has_multi_body_compound = handle->step->has_multi_body_compound() ? 1 : 0;
+    out = std::move(handle);
+    return orcapad_ok();
+}
+
 orca_result orca_plater_import_model(orca_plater *plater, const char *path,
                                      double bed_center_x, double bed_center_y,
                                      orca_object_id *out_first_object_id,
@@ -1756,59 +1882,123 @@ orca_result orca_plater_import_model(orca_plater *plater, const char *path,
         if (!orcapad_revision_available(*plater))
             return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
                                 "document revision is exhausted");
-        // Geometry import (desktop "Import 3MF/STL/OBJ/AMF"): configs inside
-        // project files are NOT applied here — that is project open.
-        Slic3r::Model temporary = Slic3r::Model::read_from_file(
-            path, nullptr, nullptr,
-            Slic3r::LoadStrategy::AddDefaultInstances | Slic3r::LoadStrategy::LoadModel);
-        if (temporary.objects.empty())
-            return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
-                                "input contains no model object");
+        Slic3r::Model temporary;
+        if (orcapad_is_step_path(path)) {
+            // Desktop STEP import with the dialog's defaults.
+            std::unique_ptr<orca_step> step;
+            orca_result loaded = orcapad_step_load(operation, path, step);
+            if (loaded.code != ORCA_STATUS_OK) return loaded;
+            orca_step_import_options options;
+            orca_step_import_options_default(&options);
+            orca_result meshed = orcapad_step_mesh(*step, operation, options, temporary);
+            if (meshed.code != ORCA_STATUS_OK) return meshed;
+        } else {
+            // Geometry import (desktop "Import 3MF/STL/OBJ/AMF"): configs inside
+            // project files are NOT applied here — that is project open.
+            temporary = Slic3r::Model::read_from_file(
+                path, nullptr, nullptr,
+                Slic3r::LoadStrategy::AddDefaultInstances | Slic3r::LoadStrategy::LoadModel);
+        }
+        return orcapad_import_objects(plater, operation, temporary, bed_center_x, bed_center_y,
+                                      out_first_object_id, out_object_count, out_revision);
+    });
+}
 
-        // 1) center meshes (desktop rotation/scale pivot) while preserving
-        //    each instance's world placement: o' = o - L * shift
-        Slic3r::BoundingBoxf3 group;
-        for (Slic3r::ModelObject *object : temporary.objects) {
-            if (object->instances.empty())
-                return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
-                                    "imported object has no instance");
-            const Slic3r::Vec3d shift = -object->raw_mesh_bounding_box().center();
-            object->center_around_origin();
-            for (Slic3r::ModelInstance *instance : object->instances) {
-                const Slic3r::Vec3d delta = instance->get_matrix().linear() * shift;
-                instance->set_offset(instance->get_offset() - delta);
-            }
-            for (size_t i = 0; i < object->instances.size(); ++i)
-                group.merge(object->instance_bounding_box(i));
-        }
-        if (!group.defined)
-            return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
-                                "imported geometry has no bounds");
-        // 2) move the group's XY center to the bed center, 3) drop to bed
-        const Slic3r::Vec3d move(bed_center_x - group.center().x(),
-                                 bed_center_y - group.center().y(), 0.0);
-        for (Slic3r::ModelObject *object : temporary.objects) {
-            object->translate_instances(move);
-            object->ensure_on_bed(false);
-        }
+void orca_step_import_options_default(orca_step_import_options *out_options) {
+    if (!out_options) return;
+    out_options->linear_deflection = ORCA_STEP_LINEAR_DEFLECTION_DEFAULT;
+    out_options->angle_deflection = ORCA_STEP_ANGLE_DEFLECTION_DEFAULT;
+    out_options->split_compound = 1;
+    out_options->keep_names = 1;
+    out_options->load_as_assembly = 1;
+}
 
-        OrcapadMutation mutation(*plater, "Import");
-        std::vector<Slic3r::ModelObject *> added;
-        for (Slic3r::ModelObject *source : temporary.objects) {
-            Slic3r::ModelObject *object = plater->model.add_object(*source);
-            if (!object)
-                return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
-                                    "engine did not create a document object");
-            added.push_back(object);
-            if (!orcapad_register_object(*plater, *object))
-                return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
-                                    "engine returned an invalid or reused object ID");
-        }
-        const orca_object_id first = static_cast<orca_object_id>(added.front()->id().id);
-        *out_revision = mutation.commit();
-        *out_first_object_id = first;
-        *out_object_count = static_cast<uint32_t>(added.size());
+orca_result orca_step_open(const char *path, orca_step **out_step, orca_step_info *out_info) {
+    constexpr const char *operation = "orca_step_open";
+    if (out_step) *out_step = nullptr;
+    if (out_info) *out_info = orca_step_info{};
+    if (!path || !path[0] || !out_step)
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "path is empty or output pointer is null");
+    struct stat path_status;
+    if (stat(path, &path_status) != 0)
+        return orcapad_fail(ORCA_STATUS_IO_FAILURE, operation,
+                            "input file is not accessible");
+    return orcapad_guard(operation, [&]() -> orca_result {
+        std::unique_ptr<orca_step> step;
+        orca_result loaded = orcapad_step_load(operation, path, step);
+        if (loaded.code != ORCA_STATUS_OK) return loaded;
+        if (out_info) *out_info = step->info;
+        *out_step = step.release();
         return orcapad_ok();
+    });
+}
+
+void orca_step_free(orca_step *step) {
+    if (!step) return;
+    // OCCT document teardown touches the shared XCAF application.
+    std::lock_guard<std::recursive_mutex> engine_lock(orcapad_engine_mutex);
+    delete step;
+}
+
+void orca_step_cancel(orca_step *step) {
+    if (step && step->step) step->step->m_stop_mesh.store(true); // atomic, thread safe
+}
+
+orca_result orca_step_triangle_count(orca_step *step, double linear_deflection,
+                                     double angle_deflection, uint32_t *out_triangle_count) {
+    constexpr const char *operation = "orca_step_triangle_count";
+    if (out_triangle_count) *out_triangle_count = 0;
+    if (!step || !step->step)
+        return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, operation, "STEP handle is null");
+    orca_step_import_options options;
+    orca_step_import_options_default(&options);
+    options.linear_deflection = linear_deflection;
+    options.angle_deflection = angle_deflection;
+    if (!out_triangle_count || !orcapad_valid_step_options(options))
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "deflection out of range or output pointer is null");
+    return orcapad_guard(operation, [&]() -> orca_result {
+        step->step->m_stop_mesh.store(false);
+        const unsigned int count = step->step->get_triangle_num(linear_deflection, angle_deflection);
+        if (step->step->m_stop_mesh.exchange(false))
+            return orcapad_fail(ORCA_STATUS_CANCELLED, operation, "triangle count was cancelled");
+        *out_triangle_count = count;
+        return orcapad_ok();
+    });
+}
+
+orca_result orca_plater_import_step(orca_plater *plater, orca_step *step,
+                                    const orca_step_import_options *options,
+                                    double bed_center_x, double bed_center_y,
+                                    orca_object_id *out_first_object_id,
+                                    uint32_t *out_object_count,
+                                    orca_revision *out_revision) {
+    constexpr const char *operation = "orca_plater_import_step";
+    if (out_first_object_id) *out_first_object_id = 0;
+    if (out_object_count) *out_object_count = 0;
+    if (out_revision) *out_revision = 0;
+    if (!plater || !step || !step->step)
+        return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, operation,
+                            "plater or STEP handle is null");
+    if (!options || !out_first_object_id || !out_object_count || !out_revision)
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "options or output pointer is null");
+    if (!orcapad_valid_step_options(*options))
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "deflection is out of range");
+    if (!std::isfinite(bed_center_x) || !std::isfinite(bed_center_y))
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "bed center contains a non-finite value");
+    return orcapad_guard(operation, [&]() -> orca_result {
+        if (!orcapad_revision_available(*plater))
+            return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
+                                "document revision is exhausted");
+        Slic3r::Model temporary;
+        orca_result meshed = orcapad_step_mesh(*step, operation, *options, temporary);
+        if (meshed.code != ORCA_STATUS_OK) return meshed;
+        return orcapad_import_objects(plater, operation, temporary, bed_center_x, bed_center_y,
+                                      out_first_object_id, out_object_count, out_revision);
     });
 }
 

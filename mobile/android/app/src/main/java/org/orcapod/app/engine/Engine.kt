@@ -8,6 +8,29 @@ import java.util.concurrent.Executors
 /** An object's mesh in object space, shared across snapshots while its revision holds. */
 class Mesh(val revision: Long, val positions: FloatArray, val indices: IntArray)
 
+/** A parsed STEP document, kept between the import dialog and the import. */
+class StepFile internal constructor(
+    @Volatile private var handle: Long,
+    /** The file names its bodies, so keeping names can apply. */
+    val hasOriginalNames: Boolean,
+    /** Some part holds several bodies; their names survive only when split. */
+    val hasMultiBodyCompound: Boolean,
+) : Closeable {
+    internal fun handle(): Long = handle.also { check(it != 0L) { "STEP file is closed" } }
+
+    /** Stops a running triangle count; callable from any thread. */
+    fun cancel() {
+        val h = handle
+        if (h != 0L) Native.stepCancel(h)
+    }
+
+    override fun close() {
+        val h = handle
+        handle = 0
+        if (h != 0L) Native.stepFree(h)
+    }
+}
+
 /** A document snapshot with every object's mesh resolved. */
 class Scene(val snapshot: SceneSnapshot, val meshes: Map<Long, Mesh>) {
     companion object {
@@ -77,6 +100,31 @@ class Engine private constructor(private var presets: Long, private val plater: 
         val v = volume()
         Native.platerImport(plater, path, v.centerX, v.centerY)[1].toInt()
     }
+
+    // --- STEP import ---
+
+    /** Reads and parses a STEP file; [StepFile.close] releases it. */
+    suspend fun openStep(path: String): StepFile = onEngine {
+        val r = Native.stepOpen(path)
+        StepFile(r[0], hasOriginalNames = r[1] != 0L, hasMultiBodyCompound = r[2] != 0L)
+    }
+
+    /** The triangle count an import with these deflections produces; throws CANCELLED after [StepFile.cancel]. */
+    suspend fun stepTriangleCount(step: StepFile, linear: Double, angle: Double): Long = onEngine {
+        Native.stepTriangleCount(step.handle(), linear, angle)
+    }
+
+    /** Meshes the STEP file into the document as one object; returns the object count. */
+    suspend fun importStep(step: StepFile, options: StepImportOptions): Int = onEngine {
+        val v = volume()
+        Native.platerImportStep(
+            plater, step.handle(), options.linearDeflection, options.angleDeflection,
+            options.splitCompound, options.keepNames, options.asAssembly, v.centerX, v.centerY,
+        )[1].toInt()
+    }
+
+    /** Releases a [StepFile] once no call on it runs. */
+    suspend fun closeStep(step: StepFile) = onEngine { step.close() }
 
     /** Opens a 3MF as a project, adopting the settings it carries. */
     suspend fun openProject(path: String) = onEngine {

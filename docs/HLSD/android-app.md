@@ -49,10 +49,20 @@ OrcaSlicer's `resources/profiles` tree is zipped into the APK's assets at
 build time. On first launch the user picks the printer brands they own, and
 only those vendors (plus the shared filament library and vendor-independent
 files) are extracted into the engine's data directory, which keeps the
-printer list short and preset loading fast, like the desktop setup wizard.
+printer list short, like the desktop setup wizard.
 After an app update the same brands are re-extracted, since the bundled
 profiles may have changed. User presets live beside them in `user/default`
 and survive both.
+
+The engine loads every vendor under `system/`, and parsing a vendor's preset
+tree dominates startup, so only one installed brand sits there at a time: the
+brand of the printer in use. The others are parked in `orca-brands/`, outside
+the data directory. Picking another brand in the printer picker moves the
+bundles between the two (renames on one filesystem, finished by the next run
+if cut short), reloads the engine's presets and restores the printer, filament
+and process last used with that brand. User presets whose parent belongs to a
+parked brand are skipped by the engine until that brand is loaded again; their
+files are left untouched.
 
 The settings sheet edits a handful of common process and filament options on
 top of the selected presets through the engine's edited-preset mechanism, so
@@ -187,6 +197,29 @@ Android or third-party network library, so `HttpHostsTest` and
 `BambuLanHostTest` run each against a mock of its printer's API, including a
 TLS MQTT broker and an FTPS server that refuses data connections without
 session reuse.
+## Model library
+
+The library screen (`library/`, `ui/LibraryScreen.kt`) brings models in
+from the web, through two routes chosen by what each site offers:
+
+- **Thingiverse** has an official REST API, so it gets a native search grid
+  and a file picker. The API needs an app token; OrcaPod ships none, and the
+  user pastes their own (created free at thingiverse.com/apps/create), kept
+  in the app's private preferences.
+- **Printables, MakerWorld, MyMiniFactory, Cults** have no public API for
+  searching and downloading (MyMiniFactory's needs a registered OAuth app),
+  so they open in an in-app WebView where the user browses and signs in as in
+  a browser. The WebView's download listener re-fetches each download with
+  the page's cookies, or, for files a page builds in a `blob:` URL, has the
+  page read the blob and hand it back through a JavaScript interface that
+  only accepts the nonce issued for that download.
+
+Downloads land in a per-download cache directory. Zip archives are unpacked
+flat (entry paths are reduced to base names, so nothing escapes the
+directory) to their model files; a 3MF is kept whole. One model file goes
+straight to the plate, several open a picker. Credentials (the API token,
+site cookies) are not forwarded when a download redirects to another host.
+A web link shared to the app from a browser opens the library on that page.
 
 ## Limits
 

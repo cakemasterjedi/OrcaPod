@@ -12,6 +12,7 @@ import org.orcapod.app.data.PrinterFleet
 import org.orcapod.app.ui.AppViewModel
 import org.orcapod.app.ui.OrcaPodApp
 import org.orcapod.app.ui.Phase
+import org.orcapod.app.ui.firstWebLink
 
 class MainActivity : ComponentActivity() {
     private val viewModel: AppViewModel by viewModels()
@@ -44,6 +45,8 @@ class MainActivity : ComponentActivity() {
         when (intent?.action) {
             Intent.ACTION_VIEW -> intent.data?.let { pending += it }
             Intent.ACTION_SEND -> stream(intent)?.let { pending += it }
+                // A model page shared from a browser opens in the model library.
+                ?: firstWebLink(intent.getStringExtra(Intent.EXTRA_TEXT))?.let { viewModel.openLibrary(it) }
             Intent.ACTION_SEND_MULTIPLE -> streams(intent)?.let { pending += it }
         }
     }

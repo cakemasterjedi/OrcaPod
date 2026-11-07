@@ -2,10 +2,11 @@
 
 The Android app: import STL, 3MF, OBJ or AMF models onto a 3D build plate,
 move, rotate and scale them, pick printer, filament and process profiles,
-slice with OrcaSlicer's engine, preview the layers and send or save the
-G-code. The online model library searches Thingiverse (with your own app
-token) and browses Printables, MakerWorld and other sites, adding their
-downloads to the plate. See [docs/HLSD/android-app.md](../../docs/HLSD/android-app.md) for
+slice with OrcaSlicer's engine, preview the layers and send the G-code to
+an OctoPrint, Klipper (Moonraker), PrusaLink, Duet or Bambu Lab (LAN mode)
+printer, share it or save it. The online model library searches Thingiverse
+(with your own app token) and browses Printables, MakerWorld and other sites,
+adding their downloads to the plate. See [docs/HLSD/android-app.md](../../docs/HLSD/android-app.md) for
 the design.
 
 ## Build
@@ -37,6 +38,9 @@ Needs JDK 17 or newer and the Android SDK with NDK 27.2.12479018 and CMake
 build with `-Porcapod.abis=arm64-v8a,x86_64`.
 
 ## Test
+
+`./gradlew :app:testDebugUnitTest` runs the JVM tests, including the
+printer connections against mock printers.
 
 ```bash
 mobile/android/tools/host-jni-test.sh

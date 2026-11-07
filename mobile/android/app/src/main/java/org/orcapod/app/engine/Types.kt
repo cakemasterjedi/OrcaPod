@@ -221,26 +221,90 @@ fun interface ProgressListener {
 }
 
 /**
- * Extrusion toolpath of a G-code file for the layer preview. Segment `i` runs
- * from positions[6i..6i+2] to positions[6i+3..6i+5] (engine mm) with
- * extrusion role roles[i]; layer `l` covers segments
- * [layerFirst[l], layerFirst[l] + layerCount[l]).
+ * Parsed G-code for the preview: every extrusion, travel and wipe as a line
+ * segment in file order, grouped by layer, plus point markers (retractions,
+ * seams, tool and colour changes, pauses, custom G-code). Layer `l` covers
+ * segments [layerFirst[l], layerFirst[l] + layerCount[l]).
  */
 class Toolpath(
+    /** Six floats per segment: start and end, engine millimetres. */
     val positions: FloatArray,
+    /** Engine EMoveType per segment: [MOVE_TRAVEL], [MOVE_WIPE] or [MOVE_EXTRUDE]. */
+    val moveTypes: ByteArray,
+    /** Engine ExtrusionRole per segment. */
     val roles: ByteArray,
+    /** 0-based extruder per segment. */
+    val extruders: ByteArray,
+    /** [Attr.COUNT] floats per segment, in [Attr] order. */
+    val attrs: FloatArray,
+    /** Estimated time of each segment, seconds. */
+    val times: FloatArray,
     val layerZ: FloatArray,
     val layerFirst: IntArray,
     val layerCount: IntArray,
-    val estimatedSeconds: Float,
-    /** Filament used by the first extruder, mm³. */
-    val filamentVolume: Double,
-    val filamentDensity: Float,
-    val filamentDiameter: Float,
+    val layerTime: FloatArray,
+    /** Three floats per marker. */
+    val pointPositions: FloatArray,
+    /** Engine EMoveType per marker (1..7). */
+    val pointTypes: ByteArray,
+    /** Layer index of each marker. */
+    val pointLayers: IntArray,
+    /** [normal mode, silent mode] total time, seconds; silent is 0 when the same. */
+    val totals: FloatArray,
+    /** Filament used per extruder, mm³. */
+    val volumes: DoubleArray,
+    val densities: FloatArray,
+    val diameters: FloatArray,
+    /** Filament cost per kg, per extruder. */
+    val costs: FloatArray,
 ) {
-    val segmentCount get() = roles.size
+    enum class Attr { SPEED, ACTUAL_SPEED, HEIGHT, WIDTH, FAN, TEMPERATURE, FLOW, ACTUAL_FLOW, LAYER_TIME, ACCELERATION, JERK, PRESSURE_ADVANCE;
+        companion object { val COUNT = entries.size }
+    }
+
+    val segmentCount get() = moveTypes.size
     val layerTotal get() = layerZ.size
-    val filamentGrams get() = filamentVolume / 1000.0 * filamentDensity
-    val filamentMetres get() =
-        if (filamentDiameter > 0) filamentVolume / (Math.PI * filamentDiameter * filamentDiameter / 4) / 1000.0 else 0.0
+    val estimatedSeconds get() = totals[0]
+    val silentSeconds get() = totals[1]
+
+    fun attr(segment: Int, a: Attr) = attrs[segment * Attr.COUNT + a.ordinal]
+    fun move(segment: Int) = moveTypes[segment].toInt() and 0xFF
+    fun role(segment: Int) = roles[segment].toInt() and 0xFF
+
+    fun grams(extruder: Int) = volumes[extruder] / 1000.0 * densities.getOrElse(extruder) { 0f }
+    fun metres(extruder: Int): Double {
+        val d = diameters.getOrElse(extruder) { 0f }
+        return if (d > 0) volumes[extruder] / (Math.PI * d * d / 4) / 1000.0 else 0.0
+    }
+    fun cost(extruder: Int) = grams(extruder) / 1000.0 * costs.getOrElse(extruder) { 0f }
+
+    val filamentGrams get() = volumes.indices.sumOf { grams(it) }
+    val filamentMetres get() = volumes.indices.sumOf { metres(it) }
+    val filamentCost get() = volumes.indices.sumOf { cost(it) }
+
+    companion object {
+        const val MOVE_RETRACT = 1
+        const val MOVE_UNRETRACT = 2
+        const val MOVE_SEAM = 3
+        const val MOVE_TOOL_CHANGE = 4
+        const val MOVE_COLOR_CHANGE = 5
+        const val MOVE_PAUSE = 6
+        const val MOVE_CUSTOM = 7
+        const val MOVE_TRAVEL = 8
+        const val MOVE_WIPE = 9
+        const val MOVE_EXTRUDE = 10
+    }
+}
+
+/** Desktop layer-slider tick types (CustomGCode::Type through the bridge). */
+enum class CustomGcodeType(val code: Int) {
+    COLOR_CHANGE(0), PAUSE(1), TOOL_CHANGE(2), TEMPLATE(3), CUSTOM(4);
+    companion object { fun of(code: Int) = entries.firstOrNull { it.code == code } ?: CUSTOM }
+}
+
+/** One per-layer custom G-code: applied from the first layer printed at [printZ]. */
+data class CustomGcode(val printZ: Double, val type: CustomGcodeType, val extruder: Int, val colour: String, val extra: String) {
+    /** JNI constructor. */
+    constructor(printZ: Double, type: Int, extruder: Int, colour: String, extra: String) :
+        this(printZ, CustomGcodeType.of(type), extruder, colour, extra)
 }

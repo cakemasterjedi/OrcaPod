@@ -617,11 +617,14 @@ JNI_FN(jobject, platerSlice)(JNIEnv *env, jobject, jlong pl, jlong p, jstring pa
     return out;
 }
 
-// Extrusion moves only (EMoveType::Extrude); travels and markers are left out
-// of the layer preview.
+// Desktop preview data: every extrusion, travel and wipe as a line segment in
+// file order, per layer, with the attributes the desktop view types colour
+// by; retractions, seams, tool and colour changes, pauses and custom G-code
+// as point markers. Layers without extrusions (trailing travels) are dropped.
 JNI_FN(jobject, toolpathLoad)(JNIEnv *env, jobject, jstring path)
 {
-    constexpr uint8_t kMoveExtrude = 10;
+    constexpr uint8_t kMoveTravel = 8, kMoveExtrude = 10;
+    constexpr int kAttrs = 12; // keep in step with Toolpath.Attr
     orca_gcode *gcode = nullptr;
     if (!check(env, orca_gcode_load(utf8(env, path).c_str(), &gcode)))
         return nullptr;
@@ -631,53 +634,132 @@ JNI_FN(jobject, toolpathLoad)(JNIEnv *env, jobject, jstring path)
     if (!ok)
         return nullptr;
 
-    std::vector<float> pos;
-    std::vector<jbyte> roles;
-    std::vector<float> layer_z;
-    std::vector<jint> layer_first, layer_count;
+    std::vector<float> pos, attrs, times, layer_z, layer_time, point_pos;
+    std::vector<jbyte> moves, roles, extruders, point_types;
+    std::vector<jint> layer_first, layer_count, point_layers;
     pos.reserve(size_t(tp.segment_count) * 6);
-    roles.reserve(tp.segment_count);
+    attrs.reserve(size_t(tp.segment_count) * kAttrs);
     for (uint32_t l = 0; l < tp.layer_count; ++l) {
         const orca_tp_layer &layer = tp.layers[l];
-        const auto first = jint(roles.size());
+        const size_t first = moves.size(), first_point = point_types.size();
+        bool extrudes = false;
         const uint32_t end = std::min(layer.first_segment + layer.segment_count, tp.segment_count);
         for (uint32_t s = layer.first_segment; s < end; ++s) {
             const orca_tp_segment &seg = tp.segments[s];
-            if (seg.move_type != kMoveExtrude)
+            if (seg.move_type < kMoveTravel) {
+                if (seg.move_type == 0)
+                    continue;
+                point_pos.insert(point_pos.end(), {seg.end[0], seg.end[1], seg.end[2]});
+                point_types.push_back(jbyte(seg.move_type));
                 continue;
+            }
+            if (seg.move_type > kMoveExtrude)
+                continue;
+            extrudes |= seg.move_type == kMoveExtrude;
             pos.insert(pos.end(), {seg.start[0], seg.start[1], seg.start[2], seg.end[0], seg.end[1], seg.end[2]});
+            moves.push_back(jbyte(seg.move_type));
             roles.push_back(jbyte(seg.role));
+            extruders.push_back(jbyte(seg.extruder));
+            times.push_back(seg.time_seconds);
+            attrs.insert(attrs.end(), {seg.feedrate, seg.actual_feedrate, seg.height, seg.width, seg.fan_speed,
+                                       seg.temperature, seg.volumetric_rate, seg.actual_volumetric_rate,
+                                       seg.layer_duration, seg.acceleration, seg.jerk, seg.pressure_advance});
         }
-        const jint count = jint(roles.size()) - first;
-        if (count == 0)
+        if (!extrudes) {
+            // Roll the layer back: nothing in it is printed.
+            pos.resize(first * 6);
+            attrs.resize(first * kAttrs);
+            moves.resize(first);
+            roles.resize(first);
+            extruders.resize(first);
+            times.resize(first);
+            point_pos.resize(first_point * 3);
+            point_types.resize(first_point);
             continue;
+        }
+        point_layers.resize(point_types.size(), jint(layer_z.size()));
         layer_z.push_back(layer.z);
-        layer_first.push_back(first);
-        layer_count.push_back(count);
+        layer_time.push_back(layer.time_seconds);
+        layer_first.push_back(jint(first));
+        layer_count.push_back(jint(moves.size() - first));
     }
 
-    jfloatArray jpos = floats(env, pos.data(), jsize(pos.size()));
-    jbyteArray jroles = env->NewByteArray(jsize(roles.size()));
-    if (jroles && !roles.empty())
-        env->SetByteArrayRegion(jroles, 0, jsize(roles.size()), roles.data());
-    jfloatArray jz = floats(env, layer_z.data(), jsize(layer_z.size()));
-    jintArray jfirst = env->NewIntArray(jsize(layer_first.size()));
-    jintArray jcount = env->NewIntArray(jsize(layer_count.size()));
-    if (env->ExceptionCheck()) {
-        orca_toolpath_dispose(&tp);
-        return nullptr;
-    }
-    env->SetIntArrayRegion(jfirst, 0, jsize(layer_first.size()), layer_first.data());
-    env->SetIntArrayRegion(jcount, 0, jsize(layer_count.size()), layer_count.data());
-
-    jclass tp_cls = env->FindClass(cls("Toolpath").c_str());
-    jmethodID ctor = env->GetMethodID(tp_cls, "<init>", "([F[B[F[I[IFDFF)V");
-    jobject out = env->NewObject(tp_cls, ctor, jpos, jroles, jz, jfirst, jcount, jfloat(tp.estimated_time_seconds),
-                                 jdouble(tp.extruder_count > 0 ? tp.total_volumes[0] : 0.0),
-                                 jfloat(tp.extruder_count > 0 ? tp.filament_densities[0] : 0.f),
-                                 jfloat(tp.extruder_count > 0 ? tp.filament_diameters[0] : 0.f));
+    auto byte_array = [env](const std::vector<jbyte> &v) {
+        jbyteArray a = env->NewByteArray(jsize(v.size()));
+        if (a && !v.empty())
+            env->SetByteArrayRegion(a, 0, jsize(v.size()), v.data());
+        return a;
+    };
+    auto int_array = [env](const std::vector<jint> &v) {
+        jintArray a = env->NewIntArray(jsize(v.size()));
+        if (a && !v.empty())
+            env->SetIntArrayRegion(a, 0, jsize(v.size()), v.data());
+        return a;
+    };
+    const uint32_t extruder_count = std::min<uint32_t>(tp.extruder_count, ORCA_TP_MAX_EXTRUDERS);
+    const float totals[2] = {tp.estimated_time_seconds, tp.estimated_stealth_seconds};
+    jdoubleArray volumes = env->NewDoubleArray(jsize(extruder_count));
+    if (volumes)
+        env->SetDoubleArrayRegion(volumes, 0, jsize(extruder_count), tp.total_volumes);
+    jobject args[] = {
+        floats(env, pos.data(), jsize(pos.size())), byte_array(moves), byte_array(roles), byte_array(extruders),
+        floats(env, attrs.data(), jsize(attrs.size())), floats(env, times.data(), jsize(times.size())),
+        floats(env, layer_z.data(), jsize(layer_z.size())), int_array(layer_first), int_array(layer_count),
+        floats(env, layer_time.data(), jsize(layer_time.size())),
+        floats(env, point_pos.data(), jsize(point_pos.size())), byte_array(point_types), int_array(point_layers),
+        floats(env, totals, 2), volumes,
+        floats(env, tp.filament_densities, jsize(extruder_count)),
+        floats(env, tp.filament_diameters, jsize(extruder_count)),
+        floats(env, tp.filament_costs, jsize(extruder_count)),
+    };
     orca_toolpath_dispose(&tp);
+    if (env->ExceptionCheck())
+        return nullptr;
+    jclass tp_cls = env->FindClass(cls("Toolpath").c_str());
+    jmethodID ctor = env->GetMethodID(tp_cls, "<init>", "([F[B[B[B[F[F[F[I[I[F[F[B[I[F[D[F[F[F)V");
+    return env->NewObject(tp_cls, ctor, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
+                          args[8], args[9], args[10], args[11], args[12], args[13], args[14], args[15], args[16],
+                          args[17]);
+}
+
+// --- per-layer custom G-code (desktop layer-slider ticks) ----------------------
+
+JNI_FN(jobjectArray, customGcodes)(JNIEnv *env, jobject, jlong p)
+{
+    int32_t count = 0;
+    if (!check(env, orca_plater_custom_gcode_count(plater_of(p), &count)))
+        return nullptr;
+    jclass item_cls = env->FindClass(cls("CustomGcode").c_str());
+    jmethodID ctor = env->GetMethodID(item_cls, "<init>", "(DIILjava/lang/String;Ljava/lang/String;)V");
+    jobjectArray out = env->NewObjectArray(count, item_cls, nullptr);
+    for (int32_t i = 0; i < count && out; ++i) {
+        orca_custom_gcode_item item{};
+        if (!check(env, orca_plater_custom_gcode_item(plater_of(p), i, &item)))
+            return nullptr;
+        jstring colour = jstr(env, item.color), extra = jstr(env, item.extra);
+        jobject jitem = env->NewObject(item_cls, ctor, jdouble(item.print_z), jint(item.type), jint(item.extruder),
+                                       colour, extra);
+        orca_custom_gcode_item_dispose(&item);
+        env->SetObjectArrayElement(out, i, jitem);
+        env->DeleteLocalRef(jitem);
+        env->DeleteLocalRef(colour);
+        env->DeleteLocalRef(extra);
+    }
     return out;
+}
+
+JNI_FN(void, customGcodeAdd)(JNIEnv *env, jobject, jlong p, jdouble z, jint type, jint extruder, jstring colour,
+                             jstring extra)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_custom_gcode_add(plater_of(p), z, type, extruder, utf8(env, colour).c_str(),
+                                            utf8(env, extra).c_str(), &rev));
+}
+
+JNI_FN(void, customGcodeDelete)(JNIEnv *env, jobject, jlong p, jdouble z)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_custom_gcode_delete(plater_of(p), z, &rev));
 }
 
 // --- settings editors ------------------------------------------------------

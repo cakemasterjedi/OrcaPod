@@ -5,6 +5,13 @@ import org.orcapod.app.settings.OptionDef
 import org.orcapod.app.settings.SettingsLayout
 import org.orcapod.app.settings.parseKeys
 import org.orcapod.app.settings.parseValues
+import org.orcapod.app.ui.viewport.PreviewOption
+import org.orcapod.app.ui.viewport.PreviewRange
+import org.orcapod.app.ui.viewport.PreviewStyle
+import org.orcapod.app.ui.viewport.ToolpathColours
+import org.orcapod.app.ui.viewport.ToolpathGeometry
+import org.orcapod.app.ui.viewport.ViewMode
+import org.orcapod.app.ui.viewport.roleTimes
 import org.junit.AfterClass
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -164,6 +171,35 @@ class EngineHostTest {
         assertTrue("layers: ${tp.layerTotal}", tp.layerTotal in 90..110)
         assertEquals(tp.segmentCount, tp.layerFirst.last() + tp.layerCount.last())
         assertTrue(tp.filamentGrams > 1)
+        assertEquals(tp.segmentCount * Toolpath.Attr.COUNT, tp.attrs.size)
+        val extrusions = (0 until tp.segmentCount).filter { tp.move(it) == Toolpath.MOVE_EXTRUDE }
+        assertTrue("travels kept", (0 until tp.segmentCount).any { tp.move(it) == Toolpath.MOVE_TRAVEL })
+        assertTrue(extrusions.all { tp.attr(it, Toolpath.Attr.SPEED) > 0 && tp.attr(it, Toolpath.Attr.WIDTH) > 0 })
+        assertTrue(extrusions.any { tp.attr(it, Toolpath.Attr.TEMPERATURE) > 150 })
+        assertTrue("seams and retractions", tp.pointTypes.any { it.toInt() == Toolpath.MOVE_SEAM })
+        assertEquals(tp.pointTypes.size, tp.pointLayers.size)
+        assertTrue(abs(tp.times.sum() - tp.estimatedSeconds) < tp.estimatedSeconds * 0.1)
+        assertTrue(roleTimes(tp).isNotEmpty())
+
+        // Hiding a role and showing travels change what the preview draws.
+        val plain = ToolpathGeometry.build(tp, PreviewStyle())
+        assertEquals(extrusions.size * 12, plain.lines.size)
+        val withTravel = ToolpathGeometry.build(tp, PreviewStyle(options = setOf(PreviewOption.TRAVEL, PreviewOption.SEAM)))
+        assertTrue(withTravel.lines.size > plain.lines.size)
+        assertTrue(withTravel.points.isNotEmpty())
+        val outer = 2
+        val noOuter = ToolpathGeometry.build(tp, PreviewStyle(hiddenRoles = setOf(outer)))
+        assertEquals(extrusions.count { tp.role(it) != outer } * 12, noOuter.lines.size)
+        val all = plain.lineRange(tp, PreviewRange(0, tp.layerTotal - 1))
+        assertEquals(extrusions.size, all.last - all.first + 1)
+        val first = plain.lineRange(tp, PreviewRange(0, 0, 1))
+        assertTrue(first.last - first.first + 1 <= 1)
+        val speed = ToolpathGeometry.build(tp, PreviewStyle(mode = ViewMode.SPEED))
+        assertEquals(plain.lines.size, speed.lines.size)
+        val range = ToolpathColours.attrRange(tp, Toolpath.Attr.SPEED, emptySet())
+        assertTrue(range[1] > range[0])
+        assertEquals(ToolpathColours.RANGE_COLORS.first().toList(), ToolpathColours.rangeColor(range[0], range, false).toList())
+        assertEquals(ToolpathColours.RANGE_COLORS.last().toList(), ToolpathColours.rangeColor(range[1], range, false).toList())
     }
 
     @Test
@@ -336,6 +372,43 @@ class EngineHostTest {
         val stl = File(work, "all.stl")
         e.exportStl(null, stl.path)
         assertTrue(stl.length() > 84)
+    }
+
+    @Test
+    fun p_addsLayerGcode() = runBlocking {
+        val before = File(work, "ticks0.gcode")
+        e.slice(before.path) { _, _ -> }
+        val tp0 = e.loadToolpath(before.path)
+        assertTrue("layer heights", tp0.layerZ.all { it > 0f })
+        val z = tp0.layerZ[tp0.layerTotal / 2].toDouble()
+        val pauseZ = tp0.layerZ[tp0.layerTotal / 3].toDouble()
+        // Desktop "Change filament" needs a second filament.
+        e.setFilamentCount(2, "#2850E0")
+        // The default tower position does not fit this bed; the change itself is what is tested.
+        e.setValue(PresetKind.PROCESS, "enable_prime_tower", "0")
+        e.addCustomGcode(CustomGcode(z, CustomGcodeType.TOOL_CHANGE, 2, "", ""))
+        e.addCustomGcode(CustomGcode(pauseZ, CustomGcodeType.PAUSE, 0, "", "Insert magnets"))
+        val items = e.customGcodes()
+        assertEquals(listOf(CustomGcodeType.PAUSE, CustomGcodeType.TOOL_CHANGE), items.map { it.type })
+        assertEquals("Insert magnets", items[0].extra)
+        val after = File(work, "ticks1.gcode")
+        e.slice(after.path) { _, _ -> }
+        val tp = e.loadToolpath(after.path)
+        assertTrue(tp.pointTypes.any { it.toInt() == Toolpath.MOVE_PAUSE })
+        assertTrue(tp.pointTypes.any { it.toInt() == Toolpath.MOVE_TOOL_CHANGE })
+        assertEquals(2, tp.volumes.size)
+        assertTrue(tp.grams(1) > 0)
+        // The filament view colours the layers above the change in the second filament's colour.
+        val style = PreviewStyle(ViewMode.FILAMENT, filamentColours = listOf("#00FF00", "#FF0000"))
+        val g = ToolpathGeometry.build(tp, style)
+        assertEquals(1f, g.lines[4])
+        assertEquals(1f, g.lines[g.lines.size - 3])
+        assertEquals(0f, g.lines[g.lines.size - 2])
+        e.deleteCustomGcode(z)
+        e.deleteCustomGcode(pauseZ)
+        assertTrue(e.customGcodes().isEmpty())
+        e.setFilamentCount(1, null)
+        e.resetEdits(PresetKind.PROCESS)
     }
 
     private suspend fun layerHeight() =

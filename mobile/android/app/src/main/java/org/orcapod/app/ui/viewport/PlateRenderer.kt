@@ -20,8 +20,10 @@ data class ViewportState(
     /** Live offset of the instance being dragged, before it is committed. */
     val drag: Drag? = null,
     val toolpath: Toolpath? = null,
-    /** Highest toolpath layer shown (inclusive). */
-    val layer: Int = 0,
+    /** Layers and moves of the toolpath shown. */
+    val range: PreviewRange = PreviewRange(),
+    /** Colours and visibility of the toolpath's moves. */
+    val previewStyle: PreviewStyle = PreviewStyle(),
     val showToolpath: Boolean = false,
     /** Index of the plate the toolpath was sliced from; its G-code is in bed coordinates. */
     val toolpathPlate: Int = 0,
@@ -52,8 +54,11 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
     private var bedLineVbo = 0
     private var bedLineCount = 0
 
-    private var toolpathSource: Toolpath? = null
+    private var toolpathSource: Pair<Toolpath, PreviewStyle>? = null
+    private var toolpathGeometry: ToolpathGeometry? = null
     private var toolpathVbo = 0
+    private var pointVbo = 0
+    private var toolVbo = 0
 
     private val mvp = FloatArray(16)
     private val model = FloatArray(16)
@@ -68,6 +73,7 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
         volumeMeshes.clear()
         bedKey = null
         toolpathSource = null
+        toolVbo = 0
         glEnable(GL_DEPTH_TEST)
         glClearColor(0.13f, 0.14f, 0.16f, 1f)
     }
@@ -88,7 +94,7 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
             val base = plates.firstOrNull()
             val dx = if (p != null && base != null) p.origin[0] - base.origin[0] else 0f
             val dy = if (p != null && base != null) p.origin[1] - base.origin[1] else 0f
-            drawToolpath(s.toolpath, s.layer, dx, dy)
+            drawToolpath(s.toolpath, s.previewStyle, s.range, dx, dy)
         } else {
             drawObjects(s)
         }
@@ -267,32 +273,52 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
 
     // --- toolpath ---
 
-    private fun drawToolpath(tp: Toolpath, layer: Int, dx: Float, dy: Float) {
-        if (tp !== toolpathSource) {
+    private fun drawToolpath(tp: Toolpath, style: PreviewStyle, range: PreviewRange, dx: Float, dy: Float) {
+        val key = tp to style
+        if (key != toolpathSource) {
             Gl.deleteVbo(toolpathVbo)
-            toolpathVbo = if (tp.segmentCount > 0) Gl.vbo(toolpathVertices(tp)) else 0
-            toolpathSource = tp
+            Gl.deleteVbo(pointVbo)
+            val g = ToolpathGeometry.build(tp, style)
+            toolpathVbo = if (g.lines.isNotEmpty()) Gl.vbo(g.lines) else 0
+            pointVbo = if (g.points.isNotEmpty()) Gl.vbo(g.points) else 0
+            toolpathGeometry = g
+            toolpathSource = key
         }
-        if (toolpathVbo == 0 || tp.layerTotal == 0) return
-        val l = layer.coerceIn(0, tp.layerTotal - 1)
-        val below = tp.layerFirst[l]
-        val total = below + tp.layerCount[l]
+        val g = toolpathGeometry ?: return
+        if (tp.layerTotal == 0) return
         glUseProgram(colorProgram.id)
         Matrix.setIdentityM(model, 0)
         Matrix.translateM(model, 0, dx, dy, 0f)
         Matrix.multiplyMM(mvp, 0, camera.viewProjection, 0, model, 0)
         glUniformMatrix4fv(colorProgram.mvp, 1, false, mvp, 0)
-        bindInterleaved(toolpathVbo)
-        glLineWidth(2f)
-        // Layers below the current one dimmed, the current one at full strength.
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        glUniform1f(colorProgram.alpha, 0.55f)
-        if (below > 0) glDrawArrays(GL_LINES, 0, below * 2)
-        glDisable(GL_BLEND)
         glUniform1f(colorProgram.alpha, 1f)
-        glDrawArrays(GL_LINES, below * 2, (total - below) * 2)
-        glLineWidth(1f)
+        val lines = g.lineRange(tp, range)
+        if (toolpathVbo != 0 && !lines.isEmpty()) {
+            bindInterleaved(toolpathVbo)
+            glLineWidth(2f)
+            glDrawArrays(GL_LINES, lines.first * 2, (lines.last - lines.first + 1) * 2)
+            glLineWidth(1f)
+        }
+        val points = g.pointRange(tp, range)
+        if (pointVbo != 0 && !points.isEmpty()) {
+            bindInterleaved(pointVbo)
+            glDrawArrays(GL_POINTS, points.first, points.last - points.first + 1)
+        }
+        // Desktop tool marker: where the nozzle is at the move slider's position.
+        val hi = range.high.coerceIn(0, tp.layerTotal - 1)
+        if (range.moves in 1 until tp.layerCount[hi]) {
+            val s = (tp.layerFirst[hi] + range.moves - 1) * 6
+            val p = tp.positions
+            val tool = floatArrayOf(p[s + 3], p[s + 4], p[s + 5], 1f, 1f, 1f)
+            if (toolVbo == 0) toolVbo = Gl.vbo(tool) else {
+                glBindBuffer(GL_ARRAY_BUFFER, toolVbo)
+                glBufferSubData(GL_ARRAY_BUFFER, 0, 24, Gl.floatBuffer(tool))
+            }
+            glDisable(GL_DEPTH_TEST)
+            bindInterleaved(toolVbo)
+            glDrawArrays(GL_POINTS, 0, 1)
+            glEnable(GL_DEPTH_TEST)
+        }
     }
 
     companion object {
@@ -335,24 +361,6 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
         internal fun parseHex(hex: String): FloatArray {
             val v = hex.trim().removePrefix("#").take(6).toIntOrNull(16) ?: return DEFAULT
             return floatArrayOf(((v shr 16) and 0xFF) / 255f, ((v shr 8) and 0xFF) / 255f, (v and 0xFF) / 255f, 1f)
-        }
-
-        internal fun toolpathVertices(tp: Toolpath): FloatArray {
-            val out = FloatArray(tp.segmentCount * 12)
-            val p = tp.positions
-            for (i in 0 until tp.segmentCount) {
-                val c = roleColor(tp.roles[i].toInt() and 0xFF)
-                val r = c[0] / 255f
-                val g = c[1] / 255f
-                val b = c[2] / 255f
-                val o = i * 12
-                val s = i * 6
-                out[o] = p[s]; out[o + 1] = p[s + 1]; out[o + 2] = p[s + 2]
-                out[o + 3] = r; out[o + 4] = g; out[o + 5] = b
-                out[o + 6] = p[s + 3]; out[o + 7] = p[s + 4]; out[o + 8] = p[s + 5]
-                out[o + 9] = r; out[o + 10] = g; out[o + 11] = b
-            }
-            return out
         }
 
         internal fun flatShaded(mesh: Mesh): FloatArray = flatShaded(mesh.positions, mesh.indices)

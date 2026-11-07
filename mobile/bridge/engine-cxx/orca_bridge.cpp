@@ -7087,6 +7087,10 @@ orca_result orca_gcode_toolpath(orca_gcode *gcode,
             }
             ++out;
             orca_tp_layer &layer = toolpath.layers[layer_index];
+            // print_z comes from BBL's "; Z_HEIGHT:" tag only; elsewhere the
+            // layer takes its first extrusion's z, as desktop's layer slider.
+            if (layer.z <= 0.0f && move.type == Slic3r::EMoveType::Extrude)
+                layer.z = move.position.z();
             layer.segment_count += 1;
             layer.time_seconds += move.time[static_cast<size_t>(
                 Slic3r::PrintEstimatedStatistics::ETimeMode::Normal)];

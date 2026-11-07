@@ -20,6 +20,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.orcapod.app.data.ProfileStore
 import org.orcapod.app.engine.BedTypeState
+import org.orcapod.app.engine.CustomGcode
+import org.orcapod.app.engine.CustomGcodeType
 import org.orcapod.app.engine.Engine
 import org.orcapod.app.engine.FilamentSlot
 import org.orcapod.app.engine.HeightRange
@@ -40,7 +42,11 @@ import org.orcapod.app.settings.OptionMode
 import org.orcapod.app.settings.SettingsLayout
 import org.orcapod.app.settings.parseKeys
 import org.orcapod.app.settings.parseValues
+import org.orcapod.app.ui.viewport.PreviewOption
+import org.orcapod.app.ui.viewport.PreviewRange
+import org.orcapod.app.ui.viewport.PreviewStyle
 import org.orcapod.app.ui.viewport.Selection
+import org.orcapod.app.ui.viewport.ViewMode
 import java.io.File
 
 sealed interface Phase {
@@ -79,7 +85,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var slice by mutableStateOf<SliceState>(SliceState.Idle)
         private set
     var showPreview by mutableStateOf(false)
-    var previewLayer by mutableStateOf(0)
+    /** Layers and moves of the preview shown (desktop's vertical and horizontal sliders). */
+    var previewRange by mutableStateOf(PreviewRange())
+    var previewMode by mutableStateOf(ViewMode.LINE_TYPE)
+        private set
+    /** Extrusion roles hidden from the preview (desktop legend toggles). */
+    var hiddenRoles by mutableStateOf<Set<Int>>(emptySet())
+    var previewOptions by mutableStateOf<Set<PreviewOption>>(emptySet())
+        private set
+    /** The current plate's per-layer custom G-code (colour changes, pauses, custom). */
+    var customGcodes by mutableStateOf<List<CustomGcode>>(emptyList())
+        private set
+    /** The custom G-code changed since the shown slice; slicing again applies it. */
+    var sliceStale by mutableStateOf(false)
+        private set
+    val previewStyle: PreviewStyle
+        get() = PreviewStyle(previewMode, hiddenRoles, previewOptions, filamentSlots.map { it.colour })
 
     var printers by mutableStateOf<List<PresetEntry>>(emptyList())
         private set
@@ -187,6 +208,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val e = Engine.open(store.dataDir.path)
         engine = e
         settingsMode = OptionMode.of(prefs.getString("settings_mode", OptionMode.ADVANCED.code) ?: "")
+        previewMode = ViewMode.entries.firstOrNull { it.name == prefs.getString("preview_mode", null) } ?: ViewMode.LINE_TYPE
+        previewOptions = prefs.getStringSet("preview_options", emptySet()).orEmpty()
+            .mapNotNull { n -> PreviewOption.entries.firstOrNull { it.name == n } }.toSet()
         val defs = e.optionDefs()
         val objectKeys = e.overrideKeys(false)
         val volumeKeys = e.overrideKeys(true)
@@ -421,6 +445,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun refreshScene() {
         val e = engine ?: return
         scene = e.scene()
+        customGcodes = e.customGcodes()
         val sel = selection
         if (sel != null && transformOf(sel) == null) selection = null
         val vol = selectedVolume
@@ -600,6 +625,40 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         invalidateSlice()
     }
 
+    // --- preview ---
+
+    fun choosePreviewMode(mode: ViewMode) {
+        previewMode = mode
+        prefs.edit().putString("preview_mode", mode.name).apply()
+    }
+
+    fun togglePreviewOption(option: PreviewOption) {
+        previewOptions = if (option in previewOptions) previewOptions - option else previewOptions + option
+        prefs.edit().putStringSet("preview_options", previewOptions.map { it.name }.toSet()).apply()
+    }
+
+    fun toggleRole(role: Int) {
+        hiddenRoles = if (role in hiddenRoles) hiddenRoles - role else hiddenRoles + role
+    }
+
+    /**
+     * Desktop layer-slider "+": adds a pause, filament change or custom G-code
+     * before the layer at [printZ]. The shown slice stays until the next one,
+     * which applies it.
+     */
+    fun addCustomGcode(printZ: Double, type: CustomGcodeType, extruder: Int = 0, colour: String = "", extra: String = "") =
+        engineAction { e ->
+            e.addCustomGcode(CustomGcode(printZ, type, extruder, colour, extra))
+            refreshScene()
+            sliceStale = true
+        }
+
+    fun deleteCustomGcode(printZ: Double) = engineAction { e ->
+        e.deleteCustomGcode(printZ)
+        refreshScene()
+        sliceStale = true
+    }
+
     // --- slicing ---
 
     /** Slices the selected plate, or every plate into one G-code file with [allPlates]. */
@@ -621,7 +680,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // One file of several plates overlaps on the bed, so only a single plate is previewed.
                 val toolpath = if (allPlates) null else loadPreview(e, out)
                 slice = SliceState.Done(report, out, toolpath, if (allPlates) -1 else scene.snapshot.currentPlate)
-                previewLayer = (toolpath?.layerTotal ?: 1) - 1
+                previewRange = PreviewRange(0, (toolpath?.layerTotal ?: 1) - 1)
+                sliceStale = false
                 showPreview = true
             } catch (ex: OrcaException) {
                 slice = SliceState.Idle

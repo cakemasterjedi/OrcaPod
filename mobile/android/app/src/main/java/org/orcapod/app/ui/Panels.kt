@@ -99,65 +99,7 @@ fun ObjectPanel(vm: AppViewModel, sel: Selection, layFlat: Boolean, onLayFlat: (
     }
 }
 
-/** Slice result: estimates, warnings, the layer slider and G-code export. */
-@Composable
-fun PreviewPanel(vm: AppViewModel, done: SliceState.Done, onShare: () -> Unit, onSave: () -> Unit) {
-    var warningsOpen by remember { mutableStateOf(false) }
-    val tp = done.toolpath
-    Card {
-        Column(Modifier.fillMaxWidth().padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { vm.showPreview = false }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to plate") }
-                Column(Modifier.weight(1f)) {
-                    Text(duration(done.report.timeEstimateSeconds), style = MaterialTheme.typography.titleMedium)
-                    val filament = tp?.takeIf { it.filamentVolume > 0 }?.let {
-                        String.format(Locale.US, "%.1f m · %.0f g", it.filamentMetres, it.filamentGrams)
-                    }
-                    Text(
-                        listOfNotNull(filament, sizeText(done.report.gcodeBytes)).joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                if (done.report.warnings.isNotEmpty()) {
-                    TextButton(onClick = { warningsOpen = !warningsOpen }) {
-                        Icon(Icons.Filled.Warning, null)
-                        Spacer(Modifier.width(4.dp))
-                        Text("${done.report.warnings.size}")
-                    }
-                }
-            }
-            if (warningsOpen) {
-                for (w in done.report.warnings.take(8)) Text("• ${w.text}", style = MaterialTheme.typography.bodySmall)
-            }
-            if (tp != null && tp.layerTotal > 0) {
-                val layer = vm.previewLayer.coerceIn(0, tp.layerTotal - 1)
-                Text(
-                    String.format(Locale.US, "Layer %d of %d · %.2f mm", layer + 1, tp.layerTotal, tp.layerZ[layer]),
-                    style = MaterialTheme.typography.labelMedium,
-                )
-                Slider(
-                    value = layer.toFloat(),
-                    onValueChange = { vm.previewLayer = it.roundToInt() },
-                    valueRange = 0f..(tp.layerTotal - 1).coerceAtLeast(1).toFloat(),
-                )
-            } else {
-                Text("The toolpath preview is not available for this G-code.", style = MaterialTheme.typography.bodySmall)
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                OutlinedButton(onClick = onSave) { Text("Save") }
-                Spacer(Modifier.width(8.dp))
-                Button(onClick = onShare) {
-                    Icon(Icons.Filled.Share, null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Send")
-                }
-            }
-        }
-    }
-}
-
-
-private fun duration(seconds: Double): String {
+internal fun duration(seconds: Double): String {
     val s = seconds.roundToInt()
     val h = s / 3600
     val m = (s % 3600) / 60
@@ -168,7 +110,7 @@ private fun duration(seconds: Double): String {
     }
 }
 
-private fun sizeText(bytes: Long): String = when {
+internal fun sizeText(bytes: Long): String = when {
     bytes >= 1 shl 20 -> String.format(Locale.US, "%.1f MB", bytes / 1048576.0)
     else -> String.format(Locale.US, "%.0f kB", bytes / 1024.0)
 }

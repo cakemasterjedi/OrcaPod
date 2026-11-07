@@ -104,9 +104,36 @@ a finger on the selected object drags it over a plane at the touched height,
 and the move is committed to the engine on release; a finger elsewhere
 orbits; two fingers pinch to zoom and pan. Taps are resolved by a CPU ray
 cast against the instance meshes, which also gives the tapped face's normal
-for "Lay on face". After slicing, the G-code is parsed by the engine's
-`GCodeProcessor` (`orca_gcode_toolpath`) and the extrusion moves are drawn as
-lines coloured by extrusion role, up to the layer on the slider.
+for "Lay on face".
+
+## G-code preview
+
+After slicing, the engine's `GCodeProcessor` parses the G-code
+(`orca_gcode_toolpath`). The JNI layer keeps every extrusion, travel and wipe
+as a line segment in file order, grouped by layer, with the attributes
+desktop's colour schemes use (speed, actual speed, height, width, fan,
+temperature, flow, layer time, acceleration, jerk, pressure advance).
+Retractions, seams, tool changes, pauses and custom G-code become point
+markers. Layers without extrusions are dropped.
+
+`ToolpathGeometry` (`ui/viewport/ToolpathStyle.kt`) turns a toolpath and a
+`PreviewStyle` into one line buffer and one point buffer. It does no GL work,
+so the host tests cover it. The style is the colour scheme, the hidden
+extrusion roles and the shown options. Range schemes use libvgcode's palette
+and its linear or logarithmic interpolation. The ranges are computed over the
+shown extrusions, without travels, as desktop computes them. Each segment
+records how many visible segments come before it, so the layer range slider
+and the move slider of the top layer each map to a single draw call.
+
+The legend gives the time and share of each line type (tap a type to hide
+it), the value scale for range schemes, or the filament used per slot. The
+summary gives normal and silent time, travel time, and filament length,
+weight and cost per slot.
+
+Per-layer custom G-code follows desktop's layer slider:
+- Add a pause, custom G-code or, with several filaments, a filament change
+  before the top layer shown (`orca_plater_custom_gcode_*`).
+- The shown slice stays until the next one, which applies the changes.
 
 ## Limits
 
@@ -124,4 +151,6 @@ and arranges, settings edit, and a plate slices, previews and cancels. It
 also checks that every option of the shipped settings layout is known to the
 engine, and exercises parts and modifiers, per-object and per-part settings,
 height ranges, plates, filament slots, slicing all plates and the project,
-sliced-3MF and STL exports.
+sliced-3MF and STL exports. The preview checks cover travels, markers,
+attributes and layer heights, hidden roles, ranges and slider draw ranges, and
+a pause and filament change that reach the sliced G-code.

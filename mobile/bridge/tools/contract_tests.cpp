@@ -5287,11 +5287,18 @@ static void test_gcode_toolpath(const std::string &dir) {
     bool extrusion_seen = false;
     bool travel_seen = false;
     bool roles_seen = false;
+    bool layer_z_ok = true;
     for (uint32_t i = 0; i < toolpath.layer_count; ++i) {
         const orca_tp_layer &layer = toolpath.layers[i];
         CHECK(layer.segment_count > 0);
         total += layer.segment_count;
+        // every printed layer has a height, also without BBL's Z_HEIGHT tag
+        bool extrudes = false;
+        for (uint32_t s = 0; s < layer.segment_count; ++s)
+            extrudes |= toolpath.segments[layer.first_segment + s].move_type == 10;
+        if (extrudes && !(layer.z > 0.0f)) layer_z_ok = false;
     }
+    CHECK(layer_z_ok);
     CHECK_EQ(total, toolpath.segment_count);
     for (uint32_t i = 0; i < toolpath.segment_count; ++i) {
         const orca_tp_segment &segment = toolpath.segments[i];

@@ -1440,7 +1440,7 @@ typedef struct {
 #define ORCA_TP_MAX_EXTRUDERS 16
 
 typedef struct {
-    float    z;             // layer z, mm
+    float    z;             // layer z, mm: print_z, else the first extrusion's z
     uint32_t first_segment;
     uint32_t segment_count;
     float    time_seconds;

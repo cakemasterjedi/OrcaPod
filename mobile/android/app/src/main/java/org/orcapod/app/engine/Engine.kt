@@ -323,6 +323,15 @@ class Engine private constructor(private var presets: Long, private val plater: 
 
     suspend fun loadToolpath(gcodePath: String): Toolpath = onEngine { Native.toolpathLoad(gcodePath) }
 
+    /** The current plate's per-layer custom G-code (desktop layer-slider ticks), by height. */
+    suspend fun customGcodes(): List<CustomGcode> = onEngine { Native.customGcodes(plater).toList() }
+
+    suspend fun addCustomGcode(item: CustomGcode) = onEngine {
+        Native.customGcodeAdd(plater, item.printZ, item.type.code, item.extruder, item.colour, item.extra)
+    }
+
+    suspend fun deleteCustomGcode(printZ: Double) = onEngine { Native.customGcodeDelete(plater, printZ) }
+
     override fun close() {
         thread.execute {
             Native.platerFree(plater)

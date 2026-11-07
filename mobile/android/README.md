@@ -4,7 +4,8 @@ The Android app: import STL, 3MF, OBJ or AMF models onto a 3D build plate,
 move, rotate and scale them, pick printer, filament and process profiles,
 slice with OrcaSlicer's engine, preview the layers and send the G-code to
 an OctoPrint, Klipper (Moonraker), PrusaLink, Duet or Bambu Lab (LAN mode)
-printer, share it or save it. See [docs/HLSD/android-app.md](../../docs/HLSD/android-app.md) for
+printer (or several at once, through a print queue with a dashboard of all
+your printers), share it or save it. See [docs/HLSD/android-app.md](../../docs/HLSD/android-app.md) for
 the design.
 
 ## Build

@@ -64,6 +64,7 @@ fun PlateScreen(vm: AppViewModel) {
     val printerVm: PrinterViewModel = viewModel()
     var sendOpen by remember { mutableStateOf(false) }
     var printersOpen by remember { mutableStateOf(false) }
+    var queueOpen by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     var picker by remember { mutableStateOf<PresetKind?>(null) }
     var settingsOpen by remember { mutableStateOf(false) }
@@ -73,6 +74,10 @@ fun PlateScreen(vm: AppViewModel) {
 
     LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
     LaunchedEffect(Unit) { printerVm.messages.collect { snackbar.showSnackbar(it) } }
+    // A queue notification was tapped.
+    LaunchedEffect(Unit) {
+        printerVm.fleet.dashboardRequested.collect { if (it) { queueOpen = true; printerVm.fleet.dashboardRequested.value = false } }
+    }
 
     val importModels = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) vm.importUris(uris)
@@ -129,6 +134,7 @@ fun PlateScreen(vm: AppViewModel) {
                             )
                             HorizontalDivider()
                             DropdownMenuItem(text = { Text("Printers") }, onClick = { menuOpen = false; printersOpen = true })
+                            DropdownMenuItem(text = { Text("Print queue") }, onClick = { menuOpen = false; queueOpen = true })
                             DropdownMenuItem(text = { Text("Reset view") }, onClick = { menuOpen = false; viewRef?.resetView() })
                             DropdownMenuItem(text = { Text("Printer brands") }, onClick = { menuOpen = false; vm.manageVendors() })
                         }
@@ -226,7 +232,10 @@ fun PlateScreen(vm: AppViewModel) {
         )
     }
     if (settingsOpen) SettingsSheet(vm) { settingsOpen = false }
-    if (sendOpen && done != null) SendToPrinterSheet(printerVm, done.gcode, vm.printer) { sendOpen = false }
+    if (sendOpen && done != null) {
+        SendToPrinterSheet(printerVm, done.gcode, vm.printer, onOpenQueue = { sendOpen = false; queueOpen = true }) { sendOpen = false }
+    }
+    if (queueOpen) PrintQueueSheet(printerVm) { queueOpen = false }
     if (printersOpen) PrintersSheet(printerVm, vm.printer) { printersOpen = false }
 }
 

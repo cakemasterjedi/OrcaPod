@@ -448,6 +448,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         scene = e.scene()
         customGcodes = e.customGcodes()
         if (paint != null) refreshPaint()
+        if (measure?.let { objectOf(it.objectId) } == null) measure = null
         layerHeights?.let { l ->
             layerHeights = if (objectOf(l.objectId) == null) null else l.copy(profile = e.heightProfile(l.objectId))
         }
@@ -500,6 +501,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     fun startPaint(objectId: Long) {
+        measure = null
         cut = null
         layerHeights = null
         paint = PaintState(objectId)
@@ -552,6 +554,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var cut by mutableStateOf<CutState?>(null)
 
     fun startCut(sel: Selection) {
+        measure = null
         paint = null
         layerHeights = null
         val obj = objectOf(sel.objectId) ?: return
@@ -580,12 +583,44 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // --- measure (desktop measure gizmo) ---
+
+    /** The measurement being taken, if any. */
+    var measure by mutableStateOf<MeasureState?>(null)
+
+    fun startMeasure(objectId: Long) {
+        cut = null
+        paint = null
+        layerHeights = null
+        measure = MeasureState(objectId)
+    }
+
+    /** A tap on the measured object: picks the feature there and measures once two are picked. */
+    fun measureAt(sel: Selection, triangle: Int, local: FloatArray) {
+        val m = measure ?: return
+        val obj = objectOf(sel.objectId) ?: return
+        val inst = obj.instances.firstOrNull { it.id == sel.instanceId } ?: return
+        val revision = scene.meshes[obj.id]?.revision ?: return
+        engineAction { e ->
+            val f = e.measurePick(obj.id, revision, triangle, doubleArrayOf(local[0].toDouble(), local[1].toDouble(), local[2].toDouble()))
+                ?: return@engineAction
+            val next = m.pick(f.transformed(inst.matrix))
+            measure = if (next.first != null && next.second != null) next.copy(measurement = e.measureBetween(next.first, next.second)) else next
+        }
+    }
+
+    fun endMeasure() {
+        measure = null
+        engineAction { it.endMeasure() }
+    }
+
     // --- variable layer height (desktop layers editing) ---
 
     /** The object whose layer heights are being edited, with its profile; null when not editing. */
     var layerHeights by mutableStateOf<LayerHeightState?>(null)
 
     fun startLayerHeights(sel: Selection) {
+        measure = null
         cut = null
         paint = null
         val obj = objectOf(sel.objectId) ?: return

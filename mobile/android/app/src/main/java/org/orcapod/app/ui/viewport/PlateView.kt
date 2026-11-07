@@ -27,6 +27,8 @@ interface ViewportListener {
      * world hit point and the viewing direction. [first] marks a new stroke.
      */
     fun onPaint(objectId: Long, volumeId: Long, hit: FloatArray, view: FloatArray, first: Boolean) {}
+    /** A tap on [PlateView.measureObject]: the merged-mesh triangle and the object-space point under the finger. */
+    fun onMeasure(selection: Selection, triangle: Int, local: FloatArray) {}
 }
 
 /**
@@ -47,6 +49,8 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
     var lockDrag = false
     /** The object being painted: a finger on it paints instead of orbiting. */
     var paintObject: Long? = null
+    /** The object being measured: a tap on it picks a feature instead of selecting. */
+    var measureObject: Long? = null
 
     init {
         setEGLContextClientVersion(3)
@@ -211,6 +215,10 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
             return
         }
         val hit = pick(x, y)
+        if (measureObject != null) {
+            if (hit != null && hit.selection.objectId == measureObject) listener.onMeasure(hit.selection, hit.triangle, hit.local)
+            return
+        }
         if (pickFaces && hit != null) {
             listener.onFacePicked(hit.selection, hit.normal[0].toDouble(), hit.normal[1].toDouble(), hit.normal[2].toDouble())
         } else {
@@ -245,7 +253,11 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
 
     // --- picking ---
 
-    private class Hit(val selection: Selection, val t: Float, val point: FloatArray, val normal: FloatArray, val triangle: Int)
+    private class Hit(
+        val selection: Selection, val t: Float, val point: FloatArray, val normal: FloatArray, val triangle: Int,
+        /** The hit in object space. */
+        val local: FloatArray,
+    )
 
     private val boundsCache = WeakHashMap<Mesh, FloatArray>()
 
@@ -268,7 +280,8 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
                 val tri = intersect(mesh, o, d, best?.t ?: Float.MAX_VALUE) ?: continue
                 val t = tri.first
                 val point = floatArrayOf(ray[0] + t * ray[3], ray[1] + t * ray[4], ray[2] + t * ray[5])
-                best = Hit(Selection(obj.id, inst.id), t, point, worldNormal(mesh, tri.second, inv), tri.second)
+                val local = floatArrayOf(o[0] + t * d[0], o[1] + t * d[1], o[2] + t * d[2])
+                best = Hit(Selection(obj.id, inst.id), t, point, worldNormal(mesh, tri.second, inv), tri.second, local)
             }
         }
         return best

@@ -114,6 +114,7 @@ fun PlateScreen(vm: AppViewModel) {
                 layFlat = false
             }
             override fun onRay(origin: FloatArray, direction: FloatArray) { vm.placeConnector(origin, direction) }
+            override fun onMeasure(selection: Selection, triangle: Int, local: FloatArray) { vm.measureAt(selection, triangle, local) }
             override fun onPaint(objectId: Long, volumeId: Long, hit: FloatArray, view: FloatArray, first: Boolean) {
                 vm.paintAt(objectId, volumeId, hit, view, first)
             }
@@ -193,8 +194,9 @@ fun PlateScreen(vm: AppViewModel) {
                 update = { view ->
                     view.pickFaces = layFlat
                     view.rayTaps = vm.cut?.placing == true
-                    view.lockDrag = vm.cut != null || vm.paint != null
+                    view.lockDrag = vm.cut != null || vm.paint != null || vm.measure != null || vm.layerHeights != null
                     view.paintObject = vm.paint?.objectId
+                    view.measureObject = vm.measure?.objectId
                     view.state = ViewportState(
                         scene = vm.scene,
                         selection = vm.selection,
@@ -208,6 +210,8 @@ fun PlateScreen(vm: AppViewModel) {
                         cutQuad = vm.cut?.quad(),
                         cutPoints = vm.cut?.connectorPoints(),
                         paintOverlay = if (vm.paint != null) vm.paintOverlay else null,
+                        measureLines = vm.measure?.lines(),
+                        measurePoints = vm.measure?.points(),
                     )
                 },
             )
@@ -246,6 +250,7 @@ fun PlateScreen(vm: AppViewModel) {
                     vm.cut != null -> CutPanel(vm, vm.cut!!)
                     vm.paint != null -> PaintPanel(vm, vm.paint!!)
                     vm.layerHeights != null -> LayerHeightPanel(vm, vm.layerHeights!!)
+                    vm.measure != null -> MeasurePanel(vm, vm.measure!!)
                     else -> {
                         if (sel != null && vm.transformOf(sel) != null) {
                             ObjectPanel(vm, sel, layFlat = layFlat, onLayFlat = { layFlat = !layFlat }, onEdit = { objectSheet = sel })

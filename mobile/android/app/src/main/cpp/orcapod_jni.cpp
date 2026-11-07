@@ -1134,6 +1134,94 @@ JNI_FN(void, heightProfileAdjust)(JNIEnv *env, jobject, jlong pl, jlong pr, jlon
                                                         action, &rev));
 }
 
+// --- measure (desktop measure gizmo) ----------------------------------------------
+
+JNI_FN(jlong, measureCreate)(JNIEnv *env, jobject, jlong pl, jlong obj)
+{
+    orca_measure *m = nullptr;
+    if (!check(env, orca_plater_object_measure(plater_of(pl), orca_object_id(obj), &m)))
+        return 0;
+    return handle(m);
+}
+
+JNI_FN(void, measureFree)(JNIEnv *, jobject, jlong m) { orca_measure_dispose(ptr<orca_measure>(m)); }
+
+// A feature travels as 15 doubles: type, point a, point b, normal, radius, area, plane index.
+static constexpr jsize FEATURE_SIZE = 15;
+
+static jdoubleArray feature_array(JNIEnv *env, const orca_surface_feature &f)
+{
+    double v[FEATURE_SIZE] = {double(f.type)};
+    for (int k = 0; k < 3; ++k) {
+        v[1 + k] = f.point_a[k];
+        v[4 + k] = f.point_b[k];
+        v[7 + k] = f.normal[k];
+    }
+    v[10] = f.radius;
+    v[11] = f.area;
+    v[12] = double(f.plane_index);
+    jdoubleArray out = env->NewDoubleArray(FEATURE_SIZE);
+    if (out)
+        env->SetDoubleArrayRegion(out, 0, FEATURE_SIZE, v);
+    return out;
+}
+
+static orca_surface_feature feature_of(JNIEnv *env, jdoubleArray a)
+{
+    double v[FEATURE_SIZE] = {};
+    env->GetDoubleArrayRegion(a, 0, FEATURE_SIZE, v);
+    orca_surface_feature f{};
+    f.type = uint8_t(v[0]);
+    for (int k = 0; k < 3; ++k) {
+        f.point_a[k] = v[1 + k];
+        f.point_b[k] = v[4 + k];
+        f.normal[k] = v[7 + k];
+    }
+    f.radius = v[10];
+    f.area = v[11];
+    f.plane_index = int32_t(v[12]);
+    return f;
+}
+
+/** The feature under an object-space point on a merged-mesh triangle; null when there is none. */
+JNI_FN(jdoubleArray, measurePick)(JNIEnv *env, jobject, jlong m, jint face, jdouble x, jdouble y, jdouble z)
+{
+    orca_surface_feature f{};
+    orca_result r = orca_measure_pick(ptr<orca_measure>(m), face, x, y, z, &f);
+    if (r.code == ORCA_STATUS_NOT_FOUND) {
+        orca_result_dispose(&r);
+        return nullptr;
+    }
+    if (!check(env, r))
+        return nullptr;
+    return feature_array(env, f);
+}
+
+/** from[3], to[3], distance, xyz[3], angle, has distance, has xyz, has angle. */
+JNI_FN(jdoubleArray, measureBetween)(JNIEnv *env, jobject, jlong m, jdoubleArray a, jdoubleArray b)
+{
+    const orca_surface_feature fa = feature_of(env, a);
+    const orca_surface_feature fb = feature_of(env, b);
+    orca_measurement out{};
+    if (!check(env, orca_measure_between(ptr<orca_measure>(m), &fa, &fb, &out)))
+        return nullptr;
+    double v[14];
+    for (int k = 0; k < 3; ++k) {
+        v[k] = out.from[k];
+        v[3 + k] = out.to[k];
+        v[7 + k] = out.xyz[k];
+    }
+    v[6] = out.distance;
+    v[10] = out.angle_radians;
+    v[11] = out.has_distance;
+    v[12] = out.has_xyz;
+    v[13] = out.has_angle;
+    jdoubleArray arr = env->NewDoubleArray(14);
+    if (arr)
+        env->SetDoubleArrayRegion(arr, 0, 14, v);
+    return arr;
+}
+
 JNI_FN(jint, splitParts)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol)
 {
     uint32_t count = 0;

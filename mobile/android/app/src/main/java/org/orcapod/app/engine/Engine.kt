@@ -271,6 +271,38 @@ class Engine private constructor(private var presets: Long, private val plater: 
     suspend fun adjustHeightProfile(objectId: Long, z: Double, delta: Double, band: Double, action: Int) =
         onEngine { Native.heightProfileAdjust(plater, presets, objectId, z, delta, band, action) }
 
+    /** The measure context of one object's mesh revision; building it segments the mesh, so it is kept. */
+    private var measure: Triple<Long, Long, Long>? = null
+
+    /**
+     * Desktop measure hover: the feature at the object-space [point] on merged
+     * triangle [face] of [objectId] at [meshRevision]; null when there is none.
+     */
+    suspend fun measurePick(objectId: Long, meshRevision: Long, face: Int, point: DoubleArray): SurfaceFeature? = onEngine {
+        val m = measure?.takeIf { it.first == objectId && it.second == meshRevision }?.third ?: run {
+            endMeasureNow()
+            Native.measureCreate(plater, objectId).also { measure = Triple(objectId, meshRevision, it) }
+        }
+        Native.measurePick(m, face, point[0], point[1], point[2])?.let { SurfaceFeature.of(it) }
+    }
+
+    /** Desktop's measurement between two features, given in the same (world) space. */
+    suspend fun measureBetween(a: SurfaceFeature, b: SurfaceFeature): Measurement? = onEngine {
+        val m = measure?.third ?: return@onEngine null
+        try {
+            Measurement.of(Native.measureBetween(m, a.values(), b.values()))
+        } catch (ex: OrcaException) {
+            null // the engine finds no relation between the two
+        }
+    }
+
+    suspend fun endMeasure() = onEngine { endMeasureNow() }
+
+    private fun endMeasureNow() {
+        measure?.let { Native.measureFree(it.third) }
+        measure = null
+    }
+
     /** One paint layer of a volume, as world triangles with their states. */
     suspend fun paint(objectId: Long, volumeId: Long, layer: PaintLayer): PaintMesh = onEngine {
         val r = Native.volumePaint(plater, objectId, volumeId, layer.code)
@@ -389,6 +421,7 @@ class Engine private constructor(private var presets: Long, private val plater: 
 
     override fun close() {
         thread.execute {
+            endMeasureNow()
             Native.platerFree(plater)
             Native.presetsFree(presets)
         }

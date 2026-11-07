@@ -342,3 +342,76 @@ enum class PaintLayer(val code: Int, val label: String) {
 class PaintMesh(val positions: FloatArray, val states: ByteArray) {
     val count get() = states.size
 }
+
+/** Desktop measure feature kinds (ORCA_MEASURE_*). */
+enum class FeatureType(val label: String) { POINT("Point"), EDGE("Edge"), CIRCLE("Circle"), PLANE("Plane") }
+
+/**
+ * A surface feature picked by the measure tool: a point, an edge (a to b), a
+ * circle (centre a, normal, radius) or a plane (anchor a, normal, area, index).
+ */
+class SurfaceFeature(
+    val type: FeatureType,
+    val a: DoubleArray,
+    val b: DoubleArray,
+    val normal: DoubleArray,
+    val radius: Double,
+    val area: Double,
+    val planeIndex: Int,
+) {
+    /** The feature through a column-major instance [matrix], as desktop measures in world space. */
+    fun transformed(matrix: FloatArray): SurfaceFeature {
+        fun linear(v: DoubleArray) = DoubleArray(3) { r -> matrix[r] * v[0] + matrix[4 + r] * v[1] + matrix[8 + r] * v[2] }
+        fun point(p: DoubleArray) = linear(p).also { for (r in 0 until 3) it[r] += matrix[12 + r] }
+        fun norm(v: DoubleArray) = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+        // Normals go through the cofactor matrix (the inverse transpose times the
+        // determinant), whose length on a unit normal is also the area scale.
+        val col = Array(3) { c -> DoubleArray(3) { r -> matrix[c * 4 + r].toDouble() } }
+        fun cross(x: DoubleArray, y: DoubleArray) = doubleArrayOf(x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0])
+        val cof = arrayOf(cross(col[1], col[2]), cross(col[2], col[0]), cross(col[0], col[1]))
+        val n = DoubleArray(3) { r -> cof[0][r] * normal[0] + cof[1][r] * normal[1] + cof[2][r] * normal[2] }
+        val areaScale = norm(n)
+        if (areaScale > 0) for (k in 0 until 3) n[k] /= areaScale
+        // A circle's radius scales with the instance in the circle's plane.
+        val radiusScale = if (type == FeatureType.CIRCLE) {
+            val ref = if (kotlin.math.abs(normal[0]) < 0.9) doubleArrayOf(1.0, 0.0, 0.0) else doubleArrayOf(0.0, 1.0, 0.0)
+            val inPlane = cross(normal, ref)
+            norm(linear(inPlane)) / norm(inPlane)
+        } else 1.0
+        return SurfaceFeature(
+            type, point(a), if (type == FeatureType.EDGE) point(b) else b.copyOf(), n,
+            radius * radiusScale, if (type == FeatureType.PLANE) area * areaScale else area, planeIndex,
+        )
+    }
+
+    internal fun values(): DoubleArray = doubleArrayOf(
+        type.ordinal.toDouble(), a[0], a[1], a[2], b[0], b[1], b[2], normal[0], normal[1], normal[2],
+        radius, area, planeIndex.toDouble(), 0.0, 0.0,
+    )
+
+    companion object {
+        internal fun of(v: DoubleArray) = SurfaceFeature(
+            FeatureType.entries[v[0].toInt()], v.copyOfRange(1, 4), v.copyOfRange(4, 7), v.copyOfRange(7, 10),
+            v[10], v[11], v[12].toInt(),
+        )
+    }
+}
+
+/** Desktop's measurement between two features; each part is null when the engine has none for the pair. */
+class Measurement(
+    val from: DoubleArray?,
+    val to: DoubleArray?,
+    val distance: Double?,
+    val xyz: DoubleArray?,
+    val angleDegrees: Double?,
+) {
+    companion object {
+        internal fun of(v: DoubleArray) = Measurement(
+            from = if (v[11] != 0.0) v.copyOfRange(0, 3) else null,
+            to = if (v[11] != 0.0) v.copyOfRange(3, 6) else null,
+            distance = if (v[11] != 0.0) v[6] else null,
+            xyz = if (v[12] != 0.0) v.copyOfRange(7, 10) else null,
+            angleDegrees = if (v[13] != 0.0) Math.toDegrees(v[10]) else null,
+        )
+    }
+}

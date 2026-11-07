@@ -3479,6 +3479,10 @@ static Slic3r::Measure::SurfaceFeature orcapad_feature_from_abi(
                           feature->point_a[2]);
     const Slic3r::Vec3d b(feature->point_b[0], feature->point_b[1],
                           feature->point_b[2]);
+    const Slic3r::Vec3d normal(feature->normal[0], feature->normal[1],
+                               feature->normal[2]);
+    // The constructor's points are those get_circle / get_plane return:
+    // a circle is (centre, normal), a plane is (normal, point).
     switch (feature->type) {
     case ORCA_MEASURE_POINT:
         return Slic3r::Measure::SurfaceFeature(a);
@@ -3487,14 +3491,12 @@ static Slic3r::Measure::SurfaceFeature orcapad_feature_from_abi(
             Slic3r::Measure::SurfaceFeatureType::Edge, a, b);
     case ORCA_MEASURE_CIRCLE:
         return Slic3r::Measure::SurfaceFeature(
-            Slic3r::Measure::SurfaceFeatureType::Circle, a, b,
+            Slic3r::Measure::SurfaceFeatureType::Circle, a, normal,
             std::nullopt, feature->radius);
     case ORCA_MEASURE_PLANE:
     default:
         return Slic3r::Measure::SurfaceFeature(
-            Slic3r::Measure::SurfaceFeatureType::Plane, a,
-            Slic3r::Vec3d(feature->normal[0], feature->normal[1],
-                          feature->normal[2]),
+            Slic3r::Measure::SurfaceFeatureType::Plane, normal, a,
             std::nullopt,
             static_cast<double>(feature->plane_index));
     }

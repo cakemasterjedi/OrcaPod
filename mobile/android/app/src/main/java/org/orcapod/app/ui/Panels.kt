@@ -89,6 +89,7 @@ fun ObjectPanel(vm: AppViewModel, sel: Selection, layFlat: Boolean, onLayFlat: (
                 AssistChip(onClick = { vm.startCut(sel) }, label = { Text("Cut") })
                 AssistChip(onClick = { vm.startPaint(sel.objectId) }, label = { Text("Paint") })
                 AssistChip(onClick = { vm.startLayerHeights(sel) }, label = { Text("Layer heights") })
+                AssistChip(onClick = { vm.startMeasure(sel.objectId) }, label = { Text("Measure") })
                 AssistChip(onClick = { vm.rotate(sel, 2, 90.0) }, label = { Text("Z 90°") }, leadingIcon = { Icon(AppIcons.Rotate, null) })
                 AssistChip(onClick = { vm.rotate(sel, 0, 90.0) }, label = { Text("X 90°") }, leadingIcon = { Icon(AppIcons.Rotate, null) })
                 AssistChip(onClick = { vm.rotate(sel, 1, 90.0) }, label = { Text("Y 90°") }, leadingIcon = { Icon(AppIcons.Rotate, null) })

@@ -150,6 +150,21 @@ Smooth and manual edits on an object without a profile start from
 `layer_height_profile_from_ranges`, as desktop does. Each edit is one undo
 step and makes the slice stale.
 
+## Measure
+
+The measure tool is desktop's measure gizmo on one object. A tap on the
+object picks the feature under the finger (`orca_measure_pick`): a point, an
+edge, a circle or a plane. The engine's `Measure::Measuring` segments the
+object's merged mesh, the same mesh the viewport picks against, so the tapped
+triangle and the object-space hit go to it unchanged. Building it is slow, so
+the engine keeps one per object and mesh revision.
+
+Like desktop, the app measures in world space: it carries both features
+through the instance matrix (normals through the cofactor matrix, which also
+scales plane areas and circle radii) before `orca_measure_between`. The panel
+shows desktop's distance, per-axis distance and angle, and the viewport draws
+the features and the dimension line over the objects.
+
 ## Viewport
 
 The plate is drawn in engine coordinates (z-up millimetres). Gestures:
@@ -208,4 +223,6 @@ sliced-3MF and STL exports. The preview checks cover travels, markers,
 attributes and layer heights, hidden roles, ranges and slider draw ranges, and
 a pause and filament change that reach the sliced G-code. Cut, paint and
 layer height checks cover straight and tilted cuts with connectors, brush and
-fill strokes, and manual, adaptive, smoothed and reset profiles.
+fill strokes, and manual, adaptive, smoothed and reset profiles. The measure check picks a
+point and a plane, measures between them, and carries features through a
+scaled instance.

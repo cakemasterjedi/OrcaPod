@@ -500,6 +500,39 @@ class EngineHostTest {
         assertEquals(0, e.heightProfile(obj.id).size)
     }
 
+    @Test
+    fun t_measuresFeatures() = runBlocking {
+        val sc = e.scene()
+        val obj = sc.snapshot.objects.single()
+        val inst = obj.instances.first()
+        val mesh = sc.meshes.getValue(obj.id)
+        val p = mesh.positions
+        val zMin = (2 until p.size step 3).minOf { p[it] }
+        val zMax = (2 until p.size step 3).maxOf { p[it] }
+        fun vertex(t: Int, k: Int) = DoubleArray(3) { p[mesh.indices[t * 3 + k] * 3 + it].toDouble() }
+        val tris = mesh.indices.size / 3
+        val top = (0 until tris).first { t -> (0 until 3).all { vertex(t, it)[2] == zMax.toDouble() } }
+        val bottom = (0 until tris).first { t -> (0 until 3).all { vertex(t, it)[2] == zMin.toDouble() } }
+        // A corner of a triangle snaps to a point, the middle of a face picks the plane.
+        val corner = e.measurePick(obj.id, mesh.revision, bottom, vertex(bottom, 0))!!
+        assertEquals(FeatureType.POINT, corner.type)
+        val mid = DoubleArray(3) { k -> (0 until 3).sumOf { vertex(top, it)[k] } / 3 }
+        val plane = e.measurePick(obj.id, mesh.revision, top, mid)!!
+        assertEquals(FeatureType.PLANE, plane.type)
+        assertEquals(400.0, plane.area, 1.0)
+        val m = e.measureBetween(plane.transformed(inst.matrix), corner.transformed(inst.matrix))!!
+        assertEquals(20.0, m.distance!!, 0.05)
+        // World features follow the instance: twice the scale doubles a circle and a plane's area.
+        val scale2 = FloatArray(16).also { it[0] = 2f; it[5] = 2f; it[10] = 2f; it[15] = 1f; it[12] = 5f }
+        val circle = SurfaceFeature(FeatureType.CIRCLE, doubleArrayOf(1.0, 0.0, 0.0), DoubleArray(3), doubleArrayOf(0.0, 0.0, 1.0), 3.0, 0.0, -1)
+        val c2 = circle.transformed(scale2)
+        assertEquals(6.0, c2.radius, 1e-9)
+        assertEquals(7.0, c2.a[0], 1e-9)
+        assertEquals(1.0, c2.normal[2], 1e-9)
+        assertEquals(4 * plane.area, plane.transformed(scale2).area, 1e-6)
+        e.endMeasure()
+    }
+
     private suspend fun layerHeight() =
         Regex("\"layer_height\"\\s*:\\s*\"([^\"]*)\"").find(e.resolvedConfig())?.groupValues?.get(1)
 

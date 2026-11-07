@@ -108,6 +108,10 @@ internal object Native {
     external fun heightProfileAdaptive(plater: Long, presets: Long, objectId: Long, quality: Double): DoubleArray
     external fun heightProfileSmooth(plater: Long, presets: Long, objectId: Long, radius: Int, keepMin: Boolean): DoubleArray
     external fun heightProfileAdjust(plater: Long, presets: Long, objectId: Long, z: Double, delta: Double, band: Double, action: Int)
+    external fun measureCreate(plater: Long, objectId: Long): Long
+    external fun measureFree(measure: Long)
+    external fun measurePick(measure: Long, face: Int, x: Double, y: Double, z: Double): DoubleArray?
+    external fun measureBetween(measure: Long, a: DoubleArray, b: DoubleArray): DoubleArray
     external fun volumePaint(plater: Long, objectId: Long, volumeId: Long, layer: Int): Array<Any>
     external fun volumePaintSphere(plater: Long, objectId: Long, volumeId: Long, layer: Int, ray: DoubleArray, radius: Double, state: Int)
     external fun volumePaintFill(plater: Long, objectId: Long, volumeId: Long, layer: Int, ray: DoubleArray, angle: Double, propagate: Boolean, state: Int)

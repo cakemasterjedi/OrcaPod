@@ -4020,9 +4020,11 @@ static void test_measure_and_mesh_ops(const std::string &dir) {
     CHECK_NEAR(plane.area, 400.0, 25.0);   // 20 x 20mm face
     orca_measurement plane_to_point;
     memset(&plane_to_point, 0, sizeof plane_to_point);
-    GUARD(m5, orca_measure_between(measure, &plane, &corner_a, &plane_to_point));
+    GUARD(m5, orca_measure_between(measure, &plane, &corner_b, &plane_to_point));
     expect_ok(m5, "plane to point");
-    CHECK(plane_to_point.has_distance || plane_to_point.has_xyz);
+    // The plane round-trips as (normal, point): the bottom corner is 20 mm below the top face.
+    CHECK(plane_to_point.has_distance);
+    CHECK_NEAR(plane_to_point.distance, 20.0, 0.05);
     orca_measure_dispose(measure);
 
     // --- simplify: quadric edge collapse on the single volume

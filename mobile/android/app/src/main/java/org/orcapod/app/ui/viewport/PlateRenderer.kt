@@ -37,6 +37,9 @@ data class ViewportState(
     val cutPoints: FloatArray? = null,
     /** Painted triangles of the paint tool's layer: interleaved world position + colour, three vertices each. */
     val paintOverlay: FloatArray? = null,
+    /** Measure tool lines (GL_LINES) and points: interleaved world position + colour. */
+    val measureLines: FloatArray? = null,
+    val measurePoints: FloatArray? = null,
 )
 
 data class Selection(val objectId: Long, val instanceId: Long)
@@ -107,6 +110,7 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
             drawObjects(s)
             drawPaint(s)
             drawCut(s)
+            drawMeasure(s)
         }
     }
 
@@ -155,6 +159,14 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
         }
         glDisable(GL_DEPTH_TEST)
         drawOverlay(pts, GL_POINTS, 1f)
+        glEnable(GL_DEPTH_TEST)
+    }
+
+    /** Measured features and the measurement line, over everything as on desktop. */
+    private fun drawMeasure(s: ViewportState) {
+        glDisable(GL_DEPTH_TEST)
+        s.measureLines?.let { glLineWidth(3f); drawOverlay(it, GL_LINES, 1f); glLineWidth(1f) }
+        s.measurePoints?.let { drawOverlay(it, GL_POINTS, 1f) }
         glEnable(GL_DEPTH_TEST)
     }
 

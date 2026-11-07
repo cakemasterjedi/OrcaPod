@@ -64,113 +64,123 @@ fun OptionDef.visibleAt(mode: OptionMode) = this.mode.ordinal <= mode.ordinal
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(vm: AppViewModel, initial: PresetKind = PresetKind.PROCESS, onDismiss: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxSize()) {
+            SettingsContent(vm, initial, Modifier.fillMaxSize().safeDrawingPadding(), onClose = onDismiss)
+        }
+    }
+}
+
+/**
+ * The body of [SettingsScreen]; a wide screen shows it in its side pane, without
+ * a close button ([onClose] null).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsContent(vm: AppViewModel, initial: PresetKind, modifier: Modifier = Modifier, onClose: (() -> Unit)? = null) {
     var kind by rememberSaveable { mutableStateOf(initial) }
     var query by rememberSaveable { mutableStateOf("") }
     var pageIndex by rememberSaveable(kind) { mutableStateOf(0) }
     var saving by remember { mutableStateOf<PresetKind?>(null) }
     var menu by remember { mutableStateOf(false) }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().safeDrawingPadding()) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
-                    IconButton(onClick = onDismiss) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Close") }
-                    Column(Modifier.weight(1f)) {
-                        Text("Settings", style = MaterialTheme.typography.titleLarge)
-                        val name = when (kind) {
-                            PresetKind.PROCESS -> vm.process
-                            PresetKind.FILAMENT -> vm.filament
-                            PresetKind.PRINTER -> vm.printer
-                        }
-                        val modified = vm.modifiedKeys[kind].orEmpty().isNotEmpty()
-                        Text(
-                            if (modified) "$name (modified)" else name,
-                            style = MaterialTheme.typography.bodySmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    ModeSwitch(vm.settingsMode, vm::changeSettingsMode)
-                    androidx.compose.foundation.layout.Box {
-                        IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
-                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                            DropdownMenuItem(
-                                text = { Text("Save as preset…") },
-                                enabled = vm.modifiedKeys[kind].orEmpty().isNotEmpty(),
-                                onClick = { menu = false; saving = kind },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Discard changes") },
-                                enabled = vm.modifiedKeys[kind].orEmpty().isNotEmpty(),
-                                onClick = { menu = false; vm.resetKind(kind) },
-                            )
-                        }
-                    }
+    Column(modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
+            if (onClose != null) IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Close") }
+            Column(Modifier.weight(1f).padding(start = if (onClose == null) 8.dp else 0.dp)) {
+                if (onClose != null) Text("Settings", style = MaterialTheme.typography.titleLarge)
+                val name = when (kind) {
+                    PresetKind.PROCESS -> vm.process
+                    PresetKind.FILAMENT -> vm.filament
+                    PresetKind.PRINTER -> vm.printer
                 }
-                PrimaryTabRow(selectedTabIndex = TABS.indexOf(kind)) {
-                    for (k in TABS) {
-                        val n = vm.modifiedKeys[k].orEmpty().size
-                        Tab(selected = k == kind, onClick = { kind = k }, text = { Text(if (n > 0) "${k.title()} • $n" else k.title()) })
-                    }
-                }
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-                    singleLine = true,
-                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                    placeholder = { Text("Search settings") },
+                val modified = vm.modifiedKeys[kind].orEmpty().isNotEmpty()
+                Text(
+                    if (modified) "$name (modified)" else name,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                val pages = visiblePages(vm, kind, query)
-                if (query.isBlank()) {
-                    Row(
-                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        for ((i, p) in pages.withIndex()) {
-                            FilterChip(selected = i == pageIndex, onClick = { pageIndex = i }, label = { Text(p.title) })
-                        }
-                    }
+            }
+            ModeSwitch(vm.settingsMode, vm::changeSettingsMode)
+            androidx.compose.foundation.layout.Box {
+                IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Save as preset…") },
+                        enabled = vm.modifiedKeys[kind].orEmpty().isNotEmpty(),
+                        onClick = { menu = false; saving = kind },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Discard changes") },
+                        enabled = vm.modifiedKeys[kind].orEmpty().isNotEmpty(),
+                        onClick = { menu = false; vm.resetKind(kind) },
+                    )
                 }
-                val shown = if (query.isBlank()) listOfNotNull(pages.getOrNull(pageIndex.coerceIn(0, (pages.size - 1).coerceAtLeast(0)))) else pages
-                LazyColumn(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                    if (kind == PresetKind.PRINTER && query.isBlank() && pageIndex == 0) {
-                        vm.bedType?.takeIf { it.selectable }?.let { bed ->
-                            item("bed_type") { BedTypeCard(bed, vm::setBedType) }
-                        }
-                    }
-                    for (page in shown) {
-                        if (query.isNotBlank()) item("p:${page.title}") {
-                            Text(page.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
-                        }
-                        for (group in page.groups) {
-                            item("g:${page.title}:${group.title}") {
-                                Card(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                                    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                                        Text(group.title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-                                        for (key in group.keys) {
-                                            val def = vm.optionDefs[key] ?: continue
-                                            OptionRow(
-                                                def = def,
-                                                value = vm.valueOf(kind, key),
-                                                modified = key in vm.modifiedKeys[kind].orEmpty(),
-                                                onChange = { vm.setValue(kind, key, it) },
-                                                onReset = { vm.resetValue(kind, key) },
-                                            )
-                                            HorizontalDivider()
-                                        }
-                                    }
+            }
+        }
+        PrimaryTabRow(selectedTabIndex = TABS.indexOf(kind)) {
+            for (k in TABS) {
+                val n = vm.modifiedKeys[k].orEmpty().size
+                Tab(selected = k == kind, onClick = { kind = k }, text = { Text(if (n > 0) "${k.title()} • $n" else k.title()) })
+            }
+        }
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            singleLine = true,
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+            placeholder = { Text("Search settings") },
+        )
+        val pages = visiblePages(vm, kind, query)
+        if (query.isBlank()) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                for ((i, p) in pages.withIndex()) {
+                    FilterChip(selected = i == pageIndex, onClick = { pageIndex = i }, label = { Text(p.title) })
+                }
+            }
+        }
+        val shown = if (query.isBlank()) listOfNotNull(pages.getOrNull(pageIndex.coerceIn(0, (pages.size - 1).coerceAtLeast(0)))) else pages
+        LazyColumn(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+            if (kind == PresetKind.PRINTER && query.isBlank() && pageIndex == 0) {
+                vm.bedType?.takeIf { it.selectable }?.let { bed ->
+                    item("bed_type") { BedTypeCard(bed, vm::setBedType) }
+                }
+            }
+            for (page in shown) {
+                if (query.isNotBlank()) item("p:${page.title}") {
+                    Text(page.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
+                }
+                for (group in page.groups) {
+                    item("g:${page.title}:${group.title}") {
+                        Card(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                Text(group.title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                                for (key in group.keys) {
+                                    val def = vm.optionDefs[key] ?: continue
+                                    OptionRow(
+                                        def = def,
+                                        value = vm.valueOf(kind, key),
+                                        modified = key in vm.modifiedKeys[kind].orEmpty(),
+                                        onChange = { vm.setValue(kind, key, it) },
+                                        onReset = { vm.resetValue(kind, key) },
+                                    )
+                                    HorizontalDivider()
                                 }
                             }
                         }
                     }
-                    if (shown.isEmpty()) item("empty") {
-                        Text(
-                            if (query.isBlank()) "No settings at this level; switch to Advanced or Expert." else "No setting matches \"$query\".",
-                            modifier = Modifier.padding(16.dp),
-                        )
-                    }
                 }
+            }
+            if (shown.isEmpty()) item("empty") {
+                Text(
+                    if (query.isBlank()) "No settings at this level; switch to Advanced or Expert." else "No setting matches \"$query\".",
+                    modifier = Modifier.padding(16.dp),
+                )
             }
         }
     }

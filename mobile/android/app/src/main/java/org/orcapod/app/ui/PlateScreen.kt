@@ -56,6 +56,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
+import androidx.lifecycle.viewmodel.compose.viewModel
 import org.orcapod.app.engine.PresetKind
 import org.orcapod.app.ui.viewport.PlateView
 import org.orcapod.app.ui.viewport.Selection
@@ -68,6 +69,9 @@ private val MODEL_TYPES = arrayOf("*/*")
 @Composable
 fun PlateScreen(vm: AppViewModel) {
     val context = LocalContext.current
+    val printerVm: PrinterViewModel = viewModel()
+    var sendOpen by remember { mutableStateOf(false) }
+    var printersOpen by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     var picker by remember { mutableStateOf<PresetKind?>(null) }
     var settingsFor by remember { mutableStateOf<PresetKind?>(null) }
@@ -81,6 +85,7 @@ fun PlateScreen(vm: AppViewModel) {
     var viewRef by remember { mutableStateOf<PlateView?>(null) }
 
     LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
+    LaunchedEffect(Unit) { printerVm.messages.collect { snackbar.showSnackbar(it) } }
 
     val importModels = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) vm.importUris(uris)
@@ -162,6 +167,7 @@ fun PlateScreen(vm: AppViewModel) {
                             val hasObjects = vm.scene.snapshot.objects.isNotEmpty()
                             DropdownMenuItem(text = { Text("Import models") }, onClick = { menuOpen = false; importModels.launch(MODEL_TYPES) })
                             DropdownMenuItem(text = { Text("Add shape…") }, onClick = { menuOpen = false; shapeMenu = true })
+                            DropdownMenuItem(text = { Text("Online model library") }, onClick = { menuOpen = false; vm.openLibrary() })
                             HorizontalDivider()
                             DropdownMenuItem(text = { Text("New project") }, onClick = { menuOpen = false; guarded { vm.newProject() } })
                             DropdownMenuItem(
@@ -208,6 +214,7 @@ fun PlateScreen(vm: AppViewModel) {
                                 onClick = { menuOpen = false; vm.clearPlate() },
                             )
                             HorizontalDivider()
+                            DropdownMenuItem(text = { Text("Printers") }, onClick = { menuOpen = false; printersOpen = true })
                             DropdownMenuItem(text = { Text("Reset view") }, onClick = { menuOpen = false; viewRef?.resetView() })
                             DropdownMenuItem(text = { Text("Printer brands") }, onClick = { menuOpen = false; vm.manageVendors() })
                         }
@@ -279,6 +286,7 @@ fun PlateScreen(vm: AppViewModel) {
                             context.startActivity(Intent.createChooser(send, "Send G-code"))
                         },
                         onSave = { saveGcode.launch(done.gcode.name) },
+                        onPrint = { sendOpen = true },
                     )
                     vm.slice is SliceState.Running -> SlicingPanel(vm.slice as SliceState.Running, vm::cancelSlice)
                     vm.cut != null -> CutPanel(vm, vm.cut!!)
@@ -300,6 +308,7 @@ fun PlateScreen(vm: AppViewModel) {
                             plates = vm.scene.snapshot.plates.size,
                             onImport = { importModels.launch(MODEL_TYPES) },
                             onObjects = { objectList = true },
+                            onLibrary = { vm.openLibrary() },
                             onArrange = vm::arrange,
                             onSettings = { settingsFor = PresetKind.PROCESS },
                             onSlice = { vm.startSlice(allPlates = it) },
@@ -330,6 +339,10 @@ fun PlateScreen(vm: AppViewModel) {
             },
             onDelete = if (kind == PresetKind.PRINTER) null else { name -> vm.deleteUserPreset(kind, name) },
             onDismiss = { picker = null },
+            brands = if (kind == PresetKind.PRINTER) vm.installedVendors.sortedWith(String.CASE_INSENSITIVE_ORDER) else emptyList(),
+            brand = vm.activeVendor,
+            loading = vm.busy != null,
+            onBrand = vm::switchBrand,
         )
     }
     settingsFor?.let { kind -> SettingsScreen(vm, kind) { settingsFor = null } }
@@ -358,6 +371,8 @@ fun PlateScreen(vm: AppViewModel) {
     if (filamentSlots) {
         FilamentSlotsSheet(vm, onEdit = { filamentSlots = false; settingsFor = PresetKind.FILAMENT }) { filamentSlots = false }
     }
+    if (sendOpen && done != null) SendToPrinterSheet(printerVm, done.gcode, vm.printer) { sendOpen = false }
+    if (printersOpen) PrintersSheet(printerVm, vm.printer) { printersOpen = false }
 }
 
 @Composable
@@ -424,6 +439,7 @@ private fun ActionBar(
     plates: Int,
     onImport: () -> Unit,
     onObjects: () -> Unit,
+    onLibrary: () -> Unit,
     onArrange: () -> Unit,
     onSettings: () -> Unit,
     onSlice: (allPlates: Boolean) -> Unit,
@@ -438,6 +454,7 @@ private fun ActionBar(
         ) {
             IconButton(onClick = onImport) { Icon(Icons.Filled.Add, "Import models") }
             IconButton(onClick = onObjects, enabled = hasObjects) { Icon(Icons.AutoMirrored.Filled.List, "Objects") }
+            IconButton(onClick = onLibrary) { Icon(AppIcons.CloudDownload, "Online model library") }
             IconButton(onClick = onArrange, enabled = hasObjects) { Icon(AppIcons.GridView, "Arrange") }
             IconButton(onClick = onSettings) { Icon(AppIcons.Tune, "Print settings") }
             if (hasResult) IconButton(onClick = onShowResult) { Icon(AppIcons.Layers, "Show preview") }

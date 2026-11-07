@@ -73,7 +73,7 @@ private enum class PreviewSection(val label: String) { LEGEND("Legend"), STATS("
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PreviewPanel(vm: AppViewModel, done: SliceState.Done, onShare: () -> Unit, onSave: () -> Unit) {
+fun PreviewPanel(vm: AppViewModel, done: SliceState.Done, onShare: () -> Unit, onSave: () -> Unit, onPrint: () -> Unit) {
     var warningsOpen by remember { mutableStateOf(false) }
     var section by remember { mutableStateOf<PreviewSection?>(null) }
     val tp = done.toolpath
@@ -134,13 +134,14 @@ fun PreviewPanel(vm: AppViewModel, done: SliceState.Done, onShare: () -> Unit, o
             } else {
                 Text("The toolpath preview is not available for this G-code.", style = MaterialTheme.typography.bodySmall)
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onShare) { Icon(Icons.Filled.Share, "Share G-code") }
                 OutlinedButton(onClick = onSave) { Text("Save") }
                 Spacer(Modifier.width(8.dp))
-                Button(onClick = onShare) {
-                    Icon(Icons.Filled.Share, null)
+                Button(onClick = onPrint) {
+                    Icon(AppIcons.Print, null)
                     Spacer(Modifier.width(6.dp))
-                    Text("Send")
+                    Text("Print")
                 }
             }
         }

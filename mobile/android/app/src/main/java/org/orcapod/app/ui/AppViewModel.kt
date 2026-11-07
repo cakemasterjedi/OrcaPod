@@ -77,6 +77,9 @@ sealed interface SliceState {
 /** The per-object or per-part settings target: [volumeId] 0 is the object itself. */
 data class OverrideTarget(val objectId: Long, val volumeId: Long)
 
+/** An open model library, optionally starting at a web page. */
+data class LibraryRequest(val url: String? = null)
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = ProfileStore(app)
     private val projects = ProjectStore(app)
@@ -110,6 +113,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     val previewStyle: PreviewStyle
         get() = PreviewStyle(previewMode, hiddenRoles, previewOptions, filamentSlots.map { it.colour })
+    /** The model library is open; a URL opens it on that page (a link shared to the app). */
+    var library by mutableStateOf<LibraryRequest?>(null)
+        private set
 
     var printers by mutableStateOf<List<PresetEntry>>(emptyList())
         private set
@@ -150,6 +156,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var installedVendors by mutableStateOf<Set<String>>(emptySet())
         private set
 
+    /** The installed brand whose profiles are loaded; the others load when picked. */
+    var activeVendor by mutableStateOf<String?>(null)
     // --- the open project (desktop's project title, dirty mark and recent list) ---
 
     /** Name of the open project, or null for a plate never saved or opened. */
@@ -193,6 +201,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 phase = Phase.Loading("Updating printer profiles…")
                 store.install(installedVendors)
             }
+            activateBrand(store.activeVendor)
             openEngine()
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
@@ -216,6 +225,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             phase = Phase.Loading("Installing printer profiles…")
             store.install(vendors)
             installedVendors = vendors
+            activateBrand(store.activeVendor)
             val e = engine
             if (e == null) {
                 openEngine()
@@ -233,6 +243,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             phase = Phase.Failed(e.message ?: e.toString())
         }
     }
+
+    /** Switches the loaded profiles to [vendor]'s, restoring the presets last used with it. */
+    fun switchBrand(vendor: String) {
+        if (vendor == activeVendor) return
+        engineAction("Loading $vendor profiles…") { e ->
+            val previous = activeVendor
+            try {
+                activateBrand(vendor)
+                e.reloadPresets(store.dataDir.path)
+            } catch (ex: Exception) {
+                activateBrand(previous) // the engine still holds the previous brand's presets
+                throw ex
+            }
+            restoreSelection(e)
+            refreshScene()
+            invalidateSlice()
+        }
+    }
+
+    private suspend fun activateBrand(vendor: String?) {
+        if (vendor != null) store.activate(vendor)
+        activeVendor = vendor
+    }
+
+    private fun sessionKey(key: String) = activeVendor?.let { "$key/$it" } ?: key
 
     private suspend fun openEngine() {
         phase = Phase.Loading("Loading printer profiles…")
@@ -261,10 +296,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Re-selects the last session's presets, or the first printer's defaults. */
     private suspend fun restoreSelection(e: Engine) {
         val machines = e.list(PresetKind.PRINTER)
-        val saved = prefs.getString("printer", null)
+        // Selections are kept per brand; the unscoped keys hold the one from before brands loaded on their own.
+        val key: (String) -> String = if (prefs.contains(sessionKey("printer"))) ::sessionKey else { k: String -> k }
+        val saved = prefs.getString(key("printer"), null)
         if (saved != null && machines.any { it.name == saved }) {
             try {
-                e.select(saved, prefs.getString("filament", "") ?: "", prefs.getString("process", "") ?: "")
+                e.select(saved, prefs.getString(key("filament"), "") ?: "", prefs.getString(key("process"), "") ?: "")
             } catch (_: OrcaException) {
                 e.selectPrinter(saved)
             }
@@ -283,7 +320,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         printer = e.current(PresetKind.PRINTER)
         filament = e.current(PresetKind.FILAMENT)
         process = e.current(PresetKind.PROCESS)
-        prefs.edit().putString("printer", printer).putString("filament", filament).putString("process", process).apply()
+        prefs.edit()
+            .putString(sessionKey("printer"), printer)
+            .putString(sessionKey("filament"), filament)
+            .putString(sessionKey("process"), process)
+            .apply()
         readSettings()
     }
 
@@ -374,20 +415,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- document ---
 
+    fun openLibrary(url: String? = null) { library = LibraryRequest(url) }
+    fun closeLibrary() { library = null }
+
     /**
      * Copies picked files into the cache (the engine reads by extension) and imports them.
      * A single 3MF that carries project settings is not imported straight away: like
      * desktop, the user picks between opening it as a project and taking its geometry.
      */
     fun importUris(uris: List<Uri>, askProject: Boolean = true) = engineAction("Importing…") { e ->
+        val files = uris.map { copyToCache(it) }
+        val single = files.singleOrNull()
+        if (askProject && single != null && single.extension.lowercase() == "3mf" &&
+            withContext(Dispatchers.IO) { ProjectStore.isProject(single) }
+        ) {
+            projectChoice = uris.single()
+            return@engineAction
+        }
+        importFiles(e, files)
+    }
+
+    /** Imports model files already on disk, such as downloads from the model library. */
+    fun importFiles(files: List<File>) = engineAction("Importing…") { e -> importFiles(e, files) }
+
+    private suspend fun importFiles(e: Engine, files: List<File>) {
         var imported = 0
-        for (uri in uris) {
-            val file = copyToCache(uri)
+        for (file in files) {
             val ext = file.extension.lowercase()
-            if (askProject && uris.size == 1 && ext == "3mf" && withContext(Dispatchers.IO) { ProjectStore.isProject(file) }) {
-                projectChoice = uri
-                return@engineAction
-            }
             if (ext == "step" || ext == "stp") {
                 _messages.tryEmit("STEP files are not supported yet; export the model as STL or 3MF")
                 continue
@@ -398,7 +452,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             imported += e.import(file.path)
         }
-        if (uris.size > 1 && imported > 1) {
+        if (files.size > 1 && imported > 1) {
             val unfit = e.arrange()
             if (unfit > 0) _messages.tryEmit("$unfit object(s) do not fit on the plate")
         }

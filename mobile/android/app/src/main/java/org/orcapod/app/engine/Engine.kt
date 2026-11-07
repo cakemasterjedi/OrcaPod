@@ -162,8 +162,13 @@ class Engine private constructor(private var presets: Long, private val plater: 
 
     suspend fun export3mf(path: String) = onEngine { Native.platerExport3mf(plater, path) }
 
-    /** Saves an OrcaSlicer project 3MF: model, plates and the current settings. */
-    suspend fun saveProject(path: String) = onEngine { Native.projectSave(plater, presets, path) }
+    /**
+     * Saves an OrcaSlicer project 3MF: model, plates and the current settings, with
+     * [thumbnail] (top-down RGBA8, [thumbnailSize] square) as the plate picture.
+     */
+    suspend fun saveProject(path: String, thumbnailSize: Int = 0, thumbnail: ByteArray? = null) = onEngine {
+        Native.projectSave(plater, presets, path, thumbnailSize, thumbnail)
+    }
 
     suspend fun exportStl(objectId: Long?, path: String) = onEngine {
         if (objectId == null) Native.exportStlAll(plater, path) else Native.objectExportStl(plater, objectId, path)

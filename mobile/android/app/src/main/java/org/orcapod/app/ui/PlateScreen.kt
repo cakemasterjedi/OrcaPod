@@ -90,11 +90,25 @@ fun PlateScreen(vm: AppViewModel) {
     val importModels = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) vm.importUris(uris)
     }
+    var recentSheet by remember { mutableStateOf(false) }
+    // A step that replaces the plate, held while the user decides about unsaved changes.
+    var unsavedGuard by remember { mutableStateOf<(() -> Unit)?>(null) }
+    // Runs after a "Save as" that the unsaved-changes prompt started.
+    var afterSaveAs by remember { mutableStateOf<(() -> Unit)?>(null) }
+    fun guarded(action: () -> Unit) { if (vm.projectDirty) unsavedGuard = action else action() }
+
     val openProject = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) vm.importUris(listOf(uri), asProject = true)
+        if (uri != null) vm.openProject(uri)
     }
-    val saveProject = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/3mf")) { uri ->
-        if (uri != null) vm.saveProject(uri)
+    val saveProjectAs = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/3mf")) { uri ->
+        val then = afterSaveAs
+        afterSaveAs = null
+        if (uri != null) vm.saveProject(uri, then)
+    }
+    val projectFileName = (vm.projectName ?: vm.scene.snapshot.objects.firstOrNull()?.name?.substringBeforeLast('.') ?: "project") + ".3mf"
+    fun save(then: (() -> Unit)? = null) {
+        if (vm.projectUri != null) vm.saveProject(null, then)
+        else { afterSaveAs = then; saveProjectAs.launch(projectFileName) }
     }
     val export3mf = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/3mf")) { uri ->
         if (uri != null) vm.exportGeneric3mf(uri)
@@ -134,7 +148,14 @@ fun PlateScreen(vm: AppViewModel) {
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
-                title = { Text(if (previewing) "Preview" else "OrcaPod") },
+                title = {
+                    val name = vm.projectName ?: "OrcaPod"
+                    Text(
+                        if (previewing) "Preview" else if (vm.projectDirty) "$name*" else name,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
                 actions = {
                     if (!previewing) {
                         IconButton(onClick = vm::undo, enabled = vm.scene.snapshot.undoCount > 0) { Icon(AppIcons.Undo, "Undo") }
@@ -147,11 +168,22 @@ fun PlateScreen(vm: AppViewModel) {
                             DropdownMenuItem(text = { Text("Import models") }, onClick = { menuOpen = false; importModels.launch(MODEL_TYPES) })
                             DropdownMenuItem(text = { Text("Add shape…") }, onClick = { menuOpen = false; shapeMenu = true })
                             DropdownMenuItem(text = { Text("Online model library") }, onClick = { menuOpen = false; vm.openLibrary() })
-                            DropdownMenuItem(text = { Text("Open 3MF project") }, onClick = { menuOpen = false; openProject.launch(MODEL_TYPES) })
+                            HorizontalDivider()
+                            DropdownMenuItem(text = { Text("New project") }, onClick = { menuOpen = false; guarded { vm.newProject() } })
+                            DropdownMenuItem(
+                                text = { Text("Open project…") },
+                                onClick = { menuOpen = false; guarded { openProject.launch(MODEL_TYPES) } },
+                            )
+                            DropdownMenuItem(text = { Text("Recent projects") }, onClick = { menuOpen = false; recentSheet = true })
                             DropdownMenuItem(
                                 text = { Text("Save project") },
                                 enabled = hasObjects,
-                                onClick = { menuOpen = false; saveProject.launch("project.3mf") },
+                                onClick = { menuOpen = false; save() },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Save project as…") },
+                                enabled = hasObjects,
+                                onClick = { menuOpen = false; saveProjectAs.launch(projectFileName) },
                             )
                             HorizontalDivider()
                             DropdownMenuItem(
@@ -317,6 +349,25 @@ fun PlateScreen(vm: AppViewModel) {
     if (objectList) ObjectListSheet(vm, onOpen = { objectList = false; vm.selection = it; objectSheet = it }) { objectList = false }
     objectSheet?.let { sel -> ObjectSheet(vm, sel) { objectSheet = null } }
     if (calibrating) CalibrationDialog(vm) { calibrating = false }
+    if (recentSheet) {
+        RecentProjectsSheet(vm, onOpen = { p -> recentSheet = false; guarded { vm.openRecent(p) } }) { recentSheet = false }
+    }
+    unsavedGuard?.let { action ->
+        UnsavedChangesDialog(
+            name = vm.projectName,
+            onSave = { unsavedGuard = null; save(action) },
+            onDiscard = { unsavedGuard = null; action() },
+            onCancel = { unsavedGuard = null },
+        )
+    }
+    vm.projectChoice?.let { uri ->
+        ProjectChoiceDialog(
+            onOpen = { vm.projectChoice = null; guarded { vm.openProject(uri) } },
+            onGeometry = { vm.projectChoice = null; vm.importUris(listOf(uri), askProject = false) },
+            onCancel = { vm.projectChoice = null },
+        )
+    }
+    RecoveryDialog(vm)
     if (filamentSlots) {
         FilamentSlotsSheet(vm, onEdit = { filamentSlots = false; settingsFor = PresetKind.FILAMENT }) { filamentSlots = false }
     }

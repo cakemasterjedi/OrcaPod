@@ -241,6 +241,8 @@ engine_sources() {
 
     # adapter stubs (DRC/SVG — loud throws, upstream untouched)
     printf 'cxx\t%s\n' "$BRIDGE/engine-cxx/format_stubs.cpp"
+    # import name cleanup (desktop's name dialog; header-only Boost.Locale UTF)
+    printf 'cxx\t%s\n' "$SRC/libslic3r/Format/ImportNames.cpp"
     # STEP: the real reader over OpenCASCADE, or loud stubs without it
     if [ "$ORCAPOD_STEP" = real ]; then
         printf 'cxx\t%s\n' "$SRC/libslic3r/Format/STEP.cpp"

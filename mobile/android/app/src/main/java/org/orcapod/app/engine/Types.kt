@@ -30,6 +30,8 @@ data class StepImportOptions(
     val keepNames: Boolean = true,
     /** Load as an assembly; false loads a single object whose parts are hidden. */
     val asAssembly: Boolean = true,
+    /** Orders the parts in the object list by name (natural order); needs [keepNames]. */
+    val sortNames: Boolean = false,
 ) {
     companion object {
         const val LINEAR_DEFAULT = 0.003

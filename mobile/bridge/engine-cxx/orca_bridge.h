@@ -135,6 +135,10 @@ typedef struct {
     uint32_t merged_triangle_start;
     uint32_t merged_triangle_count;
     uint32_t override_count;      // per-volume setting overrides
+    // Desktop ModelVolume::import_display_order: the part's place in the
+    // object list (STEP import, optionally sorted by name), -1 = document
+    // order. Saved in 3MF projects.
+    int32_t import_display_order;
 } orca_scene_volume;
 
 typedef struct {
@@ -208,11 +212,18 @@ orca_result orca_plater_import_model(orca_plater *plater, const char *path,
                                      orca_revision *out_revision);
 // --- STEP import (desktop StepMeshDialog, ABI v43) ---------------------------
 
-/// A parsed STEP document. Desktop reads the file once, lets the user pick
-/// the meshing quality while it shows the resulting triangle count, then
-/// meshes it into the plater; the handle keeps the parsed document between
-/// those steps. orca_plater_import_model also imports STEP with the desktop
-/// defaults below, for callers that show no dialog.
+/// A STEP document on its way into the plater. Desktop reads the file once,
+/// lets the user pick the meshing quality while it shows the resulting
+/// triangle count, meshes it, offers to clean names the slicer cannot use,
+/// and then adds it; the handle carries the document through those stages:
+///
+///   orca_step_new -> orca_step_load -> [orca_step_triangle_count]* ->
+///   orca_step_mesh -> [orca_step_name_changes]* -> orca_plater_import_step
+///
+/// orca_step_load, orca_step_triangle_count and orca_step_mesh are the slow
+/// calls; orca_step_progress and orca_step_cancel may be called from any
+/// other thread while one runs. orca_plater_import_model also imports STEP,
+/// with the desktop defaults below, for callers that show no dialog.
 typedef struct orca_step orca_step;
 
 /// Desktop defaults (AppConfig linear_deflection / angle_deflection) and the
@@ -223,6 +234,8 @@ typedef struct orca_step orca_step;
 #define ORCA_STEP_ANGLE_DEFLECTION_DEFAULT  0.5
 #define ORCA_STEP_ANGLE_DEFLECTION_MIN      0.01
 #define ORCA_STEP_ANGLE_DEFLECTION_MAX      1.0
+/// Desktop import_names_cleanup_replacement default.
+#define ORCA_IMPORT_NAME_REPLACEMENT_DEFAULT "_"
 
 typedef struct orca_step_info {
     /// The file names its bodies, so keep_names can apply them.
@@ -247,17 +260,26 @@ typedef struct orca_step_import_options {
     /// split later)" (0): the latter hides the parts of a multi-part object
     /// (ModelObject::imported_parts_hidden).
     uint8_t load_as_assembly;
+    /// Desktop "Sort parts by name" (natural, case-insensitive): orders the
+    /// parts in the object list (ModelVolume::import_display_order, saved in
+    /// 3MF), not for slicing. Applies only with keep_names.
+    uint8_t sort_names;
 } orca_step_import_options;
 
 /// Fills `out_options` with the desktop defaults (assembly, split compound
-/// and keep names on).
+/// and keep names on, sorting off).
 void orca_step_import_options_default(orca_step_import_options *out_options);
 
-/// Reads and parses a .step/.stp file (the slow part of a STEP import).
-/// A file that is not a readable STEP document is ORCA_STATUS_INVALID_MODEL.
-orca_result orca_step_open(const char *path, orca_step **out_step,
-                           orca_step_info *out_info);
+/// Creates a handle for a .step/.stp file without reading it, so the read
+/// can be cancelled. ORCA_STATUS_IO_FAILURE when the file is not accessible.
+orca_result orca_step_new(const char *path, orca_step **out_step);
 void orca_step_free(orca_step *step);
+
+/// Reads and parses the file. ORCA_STATUS_INVALID_MODEL when it is not a
+/// readable STEP document, ORCA_STATUS_CANCELLED after orca_step_cancel.
+/// Every other call but orca_step_free needs a loaded handle
+/// (ORCA_STATUS_INVALID_HANDLE before).
+orca_result orca_step_load(orca_step *step, orca_step_info *out_info);
 
 /// Meshes the document with the given deflections and returns the triangle
 /// count the import would produce (desktop "Number of triangular facets").
@@ -266,15 +288,37 @@ orca_result orca_step_triangle_count(orca_step *step, double linear_deflection,
                                      double angle_deflection,
                                      uint32_t *out_triangle_count);
 
-/// Stops a running orca_step_triangle_count from any thread. The next call
-/// on the handle runs normally.
+/// Meshes the document with the dialog's choices into the handle (replacing
+/// an earlier mesh). ORCA_STATUS_CANCELLED after orca_step_cancel,
+/// ORCA_STATUS_INVALID_MODEL when no valid shape meshes.
+orca_result orca_step_mesh(orca_step *step, const orca_step_import_options *options);
+
+/// Desktop "Unsupported characters in names": the object and part names of
+/// the meshed document that `replacement` would change, as a JSON array of
+/// [original, cleaned] pairs (empty when every name is usable, so no dialog
+/// is needed). Each unsupported character is replaced with `replacement`
+/// ("" removes it; NULL means ORCA_IMPORT_NAME_REPLACEMENT_DEFAULT), and
+/// names that cleaning makes collide get numbered. ORCA_STATUS_INVALID_ARGUMENT
+/// for a replacement that itself holds unsupported characters,
+/// ORCA_STATUS_INVALID_MODEL when a name is not valid UTF-8 (desktop refuses
+/// such a file), ORCA_STATUS_NOT_FOUND before orca_step_mesh.
+orca_result orca_step_name_changes(orca_step *step, const char *replacement,
+                                   orca_owned_string *out_json);
+
+/// Reports how far the running load or mesh is, 0..100 (0 when none
+/// runs). Callable from any thread.
+int32_t orca_step_progress(const orca_step *step);
+
+/// Stops a running orca_step_load, orca_step_triangle_count or
+/// orca_step_mesh from any thread. The next call on the handle runs normally.
 void orca_step_cancel(orca_step *step);
 
-/// Meshes the document into the plater as one object whose parts are the
-/// file's bodies (desktop STEP import), placed as orca_plater_import_model
-/// places its objects. One mutation; the handle stays usable.
+/// Adds the meshed document to the plater as one object whose parts are the
+/// file's bodies, placed as orca_plater_import_model places its objects,
+/// after cleaning its names with `replacement` as orca_step_name_changes
+/// describes. One mutation; the handle keeps its mesh for another import.
 orca_result orca_plater_import_step(orca_plater *plater, orca_step *step,
-                                    const orca_step_import_options *options,
+                                    const char *replacement,
                                     double bed_center_x, double bed_center_y,
                                     orca_object_id *out_first_object_id,
                                     uint32_t *out_object_count,

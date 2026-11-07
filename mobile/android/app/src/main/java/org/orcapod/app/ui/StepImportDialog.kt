@@ -41,13 +41,14 @@ import kotlin.math.pow
 /**
  * Desktop StepMeshDialog with its import choices: meshing quality (linear
  * and angular deflection, with the resulting triangle count), Split
- * compound, assembly or single object, Keep original names, and
- * Remember my choice / Don't ask again.
+ * compound, assembly or single object, Keep original names, Sort parts
+ * by name, and Remember my choice / Don't ask again.
  */
 @Composable
 fun StepImportDialog(
     request: StepImportRequest,
     countTriangles: (StepFile, Double, Double) -> Deferred<Long?>,
+    stopCount: (StepFile, Deferred<Long?>) -> Unit,
     onAnswer: (StepImportAnswer?) -> Unit,
 ) {
     val step = request.step
@@ -56,6 +57,7 @@ fun StepImportDialog(
     var split by remember { mutableStateOf(request.initial.splitCompound) }
     var keepNames by remember { mutableStateOf(request.initial.keepNames) }
     var assembly by remember { mutableStateOf(request.initial.asAssembly) }
+    var sort by remember { mutableStateOf(request.initial.sortNames) }
     var remember by remember { mutableStateOf(false) }
     var dontAsk by remember { mutableStateOf(false) }
     var triangles by remember { mutableStateOf<Long?>(null) }
@@ -72,7 +74,7 @@ fun StepImportDialog(
         try {
             triangles = count.await()
         } catch (c: CancellationException) {
-            step.cancel()
+            stopCount(step, count)
             throw c
         }
     }
@@ -128,6 +130,8 @@ fun StepImportDialog(
                     keepNames = it
                     if (it && step.hasMultiBodyCompound) split = true
                 }
+                // Sorting orders original names only; while Keep is off it keeps its value.
+                CheckRow("Sort parts by name", sort, enabled = keepNames && step.hasOriginalNames) { sort = it }
                 CheckRow("Remember my choice", remember) { remember = it }
                 CheckRow("Don't ask again", dontAsk) { dontAsk = it }
             }
@@ -138,7 +142,10 @@ fun StepImportDialog(
                 onClick = {
                     onAnswer(
                         StepImportAnswer(
-                            StepImportOptions(linear!!, angle!!, split, keepNames && step.hasOriginalNames, assembly),
+                            StepImportOptions(
+                                linear!!, angle!!, split, keepNames && step.hasOriginalNames, assembly,
+                                sortNames = sort && keepNames && step.hasOriginalNames,
+                            ),
                             remember = remember,
                             dontAsk = dontAsk,
                         ),
@@ -185,7 +192,7 @@ private fun DeflectionRow(
 }
 
 @Composable
-private fun CheckRow(label: String, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
+internal fun CheckRow(label: String, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
     Row(
         Modifier.fillMaxWidth().clickable(enabled = enabled) { onChange(!checked) }.padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,

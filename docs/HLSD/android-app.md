@@ -67,16 +67,26 @@ lines coloured by extrusion role, up to the layer on the slider.
 
 ## STEP import
 
-STEP files go through the desktop's STEP import dialog. The file is parsed
-once (`Engine.openStep`) and the dialog then shows the triangle count for the
+STEP files go through the desktop's STEP import dialog. The file is read
+once (`Engine.loadStep`) and the dialog then shows the triangle count for the
 chosen linear and angular deflection, recounting as the values change and
 cancelling a count that a newer value supersedes. It also offers Split
-compound, assembly or single object and Keep original names, with the
-desktop's coupling: keeping the names of a part that holds several bodies
-needs Split compound. One answer covers every STEP file of an import, and
-"Remember my choice" and "Don't ask again" store the choices as the defaults,
-like the desktop's `linear_deflection`, `angle_deflection` and
-`is_split_compound` preferences; the overflow menu turns the dialog back on.
+compound, assembly or single object, Keep original names and Sort parts by
+name, with the desktop's coupling: keeping the names of a part that holds
+several bodies needs Split compound, and sorting needs kept names. One answer
+covers every STEP file of an import, and "Remember my choice" and "Don't ask
+again" store the choices as the defaults, like the desktop's
+`linear_deflection`, `angle_deflection` and `is_split_compound` preferences.
+
+Reading and meshing a large file take a while, so both show their progress in
+the busy row with a Cancel button, which stops the engine work and ends the
+import. Once meshed, names that a 3MF project cannot hold open the desktop's
+"Unsupported characters in names" dialog: remove the characters or replace
+each with some text, with a live preview of every renamed part and object. Its
+rule is stored under the desktop's `import_names_cleanup_*` keys; a saved
+replacement that is no longer usable opens the dialog again, and a file whose
+names are not valid Unicode is not imported. The overflow menu turns either
+dialog back on.
 
 ## Limits
 
@@ -90,4 +100,4 @@ like the desktop's `linear_deflection`, `angle_deflection` and
 host, links the same `orcapod_jni.cpp` into a host JNI library and runs
 `EngineHostTest` on the JVM: profiles load, a model imports, moves, undoes
 and arranges, settings edit, a plate slices, previews and cancels, and a
-STEP file imports with its triangle count.
+STEP file loads, counts its triangles, meshes and imports.

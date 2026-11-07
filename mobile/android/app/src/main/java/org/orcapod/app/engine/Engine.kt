@@ -8,20 +8,27 @@ import java.util.concurrent.Executors
 /** An object's mesh in object space, shared across snapshots while its revision holds. */
 class Mesh(val revision: Long, val positions: FloatArray, val indices: IntArray)
 
-/** A parsed STEP document, kept between the import dialog and the import. */
-class StepFile internal constructor(
-    @Volatile private var handle: Long,
-    /** The file names its bodies, so keeping names can apply. */
-    val hasOriginalNames: Boolean,
-    /** Some part holds several bodies; their names survive only when split. */
-    val hasMultiBodyCompound: Boolean,
-) : Closeable {
+/** A STEP document, kept from reading through the import dialogs to the import. */
+class StepFile internal constructor(@Volatile private var handle: Long) : Closeable {
+    /** The file names its bodies, so keeping names can apply. Set once loaded. */
+    @Volatile var hasOriginalNames = false
+        internal set
+    /** Some part holds several bodies; their names survive only when split. Set once loaded. */
+    @Volatile var hasMultiBodyCompound = false
+        internal set
+
     internal fun handle(): Long = handle.also { check(it != 0L) { "STEP file is closed" } }
 
-    /** Stops a running triangle count; callable from any thread. */
+    /** Stops a running load, triangle count or mesh; callable from any thread. */
     fun cancel() {
         val h = handle
         if (h != 0L) Native.stepCancel(h)
+    }
+
+    /** How far the running load or mesh is, 0..100; callable from any thread. */
+    fun progress(): Int {
+        val h = handle
+        return if (h != 0L) Native.stepProgress(h) else 0
     }
 
     override fun close() {
@@ -103,10 +110,14 @@ class Engine private constructor(private var presets: Long, private val plater: 
 
     // --- STEP import ---
 
-    /** Reads and parses a STEP file; [StepFile.close] releases it. */
-    suspend fun openStep(path: String): StepFile = onEngine {
-        val r = Native.stepOpen(path)
-        StepFile(r[0], hasOriginalNames = r[1] != 0L, hasMultiBodyCompound = r[2] != 0L)
+    /** A handle for a STEP file, not read yet; [StepFile.close] releases it. */
+    fun newStep(path: String): StepFile = StepFile(Native.stepNew(path))
+
+    /** Reads and parses the file; throws CANCELLED after [StepFile.cancel]. */
+    suspend fun loadStep(step: StepFile) = onEngine {
+        val r = Native.stepLoad(step.handle())
+        step.hasOriginalNames = r[0] != 0L
+        step.hasMultiBodyCompound = r[1] != 0L
     }
 
     /** The triangle count an import with these deflections produces; throws CANCELLED after [StepFile.cancel]. */
@@ -114,13 +125,27 @@ class Engine private constructor(private var presets: Long, private val plater: 
         Native.stepTriangleCount(step.handle(), linear, angle)
     }
 
-    /** Meshes the STEP file into the document as one object; returns the object count. */
-    suspend fun importStep(step: StepFile, options: StepImportOptions): Int = onEngine {
+    /** Meshes the file with the dialog's choices; throws CANCELLED after [StepFile.cancel]. */
+    suspend fun meshStep(step: StepFile, options: StepImportOptions) = onEngine {
+        Native.stepMesh(
+            step.handle(), options.linearDeflection, options.angleDeflection,
+            options.splitCompound, options.keepNames, options.asAssembly, options.sortNames,
+        )
+    }
+
+    /**
+     * The names of the meshed file that [replacement] would change, as
+     * (original, cleaned) pairs; empty when every name is usable. A null
+     * replacement is "_", "" removes the characters.
+     */
+    suspend fun stepNameChanges(step: StepFile, replacement: String?): List<Pair<String, String>> = onEngine {
+        parseNamePairs(Native.stepNameChanges(step.handle(), replacement))
+    }
+
+    /** Adds the meshed file to the document, names cleaned with [replacement]; returns the object count. */
+    suspend fun importStep(step: StepFile, replacement: String?): Int = onEngine {
         val v = volume()
-        Native.platerImportStep(
-            plater, step.handle(), options.linearDeflection, options.angleDeflection,
-            options.splitCompound, options.keepNames, options.asAssembly, v.centerX, v.centerY,
-        )[1].toInt()
+        Native.platerImportStep(plater, step.handle(), replacement, v.centerX, v.centerY)[1].toInt()
     }
 
     /** Releases a [StepFile] once no call on it runs. */
@@ -255,5 +280,44 @@ class Engine private constructor(private var presets: Long, private val plater: 
             }
             Engine(presets, plater)
         }
+    }
+}
+
+/** Parses the bridge's JSON array of [original, cleaned] string pairs. */
+internal fun parseNamePairs(json: String): List<Pair<String, String>> {
+    var i = 0
+    fun skip() { while (i < json.length && json[i].isWhitespace()) i++ }
+    fun expect(c: Char) { skip(); require(i < json.length && json[i] == c) { "bad name list" }; i++ }
+    fun string(): String {
+        expect('"')
+        val out = StringBuilder()
+        while (json[i] != '"') {
+            val c = json[i++]
+            if (c != '\\') { out.append(c); continue }
+            when (val e = json[i++]) {
+                'b' -> out.append('\b')
+                'f' -> out.append('\u000C')
+                'n' -> out.append('\n')
+                'r' -> out.append('\r')
+                't' -> out.append('\t')
+                'u' -> { out.append(json.substring(i, i + 4).toInt(16).toChar()); i += 4 }
+                else -> out.append(e)
+            }
+        }
+        i++
+        return out.toString()
+    }
+    val pairs = mutableListOf<Pair<String, String>>()
+    expect('[')
+    skip()
+    if (json[i] == ']') return pairs
+    while (true) {
+        expect('[')
+        val original = string()
+        expect(',')
+        pairs += original to string()
+        expect(']')
+        skip()
+        if (json[i++] == ']') return pairs
     }
 }

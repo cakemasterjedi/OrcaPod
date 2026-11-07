@@ -35,6 +35,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -131,6 +132,11 @@ fun PlateScreen(vm: AppViewModel) {
                                 trailingIcon = { Checkbox(checked = vm.askStepOptions, onCheckedChange = null) },
                                 onClick = { vm.askStepOptions = !vm.askStepOptions },
                             )
+                            DropdownMenuItem(
+                                text = { Text("Ask about unsupported characters in names") },
+                                trailingIcon = { Checkbox(checked = vm.askNameCleanup, onCheckedChange = null) },
+                                onClick = { vm.askNameCleanup = !vm.askNameCleanup },
+                            )
                         }
                     }
                 },
@@ -157,8 +163,20 @@ fun PlateScreen(vm: AppViewModel) {
                 PresetBar(vm) { picker = it }
                 vm.busy?.let { label ->
                     Spacer(Modifier.height(6.dp))
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                    Text(label, style = MaterialTheme.typography.labelMedium)
+                    val percent = vm.busyProgress
+                    if (percent != null) {
+                        LinearProgressIndicator(progress = { percent / 100f }, modifier = Modifier.fillMaxWidth())
+                    } else {
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            if (percent != null) "$label $percent%" else label,
+                            Modifier.weight(1f),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        vm.busyCancel?.let { cancel -> TextButton(onClick = cancel) { Text("Cancel") } }
+                    }
                 }
                 if (layFlat) {
                     Spacer(Modifier.height(6.dp))
@@ -225,7 +243,8 @@ fun PlateScreen(vm: AppViewModel) {
         )
     }
     if (settingsOpen) SettingsSheet(vm) { settingsOpen = false }
-    vm.stepImport?.let { StepImportDialog(it, vm::stepTriangleCountAsync, vm::answerStepImport) }
+    vm.stepImport?.let { StepImportDialog(it, vm::stepTriangleCountAsync, vm::stopTriangleCount, vm::answerStepImport) }
+    vm.nameCleanup?.let { NameCleanupDialog(it, vm::previewNameChanges, vm::answerNameCleanup) }
 }
 
 @Composable
@@ -243,7 +262,7 @@ private fun PresetBar(vm: AppViewModel, onPick: (PresetKind) -> Unit) {
 
 @Composable
 private fun PresetLine(label: String, value: String, onClick: () -> Unit) {
-    androidx.compose.material3.TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+    TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.fillMaxWidth()) {
             Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
             Text(

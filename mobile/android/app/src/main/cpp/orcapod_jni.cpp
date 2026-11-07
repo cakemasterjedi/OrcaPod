@@ -312,21 +312,30 @@ JNI_FN(jlongArray, platerImport)(JNIEnv *env, jobject, jlong pl, jstring path, j
 
 // --- STEP import -------------------------------------------------------------
 
-JNI_FN(jlongArray, stepOpen)(JNIEnv *env, jobject, jstring path)
+JNI_FN(jlong, stepNew)(JNIEnv *env, jobject, jstring path)
 {
     orca_step *step = nullptr;
+    if (!check(env, orca_step_new(utf8(env, path).c_str(), &step)))
+        return 0;
+    return handle(step);
+}
+
+JNI_FN(jlongArray, stepLoad)(JNIEnv *env, jobject, jlong st)
+{
     orca_step_info info{};
-    if (!check(env, orca_step_open(utf8(env, path).c_str(), &step, &info)))
+    if (!check(env, orca_step_load(step_of(st), &info)))
         return nullptr;
-    const jlong v[3] = {handle(step), jlong(info.has_original_names), jlong(info.has_multi_body_compound)};
-    jlongArray out = env->NewLongArray(3);
-    env->SetLongArrayRegion(out, 0, 3, v);
+    const jlong v[2] = {jlong(info.has_original_names), jlong(info.has_multi_body_compound)};
+    jlongArray out = env->NewLongArray(2);
+    env->SetLongArrayRegion(out, 0, 2, v);
     return out;
 }
 
 JNI_FN(void, stepFree)(JNIEnv *, jobject, jlong st) { orca_step_free(step_of(st)); }
 
 JNI_FN(void, stepCancel)(JNIEnv *, jobject, jlong st) { orca_step_cancel(step_of(st)); }
+
+JNI_FN(jint, stepProgress)(JNIEnv *, jobject, jlong st) { return jint(orca_step_progress(step_of(st))); }
 
 JNI_FN(jlong, stepTriangleCount)(JNIEnv *env, jobject, jlong st, jdouble linear, jdouble angle)
 {
@@ -336,9 +345,8 @@ JNI_FN(jlong, stepTriangleCount)(JNIEnv *env, jobject, jlong st, jdouble linear,
     return jlong(count);
 }
 
-JNI_FN(jlongArray, platerImportStep)(JNIEnv *env, jobject, jlong pl, jlong st, jdouble linear, jdouble angle,
-                                     jboolean split_compound, jboolean keep_names, jboolean as_assembly,
-                                     jdouble cx, jdouble cy)
+JNI_FN(void, stepMesh)(JNIEnv *env, jobject, jlong st, jdouble linear, jdouble angle, jboolean split_compound,
+                       jboolean keep_names, jboolean as_assembly, jboolean sort_names)
 {
     orca_step_import_options options{};
     options.linear_deflection = linear;
@@ -346,10 +354,31 @@ JNI_FN(jlongArray, platerImportStep)(JNIEnv *env, jobject, jlong pl, jlong st, j
     options.split_compound = split_compound ? 1 : 0;
     options.keep_names = keep_names ? 1 : 0;
     options.load_as_assembly = as_assembly ? 1 : 0;
+    options.sort_names = sort_names ? 1 : 0;
+    check(env, orca_step_mesh(step_of(st), &options));
+}
+
+// A null `replacement` is the default ("_"); "" removes the characters.
+JNI_FN(jstring, stepNameChanges)(JNIEnv *env, jobject, jlong st, jstring replacement)
+{
+    const std::string with = replacement ? utf8(env, replacement) : std::string();
+    orca_owned_string json{};
+    if (!check(env, orca_step_name_changes(step_of(st), replacement ? with.c_str() : nullptr, &json)))
+        return nullptr;
+    jstring out = jstr(env, json);
+    orca_owned_string_dispose(&json);
+    return out;
+}
+
+JNI_FN(jlongArray, platerImportStep)(JNIEnv *env, jobject, jlong pl, jlong st, jstring replacement,
+                                     jdouble cx, jdouble cy)
+{
+    const std::string with = replacement ? utf8(env, replacement) : std::string();
     orca_object_id first = 0;
     uint32_t count = 0;
     orca_revision rev = 0;
-    if (!check(env, orca_plater_import_step(plater_of(pl), step_of(st), &options, cx, cy, &first, &count, &rev)))
+    if (!check(env, orca_plater_import_step(plater_of(pl), step_of(st), replacement ? with.c_str() : nullptr,
+                                            cx, cy, &first, &count, &rev)))
         return nullptr;
     const jlong v[2] = {jlong(first), jlong(count)};
     jlongArray out = env->NewLongArray(2);

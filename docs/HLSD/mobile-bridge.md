@@ -65,13 +65,20 @@ closure as on the desktop and only the code STEP import reaches is linked.
 `ORCAPOD_STEP=stub` builds without OpenCASCADE: `engine-cxx/step_stubs.cpp`
 then replaces `Format/STEP.cpp` and STEP import fails loudly.
 
-STEP import mirrors the desktop's two-stage flow. `orca_step_open` reads and
-parses the file once and keeps the document in an `orca_step` handle, so the
-import dialog can ask `orca_step_triangle_count` how many facets a meshing
-quality gives (cancellable from another thread with `orca_step_cancel`)
-without reading the file again, and `orca_plater_import_step` then meshes it
-into the document with the dialog's choices: linear and angular deflection,
-Split compound, Keep original names and assembly or single object.
+STEP import mirrors the desktop's staged flow, one `orca_step` handle carrying
+the document from stage to stage so the file is read once. `orca_step_load`
+reads and parses it; `orca_step_triangle_count` tells the import dialog how
+many facets a meshing quality gives; `orca_step_mesh` meshes it with the
+dialog's choices (linear and angular deflection, Split compound, Keep original
+names, Sort parts by name, assembly or single object); `orca_step_name_changes`
+previews the desktop's cleanup of names a 3MF project cannot hold
+(`Format/ImportNames.cpp`), and `orca_plater_import_step` adds the meshed
+document to the plater with the chosen cleanup. Loading and meshing report
+their progress through `orca_step_progress`, and `orca_step_cancel` stops a
+load, count or mesh from another thread: it sets the flag the Step's progress
+callback hands back to the reader and mesher, and the Step's own stop flag that
+the triangle count polls. Sorting sets `ModelVolume::import_display_order`, the
+object-list order desktop saves in 3MF, which snapshots report per volume.
 `orca_plater_import_model` takes STEP files too, with the desktop defaults.
 
 ## Android

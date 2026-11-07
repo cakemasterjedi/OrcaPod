@@ -141,6 +141,7 @@ fun PlateScreen(vm: AppViewModel) {
                             val hasObjects = vm.scene.snapshot.objects.isNotEmpty()
                             DropdownMenuItem(text = { Text("Import models") }, onClick = { menuOpen = false; importModels.launch(MODEL_TYPES) })
                             DropdownMenuItem(text = { Text("Add shape…") }, onClick = { menuOpen = false; shapeMenu = true })
+                            DropdownMenuItem(text = { Text("Online model library") }, onClick = { menuOpen = false; vm.openLibrary() })
                             DropdownMenuItem(text = { Text("Open 3MF project") }, onClick = { menuOpen = false; openProject.launch(MODEL_TYPES) })
                             DropdownMenuItem(
                                 text = { Text("Save project") },
@@ -268,6 +269,7 @@ fun PlateScreen(vm: AppViewModel) {
                             plates = vm.scene.snapshot.plates.size,
                             onImport = { importModels.launch(MODEL_TYPES) },
                             onObjects = { objectList = true },
+                            onLibrary = { vm.openLibrary() },
                             onArrange = vm::arrange,
                             onSettings = { settingsFor = PresetKind.PROCESS },
                             onSlice = { vm.startSlice(allPlates = it) },
@@ -298,6 +300,10 @@ fun PlateScreen(vm: AppViewModel) {
             },
             onDelete = if (kind == PresetKind.PRINTER) null else { name -> vm.deleteUserPreset(kind, name) },
             onDismiss = { picker = null },
+            brands = if (kind == PresetKind.PRINTER) vm.installedVendors.sortedWith(String.CASE_INSENSITIVE_ORDER) else emptyList(),
+            brand = vm.activeVendor,
+            loading = vm.busy != null,
+            onBrand = vm::switchBrand,
         )
     }
     settingsFor?.let { kind -> SettingsScreen(vm, kind) { settingsFor = null } }
@@ -373,6 +379,7 @@ private fun ActionBar(
     plates: Int,
     onImport: () -> Unit,
     onObjects: () -> Unit,
+    onLibrary: () -> Unit,
     onArrange: () -> Unit,
     onSettings: () -> Unit,
     onSlice: (allPlates: Boolean) -> Unit,
@@ -387,6 +394,7 @@ private fun ActionBar(
         ) {
             IconButton(onClick = onImport) { Icon(Icons.Filled.Add, "Import models") }
             IconButton(onClick = onObjects, enabled = hasObjects) { Icon(Icons.AutoMirrored.Filled.List, "Objects") }
+            IconButton(onClick = onLibrary) { Icon(AppIcons.CloudDownload, "Online model library") }
             IconButton(onClick = onArrange, enabled = hasObjects) { Icon(AppIcons.GridView, "Arrange") }
             IconButton(onClick = onSettings) { Icon(AppIcons.Tune, "Print settings") }
             if (hasResult) IconButton(onClick = onShowResult) { Icon(AppIcons.Layers, "Show preview") }

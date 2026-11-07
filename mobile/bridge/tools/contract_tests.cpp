@@ -276,7 +276,7 @@ static void test_md5_shim() {
 
 static void test_abi_version() {
     CHECK_EQ(orca_bridge_abi_version(), ORCA_BRIDGE_ABI_VERSION);
-    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 42);
+    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 43);
 }
 
 struct ProgressRecord {
@@ -5277,6 +5277,261 @@ static void test_gcode_toolpath(const std::string &dir) {
     orca_gcode_free(nullptr);
 }
 
+// --- STEP import (ABI v43) ---------------------------------------------------
+
+/// tests/data of this repository (the STEP fixtures desktop's test_step.cpp
+/// uses), found next to the profiles directory.
+static std::string step_fixture(const char *name) {
+    const char *profiles = getenv("ORCAPAD_TEST_PROFILES_DIR");
+    return std::string(profiles ? profiles : "resources/profiles") + "/../../tests/data/" + name;
+}
+
+static std::string volume_name(const orca_scene_object &object, int index) {
+    const orca_owned_string &name = object.volumes[index].name;
+    return std::string(name.data ? name.data : "", size_t(name.length));
+}
+
+static std::string owned(const orca_owned_string &text) {
+    return std::string(text.data ? text.data : "", size_t(text.length));
+}
+
+/// Creates and loads a STEP handle, or returns null after a failed check.
+static orca_step *load_step(const std::string &path, orca_step_info *info) {
+    orca_step *step = nullptr;
+    GUARD(gn, orca_step_new(path.c_str(), &step));
+    expect_ok(gn, "step_new");
+    if (!step) return nullptr;
+    GUARD(gl, orca_step_load(step, info));
+    expect_ok(gl, "step_load");
+    if (gl.code() != ORCA_STATUS_OK) { orca_step_free(step); return nullptr; }
+    return step;
+}
+
+static void test_step_import(const std::string &dir) {
+    const std::string compound = step_fixture("named_compound_bodies.step");
+    orca_step *step = nullptr;
+    orca_step_info info{};
+#ifdef ORCAPOD_STEP_STUB
+    // Built without OpenCASCADE: STEP fails loudly instead of importing.
+    GUARD(gs, orca_step_new(compound.c_str(), &step));
+    expect_ok(gs, "step_new(stub)");
+    GUARD(gl, orca_step_load(step, &info));
+    CHECK(gl.code() != ORCA_STATUS_OK);
+    orca_step_free(step);
+    (void)dir;
+    return;
+#endif
+    GUARD(gn, orca_step_new(nullptr, &step));
+    expect_code(gn, ORCA_STATUS_INVALID_ARGUMENT, "step_new(null path)");
+    GUARD(gm, orca_step_new((dir + "/missing.step").c_str(), &step));
+    expect_code(gm, ORCA_STATUS_IO_FAILURE, "step_new(missing)");
+    CHECK(step == nullptr);
+    GUARD(gu, orca_step_load(nullptr, &info));
+    expect_code(gu, ORCA_STATUS_INVALID_HANDLE, "step_load(null)");
+    const std::string garbage = dir + "/garbage.step";
+    { FILE *f = fopen(garbage.c_str(), "w"); fputs("not a step file\n", f); fclose(f); }
+    GUARD(gw, orca_step_new(garbage.c_str(), &step));
+    expect_ok(gw, "step_new(garbage)");
+    GUARD(gg, orca_step_load(step, &info));
+    expect_code(gg, ORCA_STATUS_INVALID_MODEL, "step_load(garbage)");
+    // an unloaded handle refuses the later stages
+    uint32_t triangles = 0;
+    GUARD(gx, orca_step_triangle_count(step, 0.01, 0.2, &triangles));
+    expect_code(gx, ORCA_STATUS_INVALID_HANDLE, "step_triangle_count(unloaded)");
+    orca_step_free(step);
+    step = nullptr;
+
+    step = load_step(compound, &info);
+    if (!step) return;
+    CHECK_EQ(info.has_original_names, 1);
+    CHECK_EQ(info.has_multi_body_compound, 1);
+    CHECK_EQ(orca_step_progress(step), 0);
+
+    // three tetrahedra, four facets each
+    GUARD(gt, orca_step_triangle_count(step, ORCA_STEP_LINEAR_DEFLECTION_DEFAULT,
+                                       ORCA_STEP_ANGLE_DEFLECTION_DEFAULT, &triangles));
+    expect_ok(gt, "step_triangle_count");
+    CHECK_EQ(triangles, 12u);
+    GUARD(gr, orca_step_triangle_count(step, 0.5, 0.5, &triangles));
+    expect_code(gr, ORCA_STATUS_INVALID_ARGUMENT, "step_triangle_count(out of range)");
+    // a cancel only stops a running call; the next one runs normally
+    orca_step_cancel(step);
+    GUARD(gc, orca_step_triangle_count(step, 0.01, 0.2, &triangles));
+    expect_ok(gc, "step_triangle_count after cancel");
+    CHECK_EQ(triangles, 12u);
+
+    // a cancel from another thread while meshing ends that mesh cleanly
+    {
+        std::atomic<bool> done{false};
+        std::thread canceller([&] {
+            while (!done.load()) { orca_step_cancel(step); std::this_thread::yield(); }
+        });
+        orca_step_import_options options;
+        orca_step_import_options_default(&options);
+        options.linear_deflection = ORCA_STEP_LINEAR_DEFLECTION_MIN;
+        GUARD(gk, orca_step_mesh(step, &options));
+        done.store(true);
+        canceller.join();
+        CHECK(gk.code() == ORCA_STATUS_CANCELLED || gk.code() == ORCA_STATUS_OK);
+    }
+
+    orca_plater *plater = nullptr;
+    GUARD(gp, orca_plater_new(&plater));
+    expect_ok(gp, "plater_new");
+    orca_step_import_options options;
+    orca_step_import_options_default(&options);
+    CHECK_NEAR(options.linear_deflection, 0.003, 1e-12);
+    CHECK_NEAR(options.angle_deflection, 0.5, 1e-12);
+    CHECK_EQ(options.split_compound, 1);
+    CHECK_EQ(options.keep_names, 1);
+    CHECK_EQ(options.load_as_assembly, 1);
+    CHECK_EQ(options.sort_names, 0);
+
+    orca_object_id first = 0;
+    uint32_t count = 0;
+    orca_revision revision = 0;
+    orca_step_import_options bad = options;
+    bad.angle_deflection = 2.0;
+    GUARD(gb, orca_step_mesh(step, &bad));
+    expect_code(gb, ORCA_STATUS_INVALID_ARGUMENT, "step_mesh(angle out of range)");
+    GUARD(gh, orca_plater_import_step(plater, nullptr, nullptr, 100.0, 100.0, &first, &count, &revision));
+    expect_code(gh, ORCA_STATUS_INVALID_HANDLE, "import_step(null handle)");
+
+    // desktop defaults: one object, one part per body, the file's body names
+    GUARD(gd, orca_step_mesh(step, &options));
+    expect_ok(gd, "step_mesh(defaults)");
+    orca_owned_string changes = {};
+    GUARD(gq, orca_step_name_changes(step, nullptr, &changes));
+    expect_ok(gq, "step_name_changes(clean names)");
+    CHECK(owned(changes) == "[]");
+    orca_owned_string_dispose(&changes);
+    GUARD(g1, orca_plater_import_step(plater, step, nullptr, 120.0, 80.0, &first, &count, &revision));
+    expect_ok(g1, "import_step(defaults)");
+    CHECK_EQ(count, 1u);
+    CHECK_EQ(revision, (orca_revision)1);
+    // the handle stays usable: Orca's names, compound kept whole
+    options.keep_names = 0;
+    options.split_compound = 0;
+    GUARD(g2m, orca_step_mesh(step, &options));
+    expect_ok(g2m, "step_mesh(no split, no names)");
+    GUARD(g2, orca_plater_import_step(plater, step, nullptr, 120.0, 80.0, &first, &count, &revision));
+    expect_ok(g2, "import_step(no split, no names)");
+    // names need split_compound for a multi-body compound
+    options.keep_names = 1;
+    GUARD(g3m, orca_step_mesh(step, &options));
+    expect_ok(g3m, "step_mesh(names without split)");
+    GUARD(g3, orca_plater_import_step(plater, step, nullptr, 120.0, 80.0, &first, &count, &revision));
+    expect_ok(g3, "import_step(names without split)");
+    // desktop "Sort parts by name": natural order, the parts stay in place
+    options.split_compound = 1;
+    options.sort_names = 1;
+    GUARD(g5m, orca_step_mesh(step, &options));
+    expect_ok(g5m, "step_mesh(sorted)");
+    GUARD(g5, orca_plater_import_step(plater, step, nullptr, 120.0, 80.0, &first, &count, &revision));
+    expect_ok(g5, "import_step(sorted)");
+    orca_step_free(step);
+
+    orca_scene_snapshot snap = take_snapshot(plater);
+    CHECK_EQ(snap.object_count, 4);
+    if (snap.object_count == 4) {
+        const orca_scene_object &split = snap.objects[0];
+        CHECK_EQ(split.volume_count, 3);
+        if (split.volume_count == 3) {
+            CHECK(volume_name(split, 0) == "Part10");
+            CHECK(volume_name(split, 1) == "Part2");
+            CHECK(volume_name(split, 2) == "\xD0\xA2\xD0\xB5\xD0\xBB\xD0\xBE & shell");
+            for (int i = 0; i < 3; ++i) CHECK_EQ(split.volumes[i].import_display_order, i);
+        }
+        CHECK_EQ(split.index_count, 36);
+        // centered on its origin, resting on the bed at the requested center
+        CHECK_NEAR(split.bbox_min[0] + split.bbox_max[0], 0.0, 1e-4);
+        CHECK_NEAR(split.instances[0].transform.offset_x, 120.0, 1e-6);
+        CHECK_NEAR(split.instances[0].transform.offset_y, 80.0, 1e-6);
+        CHECK_NEAR(split.instances[0].transform.offset_z, 5.0, 1e-6);
+        for (int i = 1; i < 3; ++i) {
+            CHECK_EQ(snap.objects[i].volume_count, 1);
+            if (snap.objects[i].volume_count == 1)
+                CHECK(volume_name(snap.objects[i], 0) == "Body collection");
+        }
+        const orca_scene_object &sorted = snap.objects[3];
+        CHECK_EQ(sorted.volume_count, 3);
+        if (sorted.volume_count == 3) {
+            CHECK(volume_name(sorted, 0) == "Part10");
+            CHECK_EQ(sorted.volumes[0].import_display_order, 1); // after Part2
+            CHECK_EQ(sorted.volumes[1].import_display_order, 0);
+            CHECK_EQ(sorted.volumes[2].import_display_order, 2);
+        }
+    }
+    orca_scene_snapshot_dispose(&snap);
+
+    // desktop "Unsupported characters in names": the same file with names
+    // a 3MF project cannot hold
+    const std::string unsafe = dir + "/unsafe_names.step";
+    {
+        FILE *in = fopen(compound.c_str(), "rb");
+        std::string text;
+        char buffer[4096];
+        for (size_t n; in && (n = fread(buffer, 1, sizeof buffer, in)) > 0;) text.append(buffer, n);
+        if (in) fclose(in);
+        const auto rename = [&text](const std::string &from, const std::string &to) {
+            const size_t at = text.find(from);
+            CHECK(at != std::string::npos);
+            if (at != std::string::npos) text.replace(at, from.size(), to);
+        };
+        rename("'Part10'", "'Part<10>'");
+        rename("'Part2'", "'Part/10'");
+        FILE *out = fopen(unsafe.c_str(), "wb");
+        fwrite(text.data(), 1, text.size(), out);
+        fclose(out);
+    }
+    step = load_step(unsafe, &info);
+    if (step) {
+        GUARD(gz, orca_step_name_changes(step, nullptr, &changes));
+        expect_code(gz, ORCA_STATUS_NOT_FOUND, "step_name_changes(before mesh)");
+        orca_step_import_options_default(&options);
+        GUARD(gy, orca_step_mesh(step, &options));
+        expect_ok(gy, "step_mesh(unsafe names)");
+        GUARD(g6, orca_step_name_changes(step, nullptr, &changes));
+        expect_ok(g6, "step_name_changes(default)");
+        CHECK(owned(changes) == R"([["Part<10>","Part_10_"],["Part/10","Part_10"]])");
+        orca_owned_string_dispose(&changes);
+        // removing the characters makes the two collide, so one is numbered
+        GUARD(g7, orca_step_name_changes(step, "", &changes));
+        expect_ok(g7, "step_name_changes(remove)");
+        CHECK(owned(changes) == R"j([["Part<10>","Part10"],["Part/10","Part10 (2)"]])j");
+        orca_owned_string_dispose(&changes);
+        GUARD(g8, orca_step_name_changes(step, "?", &changes));
+        expect_code(g8, ORCA_STATUS_INVALID_ARGUMENT, "step_name_changes(unsupported replacement)");
+        GUARD(g9b, orca_plater_import_step(plater, step, "*", 0.0, 0.0, &first, &count, &revision));
+        expect_code(g9b, ORCA_STATUS_INVALID_ARGUMENT, "import_step(unsupported replacement)");
+        GUARD(g9, orca_plater_import_step(plater, step, "-", 100.0, 100.0, &first, &count, &revision));
+        expect_ok(g9, "import_step(replace with -)");
+        orca_step_free(step);
+        snap = take_snapshot(plater);
+        CHECK_EQ(snap.object_count, 5);
+        if (snap.object_count == 5 && snap.objects[4].volume_count == 3) {
+            CHECK(volume_name(snap.objects[4], 0) == "Part-10-");
+            CHECK(volume_name(snap.objects[4], 1) == "Part-10");
+        }
+        orca_scene_snapshot_dispose(&snap);
+    }
+
+    // orca_plater_import_model takes STEP too, with the desktop defaults
+    GUARD(g4, orca_plater_import_model(plater, step_fixture("named_single_body.step").c_str(),
+                                       100.0, 100.0, &first, &count, &revision));
+    expect_ok(g4, "import_model(.step)");
+    CHECK_EQ(count, 1u);
+    snap = take_snapshot(plater);
+    CHECK_EQ(snap.object_count, 6);
+    if (snap.object_count == 6) {
+        const orca_scene_object &single = snap.objects[5];
+        CHECK(std::string(single.name.data, size_t(single.name.length)) == "Body name");
+        CHECK_EQ(single.index_count, 12);
+    }
+    orca_scene_snapshot_dispose(&snap);
+    orca_plater_free(plater);
+}
+
 int main() {
     const std::string dir = test_dir();
     // One data directory per PROCESS (the Bridge contract is initialize-once).
@@ -5300,6 +5555,7 @@ int main() {
     test_snapshot_ownership(dir);
     test_full_transforms(dir);
     test_multi_object_import(dir);
+    test_step_import(dir);
     test_engine_serialization(dir);
     test_presets(data_dir);
     test_preset_metadata(data_dir);

@@ -37,7 +37,9 @@ set -euo pipefail
 RUN_TESTS=0
 [ "${1:-}" = "--test" ] && RUN_TESTS=1
 
+# shellcheck disable=SC1091 # sourced from this directory at run time
 source "$(dirname "$0")/engine-sources.sh"   # sets BRIDGE, REPO and the dep pins
+# shellcheck disable=SC1091 # sourced from this directory at run time
 source "$BRIDGE/compile-lib.sh"
 engine_fetch_deps
 
@@ -69,7 +71,8 @@ MPFR_VER=4.2.2
 build_autotools_dep() { # <name> <url> <sha256|-> <sentinel lib> [configure args...]
     local name="$1" url="$2" sha="$3" lib="$4"; shift 4
     [ -f "$PREFIX/lib/$lib" ] && return 0
-    local dl="$BRIDGE/cache/$(basename "$url")"
+    local dl
+    dl="$BRIDGE/cache/$(basename "$url")"
     if [ ! -f "$dl" ]; then
         echo "==> downloading $(basename "$url") into mobile/bridge/cache/" >&2
         curl -fsSL "$url" -o "$dl.part" && mv "$dl.part" "$dl"
@@ -128,6 +131,23 @@ esac
 # it too. BOOST_FILESYSTEM_NO_CXX20_ATOMIC_REF: the NDK's libc++ has no
 # std::atomic_ref yet, so Boost.Filesystem falls back to boost::atomic_ref, as
 # its CMake configure check would choose.
+# STEP import: OpenCASCADE cross-built with the NDK toolchain.
+case "$ORCAPOD_STEP" in
+    real)
+        OCCT_PREFIX="$(engine_build_occt "$BUILD" \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="$ABI" -DANDROID_PLATFORM="android-$API" -DANDROID_STL=c++_static)"
+        OCCT_FLAGS=(-isystem "$OCCT_PREFIX/include/occt")
+        OCCT_LIBS=("-Wl,--start-group")
+        for tk in "${OCCT_TOOLKITS[@]}"; do OCCT_LIBS+=("$OCCT_PREFIX/lib/lib$tk.a"); done
+        OCCT_LIBS+=("-Wl,--end-group")
+        ;;
+    stub)
+        OCCT_FLAGS=(-I"$BRIDGE/shim/occt-stub" -DORCAPOD_STEP_STUB)
+        OCCT_LIBS=()
+        ;;
+esac
+
 CFLAGS=(
     -std=c++17 -O2 -DNDEBUG -fPIC -fsigned-char -Wno-deprecated-declarations
     -DBOOST_FILESYSTEM_NO_CXX20_ATOMIC_REF
@@ -135,7 +155,7 @@ CFLAGS=(
     # platform shims (boost/log, boost/nowide, occt stub) and TBB, and only
     # then the real Boost headers.
     -I"$BRIDGE/shim-host"
-    -I"$BRIDGE/shim" -I"$BRIDGE/shim/occt-stub"
+    -I"$BRIDGE/shim" "${OCCT_FLAGS[@]}"
     "${TBB_FLAGS[@]}"
     -I"$SRC" -I"$SRC/libslic3r" -I"$BUILD/gen"
     -I"$DEPS" -I"$DEPS/admesh"
@@ -170,6 +190,7 @@ while IFS=$'\t' read -r kind src extra_str; do
     extra_args=()
     [ -n "${extra_str:-}" ] && read -ra extra_args <<< "$extra_str"
     rel="${src#"$REPO"/}"
+    # shellcheck disable=SC2153 # OBJ comes from compile-lib.sh
     o="$OBJ/${rel//\//_}.o"
     if [ "$kind" = "cxx" ]; then
         compile_one "$src" "$o" "$CXX" "${CFLAGS[@]}" "${extra_args[@]}"
@@ -187,7 +208,7 @@ mapfile -t OBJS < <(grep -v -e 'orcapod_slice\.o$' "$MANIFEST")
 ARCHIVE="$BUILD/libengine.a"
 rm -f "$ARCHIVE"
 "$AR" rcs "$ARCHIVE" "${OBJS[@]}"
-LIBS=("${TBB_LIBS[@]}" "$PREFIX/lib/libmpfr.a" "$PREFIX/lib/libgmp.a" -ldl -lm)
+LIBS=("${OCCT_LIBS[@]}" "${TBB_LIBS[@]}" "$PREFIX/lib/libmpfr.a" "$PREFIX/lib/libgmp.a" -ldl -lm)
 
 # The app loads one self-contained library: libc++ is linked in statically and
 # only the bridge's C API is exported. --whole-archive keeps every orca_*
@@ -215,6 +236,7 @@ fi
 RUNNER="$BUILD/orcapod-slice-run"
 # libc++ on Android falls back to /data/local/tmp when TMPDIR is unset; on a
 # host that path does not exist (an app sets TMPDIR to its cache dir).
+# shellcheck disable=SC2016 # expanded by the generated script
 printf '#!/bin/sh\nTMPDIR="${TMPDIR:-/tmp}" exec %s %q "$@"\n' "$QEMU" "$BUILD/orcapod-slice" > "$RUNNER"
 chmod +x "$RUNNER"
 echo "==> running CLI smoke test on the $ABI binary" >&2

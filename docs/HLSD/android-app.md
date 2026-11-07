@@ -1,7 +1,7 @@
 # Android app
 
 OrcaPod's Android app (`mobile/android/`) prepares and slices prints on a
-phone or tablet: it imports models onto a 3D build plate, lets the user
+phone or tablet: it imports models (STL, 3MF, OBJ, AMF and STEP) onto a 3D build plate, lets the user
 position them, selects printer, filament and process profiles, slices with
 OrcaSlicer's own engine and previews and exports the G-code. All slicing
 logic is the engine's; the app is a client of the bridge's C API
@@ -65,10 +65,31 @@ for "Lay on face". After slicing, the G-code is parsed by the engine's
 `GCodeProcessor` (`orca_gcode_toolpath`) and the extrusion moves are drawn as
 lines coloured by extrusion role, up to the layer on the slider.
 
+## STEP import
+
+STEP files go through the desktop's STEP import dialog. The file is read
+once (`Engine.loadStep`) and the dialog then shows the triangle count for the
+chosen linear and angular deflection, recounting as the values change and
+cancelling a count that a newer value supersedes. It also offers Split
+compound, assembly or single object, Keep original names and Sort parts by
+name, with the desktop's coupling: keeping the names of a part that holds
+several bodies needs Split compound, and sorting needs kept names. One answer
+covers every STEP file of an import, and "Remember my choice" and "Don't ask
+again" store the choices as the defaults, like the desktop's
+`linear_deflection`, `angle_deflection` and `is_split_compound` preferences.
+
+Reading and meshing a large file take a while, so both show their progress in
+the busy row with a Cancel button, which stops the engine work and ends the
+import. Once meshed, names that a 3MF project cannot hold open the desktop's
+"Unsupported characters in names" dialog: remove the characters or replace
+each with some text, with a live preview of every renamed part and object. Its
+rule is stored under the desktop's `import_names_cleanup_*` keys; a saved
+replacement that is no longer usable opens the dialog again, and a file whose
+names are not valid Unicode is not imported. The overflow menu turns either
+dialog back on.
+
 ## Limits
 
-- STEP import needs OCCT, which the bridge does not build; the app says so
-  and asks for STL or 3MF instead.
 - One filament slot: multi-material assignment is not exposed yet.
 - G-code goes out through the Android share sheet or a saved file; there is
   no direct printer connection.
@@ -78,4 +99,5 @@ lines coloured by extrusion role, up to the layer on the slider.
 `mobile/android/tools/host-jni-test.sh` builds the engine for the desktop
 host, links the same `orcapod_jni.cpp` into a host JNI library and runs
 `EngineHostTest` on the JVM: profiles load, a model imports, moves, undoes
-and arranges, settings edit, and a plate slices, previews and cancels.
+and arranges, settings edit, a plate slices, previews and cancels, and a
+STEP file loads, counts its triangles, meshes and imports.

@@ -6,6 +6,8 @@
 #include "libslic3r/I18N.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <cerrno>
 #include <cmath>
 #include <cstdint>
@@ -24,6 +26,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <strings.h>
 #include <sys/stat.h>
 
 // --- adapter: translation hook --------------------------------------
@@ -135,6 +138,8 @@ void orca_result_dispose(orca_result *result) {
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Utils.hpp"
 #include "libslic3r/Format/3mf.hpp"
+#include "libslic3r/Format/ImportNames.hpp"
+#include "libslic3r/Format/STEP.hpp"
 #include "libslic3r/Format/STL.hpp"
 #include "libslic3r/CutUtils.hpp"
 #include "libslic3r/TriangleSelector.hpp"
@@ -1728,6 +1733,248 @@ orca_result orca_plater_new(orca_plater **out) {
 
 void orca_plater_free(orca_plater *plater) { delete plater; }
 
+/// Places a freshly read model's objects on the bed and adds them to the
+/// document as one "Import" mutation (orca_plater_import_model and
+/// orca_plater_import_step).
+static orca_result orcapad_import_objects(orca_plater *plater, const char *operation,
+                                          Slic3r::Model &temporary,
+                                          double bed_center_x, double bed_center_y,
+                                          orca_object_id *out_first_object_id,
+                                          uint32_t *out_object_count,
+                                          orca_revision *out_revision) {
+    if (temporary.objects.empty())
+        return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
+                            "input contains no model object");
+
+    // 1) center meshes (desktop rotation/scale pivot) while preserving
+    //    each instance's world placement: o' = o - L * shift
+    Slic3r::BoundingBoxf3 group;
+    for (Slic3r::ModelObject *object : temporary.objects) {
+        if (object->instances.empty())
+            return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
+                                "imported object has no instance");
+        const Slic3r::Vec3d shift = -object->raw_mesh_bounding_box().center();
+        object->center_around_origin();
+        for (Slic3r::ModelInstance *instance : object->instances) {
+            const Slic3r::Vec3d delta = instance->get_matrix().linear() * shift;
+            instance->set_offset(instance->get_offset() - delta);
+        }
+        for (size_t i = 0; i < object->instances.size(); ++i)
+            group.merge(object->instance_bounding_box(i));
+    }
+    if (!group.defined)
+        return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
+                            "imported geometry has no bounds");
+    // 2) move the group's XY center to the bed center, 3) drop to bed
+    const Slic3r::Vec3d move(bed_center_x - group.center().x(),
+                             bed_center_y - group.center().y(), 0.0);
+    for (Slic3r::ModelObject *object : temporary.objects) {
+        object->translate_instances(move);
+        object->ensure_on_bed(false);
+    }
+
+    OrcapadMutation mutation(*plater, "Import");
+    std::vector<Slic3r::ModelObject *> added;
+    for (Slic3r::ModelObject *source : temporary.objects) {
+        Slic3r::ModelObject *object = plater->model.add_object(*source);
+        if (!object)
+            return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
+                                "engine did not create a document object");
+        added.push_back(object);
+        if (!orcapad_register_object(*plater, *object))
+            return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
+                                "engine returned an invalid or reused object ID");
+    }
+    const orca_object_id first = static_cast<orca_object_id>(added.front()->id().id);
+    *out_revision = mutation.commit();
+    *out_first_object_id = first;
+    *out_object_count = static_cast<uint32_t>(added.size());
+    return orcapad_ok();
+}
+
+static bool orcapad_is_step_path(const char *path) {
+    const auto ends_with = [path](const char *suffix) {
+        const size_t n = strlen(path), m = strlen(suffix);
+        return n >= m && strncasecmp(path + n - m, suffix, m) == 0;
+    };
+    return ends_with(".step") || ends_with(".stp");
+}
+
+struct orca_step {
+    std::string path;
+    std::unique_ptr<Slic3r::Step> step; // set once loaded
+    orca_step_info info{};
+    /// The last orca_step_mesh result, the source of every import.
+    std::unique_ptr<Slic3r::Model> meshed;
+    std::atomic<bool> cancel{false};
+    std::atomic<int32_t> progress{0};
+    /// `step` as orca_step_cancel reads it from another thread.
+    std::atomic<Slic3r::Step *> live{nullptr};
+};
+
+/// Starts a slow call: clears an earlier cancel and the progress.
+static void orcapad_step_begin(orca_step &handle) {
+    handle.cancel.store(false);
+    handle.progress.store(0);
+    if (handle.step) handle.step->m_stop_mesh.store(false);
+}
+
+/// Reads and parses the file (inside orcapad_guard). The Step reports its
+/// stages through the progress callback, which also carries the cancel.
+static orca_result orcapad_step_load(orca_step &handle, const char *operation) {
+    orcapad_step_begin(handle);
+    orca_step *self = &handle;
+    auto progress = [self](int stage, int current, int total, bool &cancel) {
+        const int32_t fraction = total > 0 ? int32_t(int64_t(current) * 100 / total) : 0;
+        // reading is one stage; meshing reports solids, then meshes (half each)
+        const int32_t percent = stage == Slic3r::LOAD_STEP_STAGE_READ_FILE ? fraction
+                              : stage == Slic3r::LOAD_STEP_STAGE_GET_SOLID ? fraction / 2
+                                                                           : 50 + fraction / 2;
+        self->progress.store(std::clamp(percent, 0, 100));
+        cancel = self->cancel.load();
+    };
+    auto step = std::make_unique<Slic3r::Step>(handle.path, progress);
+    // Collect body names for keep_names, as desktop does for its dialog.
+    const Slic3r::Step::Step_Status status = step->load(true);
+    handle.progress.store(0);
+    if (status == Slic3r::Step::Step_Status::CANCEL)
+        return orcapad_fail(ORCA_STATUS_CANCELLED, operation, "STEP reading was cancelled");
+    if (status != Slic3r::Step::Step_Status::LOAD_SUCCESS)
+        return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
+                            "the file is not a readable STEP document");
+    handle.info.has_original_names = step->has_original_names() ? 1 : 0;
+    handle.info.has_multi_body_compound = step->has_multi_body_compound() ? 1 : 0;
+    handle.live.store(nullptr);
+    handle.step = std::move(step);
+    handle.live.store(handle.step.get());
+    handle.meshed.reset();
+    return orcapad_ok();
+}
+
+/// wxCmpNatural on lowercased names, as desktop sorts imported parts: digit
+/// runs compare by value, everything else byte by byte (ASCII lowercased).
+static bool orcapad_natural_less(const std::string &a, const std::string &b) {
+    size_t i = 0, j = 0;
+    while (i < a.size() && j < b.size()) {
+        const unsigned char ca = (unsigned char)a[i], cb = (unsigned char)b[j];
+        if (isdigit(ca) && isdigit(cb)) {
+            size_t ei = i, ej = j;
+            while (ei < a.size() && isdigit((unsigned char)a[ei])) ++ei;
+            while (ej < b.size() && isdigit((unsigned char)b[ej])) ++ej;
+            size_t zi = i, zj = j; // skip leading zeros
+            while (zi + 1 < ei && a[zi] == '0') ++zi;
+            while (zj + 1 < ej && b[zj] == '0') ++zj;
+            if (ei - zi != ej - zj) return ei - zi < ej - zj;
+            const int c = a.compare(zi, ei - zi, b, zj, ej - zj);
+            if (c != 0) return c < 0;
+            i = ei; j = ej;
+            continue;
+        }
+        const int la = tolower(ca), lb = tolower(cb);
+        if (la != lb) return la < lb;
+        ++i; ++j;
+    }
+    return a.size() - i < b.size() - j;
+}
+
+/// Desktop Plater::load_files for one STEP file once StepMeshDialog closed:
+/// apply the name choice, mesh with the chosen quality, then the
+/// read_from_step epilogue and the import presentation choices.
+static orca_result orcapad_step_mesh(orca_step &handle, const char *operation,
+                                     const orca_step_import_options &options,
+                                     Slic3r::Model &model) {
+    Slic3r::Step &step = *handle.step;
+    orcapad_step_begin(handle);
+    // Names of bodies merged by an unsplit compound cannot be kept.
+    step.set_keep_original_names(options.keep_names && step.has_original_names() &&
+                                 (options.split_compound || !step.has_multi_body_compound()));
+    // A triangle count may have left a triangulation of other quality.
+    step.clean_mesh_data();
+    bool cancelled = false;
+    const Slic3r::Step::Step_Status status =
+        step.mesh(&model, cancelled, options.split_compound != 0, options.linear_deflection,
+                  options.angle_deflection, step.keep_original_names());
+    handle.progress.store(0);
+    if (status == Slic3r::Step::Step_Status::CANCEL)
+        return orcapad_fail(ORCA_STATUS_CANCELLED, operation, "STEP meshing was cancelled");
+    if (status != Slic3r::Step::Step_Status::MESH_SUCCESS || model.objects.empty())
+        return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
+                            "meshing of the STEP file failed or it has no valid shape");
+    model.add_default_instances();
+    // Desktop set_import_volume_order: the object list order, which sorting by
+    // name changes only for kept names (Orca's own names carry no order).
+    const bool sort = options.sort_names && step.keep_original_names();
+    for (Slic3r::ModelObject *object : model.objects) {
+        object->imported_parts_hidden = !options.load_as_assembly && object->volumes.size() > 1 &&
+                                        !object->has_individual_part_settings();
+        std::vector<Slic3r::ModelVolume *> parts = object->volumes;
+        if (sort)
+            std::stable_sort(parts.begin(), parts.end(),
+                             [](const Slic3r::ModelVolume *x, const Slic3r::ModelVolume *y) {
+                                 return orcapad_natural_less(x->name, y->name);
+                             });
+        for (size_t i = 0; i < parts.size(); ++i)
+            parts[i]->import_display_order = static_cast<int>(i);
+    }
+    return orcapad_ok();
+}
+
+static bool orcapad_valid_step_options(const orca_step_import_options &options) {
+    return std::isfinite(options.linear_deflection) && std::isfinite(options.angle_deflection) &&
+           options.linear_deflection >= ORCA_STEP_LINEAR_DEFLECTION_MIN &&
+           options.linear_deflection <= ORCA_STEP_LINEAR_DEFLECTION_MAX &&
+           options.angle_deflection >= ORCA_STEP_ANGLE_DEFLECTION_MIN &&
+           options.angle_deflection <= ORCA_STEP_ANGLE_DEFLECTION_MAX;
+}
+
+/// Desktop name_groups: each group is one collision scope, the parts of one
+/// object or the objects of the file.
+static std::vector<std::vector<std::string *>> orcapad_name_groups(Slic3r::Model &model) {
+    std::vector<std::vector<std::string *>> groups;
+    std::vector<std::string *> objects;
+    for (Slic3r::ModelObject *object : model.objects) {
+        objects.push_back(&object->name);
+        std::vector<std::string *> parts;
+        for (Slic3r::ModelVolume *volume : object->volumes) parts.push_back(&volume->name);
+        groups.push_back(std::move(parts));
+    }
+    groups.push_back(std::move(objects));
+    return groups;
+}
+
+/// Desktop prepare_geometry_import_names without its dialog: the cleaned
+/// names of every group, or a typed failure. `apply` writes them back.
+static orca_result orcapad_clean_names(const char *operation, Slic3r::Model &model,
+                                       const char *replacement, bool apply,
+                                       nlohmann::json *changes) {
+    const std::string with = replacement ? replacement : ORCA_IMPORT_NAME_REPLACEMENT_DEFAULT;
+    if (!with.empty() && !Slic3r::valid_import_name_replacement(with))
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "the replacement holds characters names cannot use");
+    const auto groups = orcapad_name_groups(model);
+    bool needs_cleanup = false;
+    try {
+        for (const auto &group : groups)
+            for (const std::string *name : group)
+                needs_cleanup = Slic3r::has_unsupported_name_characters(*name) || needs_cleanup;
+    } catch (const std::invalid_argument &) {
+        return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
+                            "a name in the file is not valid Unicode");
+    }
+    if (!needs_cleanup) return orcapad_ok();
+    for (const auto &group : groups) {
+        std::vector<std::string> names;
+        for (const std::string *name : group) names.push_back(*name);
+        const std::vector<std::string> cleaned = Slic3r::sanitize_import_names(names, with);
+        for (size_t i = 0; i < group.size(); ++i) {
+            if (*group[i] == cleaned[i]) continue;
+            if (changes) changes->push_back(nlohmann::json::array({*group[i], cleaned[i]}));
+            if (apply) *group[i] = cleaned[i];
+        }
+    }
+    return orcapad_ok();
+}
+
 orca_result orca_plater_import_model(orca_plater *plater, const char *path,
                                      double bed_center_x, double bed_center_y,
                                      orca_object_id *out_first_object_id,
@@ -1756,59 +2003,181 @@ orca_result orca_plater_import_model(orca_plater *plater, const char *path,
         if (!orcapad_revision_available(*plater))
             return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
                                 "document revision is exhausted");
-        // Geometry import (desktop "Import 3MF/STL/OBJ/AMF"): configs inside
-        // project files are NOT applied here — that is project open.
-        Slic3r::Model temporary = Slic3r::Model::read_from_file(
-            path, nullptr, nullptr,
-            Slic3r::LoadStrategy::AddDefaultInstances | Slic3r::LoadStrategy::LoadModel);
-        if (temporary.objects.empty())
-            return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
-                                "input contains no model object");
+        Slic3r::Model temporary;
+        if (orcapad_is_step_path(path)) {
+            // Desktop STEP import with its dialogs' defaults.
+            orca_step step;
+            step.path = path;
+            orca_result loaded = orcapad_step_load(step, operation);
+            if (loaded.code != ORCA_STATUS_OK) return loaded;
+            orca_step_import_options options;
+            orca_step_import_options_default(&options);
+            orca_result meshed = orcapad_step_mesh(step, operation, options, temporary);
+            if (meshed.code != ORCA_STATUS_OK) return meshed;
+            orca_result named = orcapad_clean_names(operation, temporary, nullptr, true, nullptr);
+            if (named.code != ORCA_STATUS_OK) return named;
+        } else {
+            // Geometry import (desktop "Import 3MF/STL/OBJ/AMF"): configs inside
+            // project files are NOT applied here — that is project open.
+            temporary = Slic3r::Model::read_from_file(
+                path, nullptr, nullptr,
+                Slic3r::LoadStrategy::AddDefaultInstances | Slic3r::LoadStrategy::LoadModel);
+        }
+        return orcapad_import_objects(plater, operation, temporary, bed_center_x, bed_center_y,
+                                      out_first_object_id, out_object_count, out_revision);
+    });
+}
 
-        // 1) center meshes (desktop rotation/scale pivot) while preserving
-        //    each instance's world placement: o' = o - L * shift
-        Slic3r::BoundingBoxf3 group;
-        for (Slic3r::ModelObject *object : temporary.objects) {
-            if (object->instances.empty())
-                return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
-                                    "imported object has no instance");
-            const Slic3r::Vec3d shift = -object->raw_mesh_bounding_box().center();
-            object->center_around_origin();
-            for (Slic3r::ModelInstance *instance : object->instances) {
-                const Slic3r::Vec3d delta = instance->get_matrix().linear() * shift;
-                instance->set_offset(instance->get_offset() - delta);
-            }
-            for (size_t i = 0; i < object->instances.size(); ++i)
-                group.merge(object->instance_bounding_box(i));
-        }
-        if (!group.defined)
-            return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
-                                "imported geometry has no bounds");
-        // 2) move the group's XY center to the bed center, 3) drop to bed
-        const Slic3r::Vec3d move(bed_center_x - group.center().x(),
-                                 bed_center_y - group.center().y(), 0.0);
-        for (Slic3r::ModelObject *object : temporary.objects) {
-            object->translate_instances(move);
-            object->ensure_on_bed(false);
-        }
+void orca_step_import_options_default(orca_step_import_options *out_options) {
+    if (!out_options) return;
+    out_options->linear_deflection = ORCA_STEP_LINEAR_DEFLECTION_DEFAULT;
+    out_options->angle_deflection = ORCA_STEP_ANGLE_DEFLECTION_DEFAULT;
+    out_options->split_compound = 1;
+    out_options->keep_names = 1;
+    out_options->load_as_assembly = 1;
+    out_options->sort_names = 0;
+}
 
-        OrcapadMutation mutation(*plater, "Import");
-        std::vector<Slic3r::ModelObject *> added;
-        for (Slic3r::ModelObject *source : temporary.objects) {
-            Slic3r::ModelObject *object = plater->model.add_object(*source);
-            if (!object)
-                return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
-                                    "engine did not create a document object");
-            added.push_back(object);
-            if (!orcapad_register_object(*plater, *object))
-                return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
-                                    "engine returned an invalid or reused object ID");
-        }
-        const orca_object_id first = static_cast<orca_object_id>(added.front()->id().id);
-        *out_revision = mutation.commit();
-        *out_first_object_id = first;
-        *out_object_count = static_cast<uint32_t>(added.size());
+orca_result orca_step_new(const char *path, orca_step **out_step) {
+    constexpr const char *operation = "orca_step_new";
+    if (out_step) *out_step = nullptr;
+    if (!path || !path[0] || !out_step)
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "path is empty or output pointer is null");
+    struct stat path_status;
+    if (stat(path, &path_status) != 0)
+        return orcapad_fail(ORCA_STATUS_IO_FAILURE, operation,
+                            "input file is not accessible");
+    try {
+        auto step = std::make_unique<orca_step>();
+        step->path = path;
+        *out_step = step.release();
         return orcapad_ok();
+    } catch (const std::bad_alloc &) {
+        return orcapad_fail(ORCA_STATUS_OUT_OF_MEMORY, operation, "allocation failed");
+    }
+}
+
+void orca_step_free(orca_step *step) {
+    if (!step) return;
+    // OCCT document teardown touches the shared XCAF application.
+    std::lock_guard<std::recursive_mutex> engine_lock(orcapad_engine_mutex);
+    delete step;
+}
+
+orca_result orca_step_load(orca_step *step, orca_step_info *out_info) {
+    constexpr const char *operation = "orca_step_load";
+    if (out_info) *out_info = orca_step_info{};
+    if (!step)
+        return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, operation, "STEP handle is null");
+    return orcapad_guard(operation, [&]() -> orca_result {
+        orca_result loaded = orcapad_step_load(*step, operation);
+        if (loaded.code == ORCA_STATUS_OK && out_info) *out_info = step->info;
+        return loaded;
+    });
+}
+
+int32_t orca_step_progress(const orca_step *step) {
+    return step ? step->progress.load() : 0;
+}
+
+void orca_step_cancel(orca_step *step) {
+    if (!step) return;
+    // Load and mesh poll the flag through the progress callback; the
+    // triangle count stops on the Step's own flag.
+    step->cancel.store(true);
+    if (Slic3r::Step *live = step->live.load()) live->m_stop_mesh.store(true);
+}
+
+orca_result orca_step_triangle_count(orca_step *step, double linear_deflection,
+                                     double angle_deflection, uint32_t *out_triangle_count) {
+    constexpr const char *operation = "orca_step_triangle_count";
+    if (out_triangle_count) *out_triangle_count = 0;
+    if (!step || !step->step)
+        return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, operation, "STEP handle is not loaded");
+    orca_step_import_options options;
+    orca_step_import_options_default(&options);
+    options.linear_deflection = linear_deflection;
+    options.angle_deflection = angle_deflection;
+    if (!out_triangle_count || !orcapad_valid_step_options(options))
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "deflection out of range or output pointer is null");
+    return orcapad_guard(operation, [&]() -> orca_result {
+        orcapad_step_begin(*step);
+        const unsigned int count = step->step->get_triangle_num(linear_deflection, angle_deflection);
+        if (step->step->m_stop_mesh.load() || step->cancel.load())
+            return orcapad_fail(ORCA_STATUS_CANCELLED, operation, "triangle count was cancelled");
+        *out_triangle_count = count;
+        return orcapad_ok();
+    });
+}
+
+orca_result orca_step_mesh(orca_step *step, const orca_step_import_options *options) {
+    constexpr const char *operation = "orca_step_mesh";
+    if (!step || !step->step)
+        return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, operation, "STEP handle is not loaded");
+    if (!options || !orcapad_valid_step_options(*options))
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "options are null or a deflection is out of range");
+    return orcapad_guard(operation, [&]() -> orca_result {
+        step->meshed.reset();
+        auto model = std::make_unique<Slic3r::Model>();
+        orca_result meshed = orcapad_step_mesh(*step, operation, *options, *model);
+        if (meshed.code == ORCA_STATUS_OK) step->meshed = std::move(model);
+        return meshed;
+    });
+}
+
+orca_result orca_step_name_changes(orca_step *step, const char *replacement,
+                                   orca_owned_string *out_json) {
+    constexpr const char *operation = "orca_step_name_changes";
+    if (out_json) *out_json = orcapad_empty_string();
+    if (!step || !step->step)
+        return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, operation, "STEP handle is not loaded");
+    if (!out_json)
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation, "output pointer is null");
+    return orcapad_guard(operation, [&]() -> orca_result {
+        if (!step->meshed)
+            return orcapad_fail(ORCA_STATUS_NOT_FOUND, operation, "the STEP file is not meshed yet");
+        nlohmann::json changes = nlohmann::json::array();
+        orca_result named = orcapad_clean_names(operation, *step->meshed, replacement, false, &changes);
+        if (named.code != ORCA_STATUS_OK) return named;
+        if (!orcapad_copy_string(changes.dump().c_str(), out_json))
+            return orcapad_fail(ORCA_STATUS_OUT_OF_MEMORY, operation, "allocation failed");
+        return orcapad_ok();
+    });
+}
+
+orca_result orca_plater_import_step(orca_plater *plater, orca_step *step,
+                                    const char *replacement,
+                                    double bed_center_x, double bed_center_y,
+                                    orca_object_id *out_first_object_id,
+                                    uint32_t *out_object_count,
+                                    orca_revision *out_revision) {
+    constexpr const char *operation = "orca_plater_import_step";
+    if (out_first_object_id) *out_first_object_id = 0;
+    if (out_object_count) *out_object_count = 0;
+    if (out_revision) *out_revision = 0;
+    if (!plater || !step || !step->step)
+        return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, operation,
+                            "plater handle is null or STEP handle is not loaded");
+    if (!out_first_object_id || !out_object_count || !out_revision)
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "output pointer is null");
+    if (!std::isfinite(bed_center_x) || !std::isfinite(bed_center_y))
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "bed center contains a non-finite value");
+    return orcapad_guard(operation, [&]() -> orca_result {
+        if (!step->meshed)
+            return orcapad_fail(ORCA_STATUS_NOT_FOUND, operation, "the STEP file is not meshed yet");
+        if (!orcapad_revision_available(*plater))
+            return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
+                                "document revision is exhausted");
+        Slic3r::Model temporary(*step->meshed);
+        orca_result named = orcapad_clean_names(operation, temporary, replacement, true, nullptr);
+        if (named.code != ORCA_STATUS_OK) return named;
+        return orcapad_import_objects(plater, operation, temporary, bed_center_x, bed_center_y,
+                                      out_first_object_id, out_object_count, out_revision);
     });
 }
 
@@ -6658,6 +7027,7 @@ orca_result orca_plater_snapshot(orca_plater *plater,
                     ? model_volume->config.opt_int("extruder") : 0;
                 volume.override_count = static_cast<uint32_t>(
                     orcapad_override_count(model_volume->config.get()));
+                volume.import_display_order = model_volume->import_display_order;
                 if (!orcapad_copy_string(model_volume->name.c_str(), &volume.name))
                     return fail_snapshot(ORCA_STATUS_OUT_OF_MEMORY,
                                          "could not allocate volume name");

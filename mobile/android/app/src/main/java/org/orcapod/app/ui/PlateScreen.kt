@@ -216,6 +216,10 @@ fun PlateScreen(vm: AppViewModel) {
             },
             onDelete = if (kind == PresetKind.PRINTER) null else { name -> vm.deleteUserPreset(kind, name) },
             onDismiss = { picker = null },
+            brands = if (kind == PresetKind.PRINTER) vm.installedVendors.sortedWith(String.CASE_INSENSITIVE_ORDER) else emptyList(),
+            brand = vm.activeVendor,
+            loading = vm.busy != null,
+            onBrand = vm::switchBrand,
         )
     }
     if (settingsOpen) SettingsSheet(vm) { settingsOpen = false }

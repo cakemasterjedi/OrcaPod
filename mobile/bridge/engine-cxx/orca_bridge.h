@@ -901,6 +901,82 @@ orca_result orca_plater_split_parts(orca_plater *plater, orca_object_id object_i
                                     orca_volume_id volume_id,
                                     uint32_t *out_part_count,
                                     orca_revision *out_revision);
+// --- mesh repair and booleans (desktop Fix model, Mesh Boolean gizmo) ------
+
+/// Desktop object-list warning icon (ObjectList::get_mesh_errors_info): the
+/// mesh statistics of an object (`volume_id` 0, every volume merged) or of
+/// one volume. `open_edges` are the remaining non-manifold edges;
+/// `repaired_errors` the errors fixed when the mesh was loaded. Read-only.
+typedef struct {
+    int32_t open_edges;
+    int32_t repaired_errors;
+    int32_t number_of_parts;      // connected shells
+    uint32_t facets;
+    uint8_t manifold;             // open_edges == 0
+    uint8_t repaired;             // repaired_errors > 0
+    uint8_t reserved[6];
+} orca_mesh_errors;
+
+orca_result orca_plater_mesh_errors(orca_plater *plater, orca_object_id object_id,
+                                    orca_volume_id volume_id,
+                                    orca_mesh_errors *out);
+
+/// What one repair did, summed over the repaired volumes (MeshRepairStats).
+typedef struct {
+    uint32_t welded_vertices;
+    uint32_t removed_triangles;
+    uint32_t reversed_shells;
+    uint32_t filled_holes;
+    uint32_t removed_shells;
+    uint32_t self_intersections;
+    uint32_t repaired_volumes;    // volumes whose mesh changed
+    uint32_t failed_volumes;      // volumes no solid could be built from
+    uint8_t modified;             // any volume changed (a new undo step)
+    uint8_t painting_removed;     // painted volumes lost their paint
+    uint8_t reserved[6];
+    /// One "volume name: reason" line per failed volume; empty otherwise.
+    orca_owned_string failures;
+} orca_mesh_repair_report;
+
+void orca_mesh_repair_report_dispose(orca_mesh_repair_report *report);
+
+/// Desktop "Fix model" (ObjectList::fix_through_cgal -> ModelVolume::repair,
+/// libslic3r/MeshRepair): welds, drops degenerate and duplicate faces,
+/// orients shells, fills holes and resolves self-intersections, on every
+/// volume of the object (`volume_id` 0) or on one volume. `keep_painting`
+/// remaps paint onto the repaired mesh (desktop's "Keep painted feature
+/// after mesh change"); otherwise changed volumes lose their paint. When a
+/// volume changed the object is dropped onto the bed again and the call is
+/// one undo step "Repairing model object" (*out_revision is the new
+/// revision). When nothing needed repair, the document and revision are
+/// unchanged and report->modified is 0. A volume that cannot be repaired
+/// is listed in report->failures; the others are still repaired.
+orca_result orca_plater_repair(orca_plater *plater, orca_object_id object_id,
+                               orca_volume_id volume_id, uint8_t keep_painting,
+                               orca_mesh_repair_report *out_report,
+                               orca_revision *out_revision);
+
+#define ORCA_BOOLEAN_UNION        ((int32_t)0)
+#define ORCA_BOOLEAN_DIFFERENCE   ((int32_t)1)
+#define ORCA_BOOLEAN_INTERSECTION ((int32_t)2)
+
+/// Desktop Mesh Boolean gizmo (MeshBoolean::mcut::make_boolean) between two
+/// volumes of one object: `source_volume_id` is replaced by a new volume
+/// "<source name> - union|difference|intersection" holding the result in
+/// the same place, with the source's role, settings and filament. The tool
+/// volume is removed for a union and when `delete_tool` is set. Paint is
+/// remapped from the source (and the tool, except for a difference) when
+/// `keep_painting` is set. An empty result (for example an intersection of
+/// volumes that do not touch) is ORCA_STATUS_INVALID_MODEL and changes
+/// nothing. One undo step "Mesh Boolean".
+orca_result orca_plater_mesh_boolean(orca_plater *plater, orca_object_id object_id,
+                                     orca_volume_id source_volume_id,
+                                     orca_volume_id tool_volume_id,
+                                     int32_t operation, uint8_t delete_tool,
+                                     uint8_t keep_painting,
+                                     orca_volume_id *out_volume_id,
+                                     orca_revision *out_revision);
+
 /// Desktop Selection::mirror: toggles the instance mirror on one axis
 /// (0 = X, 1 = Y, 2 = Z); the instance is rested on the bed again. Mirrored
 /// instances report `mirrored` in snapshots; their transform fields stay

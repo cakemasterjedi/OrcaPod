@@ -99,11 +99,12 @@ filled in one of two ways, and never with a silent fake success:
 - **Loud adapters** (`engine-cxx/format_stubs.cpp`, `jpeg_stubs.cpp`) define
   engine functions whose real implementation needs a dependency that is not
   ported yet: STEP import (OCCT), textured-model import (Assimp), PNG decoding
-  for texture displacement maps (libpng), mesh booleans and UV
-  parameterization (CGAL mesh processing, MCUT) and JPEG thumbnails. Each one
+  for texture displacement maps (libpng) and JPEG thumbnails. Each one
   throws, which the bridge turns into a typed failure, so a missing feature
   is reported rather than producing wrong output. Porting a dependency means
-  replacing its adapter with the real source file.
+  replacing its adapter with the real source file, as was done for mesh
+  booleans: `MeshBoolean.cpp` and the vendored MCUT sources are compiled in
+  with the flags of `deps_src/mcut/CMakeLists.txt`.
 - `engine-cxx/utils_subset.cpp` carries the few functions of
   `libslic3r/utils.cpp` the closure needs. `utils.cpp` itself sets up
   Boost.Log sinks and Boost.Locale, which the mobile builds do not ship. The

@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Checkbox
@@ -65,7 +66,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import org.orcapod.app.engine.BooleanOperation
 import org.orcapod.app.engine.HeightRange
+import org.orcapod.app.engine.MeshErrors
 import org.orcapod.app.engine.PresetKind
 import org.orcapod.app.engine.SceneObject
 import org.orcapod.app.engine.SceneVolume
@@ -86,6 +89,15 @@ fun ObjectListSheet(vm: AppViewModel, onOpen: (Selection) -> Unit, onDismiss: ()
         Column(Modifier.fillMaxHeight(0.85f).padding(horizontal = 16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Objects", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                val objects = vm.scene.snapshot.objects
+                // Desktop's "Fix model" on the ticked objects, or on every object with errors left.
+                val broken = objects.filter { vm.meshErrors[it.id]?.manifold == false }.map { it.id }
+                val toRepair = checked.toList().ifEmpty { broken }
+                if (toRepair.isNotEmpty()) {
+                    TextButton(onClick = { vm.repair(toRepair); checked = emptySet() }) {
+                        Text(if (toRepair.size == 1) "Repair 1" else "Repair ${toRepair.size}")
+                    }
+                }
                 if (checked.size >= 2) {
                     TextButton(onClick = { vm.mergeObjects(checked.toList()); checked = emptySet() }) { Text("Assemble ${checked.size}") }
                 }
@@ -111,7 +123,12 @@ fun ObjectListSheet(vm: AppViewModel, onOpen: (Selection) -> Unit, onDismiss: ()
                             )
                             Text(bits.joinToString(" · "))
                         },
-                        trailingContent = { FilamentSwatch(vm, obj.extruder) },
+                        trailingContent = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                MeshWarning(vm.meshErrors[obj.id])
+                                FilamentSwatch(vm, obj.extruder)
+                            }
+                        },
                     )
                     HorizontalDivider()
                 }
@@ -254,6 +271,7 @@ private fun VolumeRow(vm: AppViewModel, obj: SceneObject, v: SceneVolume, onSett
                         if (v.type == VolumeType.PART) {
                             DropdownMenuItem(text = { Text("Split to parts") }, onClick = { menu = false; vm.splitToParts(obj.id, v.id) })
                         }
+                        DropdownMenuItem(text = { Text("Repair") }, onClick = { menu = false; vm.repair(listOf(obj.id), v.id) })
                         DropdownMenuItem(text = { Text("Simplify…") }, onClick = { menu = false; simplifying = true })
                         DropdownMenuItem(text = { Text("Subdivide") }, onClick = { menu = false; vm.subdivide(obj.id, v.id) })
                         if (!(v.type == VolumeType.PART && partCount <= 1)) {
@@ -460,6 +478,7 @@ private fun RangesTab(vm: AppViewModel, obj: SceneObject) {
 @Composable
 private fun MeshTab(vm: AppViewModel, obj: SceneObject, sel: Selection) {
     var cloning by remember { mutableStateOf(false) }
+    var boolean by remember { mutableStateOf(false) }
     val exportStl = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/stl")) { uri ->
         if (uri != null) vm.exportStl(obj.id, uri)
     }
@@ -490,7 +509,10 @@ private fun MeshTab(vm: AppViewModel, obj: SceneObject, sel: Selection) {
         }
         Spacer(Modifier.height(8.dp))
         Text("Mesh", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+        Text(meshErrorText(vm.meshErrors[obj.id]), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 4.dp))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            AssistChip(onClick = { vm.repair(listOf(obj.id)) }, label = { Text("Repair") })
+            if (obj.volumes.size > 1) AssistChip(onClick = { boolean = true }, label = { Text("Boolean…") })
             AssistChip(onClick = { vm.splitToObjects(obj.id) }, label = { Text("Split to objects") })
             if (obj.parts.size == 1) AssistChip(onClick = { vm.splitToParts(obj.id, obj.parts[0].id) }, label = { Text("Split to parts") })
             AssistChip(onClick = { exportStl.launch(obj.name.substringBeforeLast('.') + ".stl") }, label = { Text("Export STL") })
@@ -504,10 +526,103 @@ private fun MeshTab(vm: AppViewModel, obj: SceneObject, sel: Selection) {
             AssistChip(onClick = { vm.convertUnits(obj.id, 3) }, label = { Text("mm to metres") })
         }
     }
+    if (boolean) BooleanDialog(vm, obj, onDismiss = { boolean = false })
     if (cloning) {
         TextDialog("Clone", "1", numeric = true, onDismiss = { cloning = false }) { text ->
             cloning = false
             text.toIntOrNull()?.takeIf { it in 1..100 }?.let { n -> vm.cloneObject(obj.id, n) }
+        }
+    }
+}
+
+// --- repair and booleans ---
+
+/** Desktop's object list warning icon: errors left, or errors fixed on import. */
+@Composable
+fun MeshWarning(errors: MeshErrors?) {
+    if (errors == null || !errors.hasWarning) return
+    Icon(
+        Icons.Filled.Warning,
+        contentDescription = meshErrorText(errors),
+        tint = if (errors.manifold) MaterialTheme.colorScheme.onSurfaceVariant else Color(0xFFE0A000),
+        modifier = Modifier.size(18.dp).padding(end = 2.dp),
+    )
+}
+
+/** Desktop ObjectList::get_mesh_errors_info, as one line. */
+fun meshErrorText(errors: MeshErrors?): String {
+    if (errors == null) return ""
+    val parts = mutableListOf<String>()
+    if (!errors.manifold) parts += if (errors.openEdges == 1) "1 non-manifold edge" else "${errors.openEdges} non-manifold edges"
+    if (errors.repaired) parts += if (errors.repairedErrors == 1) "1 error repaired on import" else "${errors.repairedErrors} errors repaired on import"
+    return if (parts.isEmpty()) "No mesh errors" else parts.joinToString(" · ")
+}
+
+/**
+ * Desktop Mesh Boolean gizmo: union, difference or intersection of two parts of this object.
+ * The result replaces the first part; the tool goes away for a union, or when "Delete input" is on.
+ */
+@Composable
+private fun BooleanDialog(vm: AppViewModel, obj: SceneObject, onDismiss: () -> Unit) {
+    val volumes = obj.volumes.toList()
+    var operation by remember { mutableStateOf(BooleanOperation.UNION) }
+    var source by remember { mutableStateOf(vm.selectedVolume?.takeIf { id -> volumes.any { it.id == id } } ?: volumes[0].id) }
+    var tool by remember { mutableStateOf(volumes.first { it.id != source }.id) }
+    var deleteTool by remember { mutableStateOf(true) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Mesh boolean") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (op in BooleanOperation.entries) FilterChip(selected = op == operation, onClick = { operation = op }, label = { Text(op.label) })
+                }
+                VolumePicker("Object", volumes, source) { picked ->
+                    if (picked == tool) tool = source
+                    source = picked
+                }
+                VolumePicker(if (operation == BooleanOperation.DIFFERENCE) "Subtract" else "Tool", volumes, tool) { picked ->
+                    if (picked == source) source = tool
+                    tool = picked
+                }
+                if (operation == BooleanOperation.UNION) {
+                    Text("Both parts are replaced by their union.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
+                        Checkbox(checked = deleteTool, onCheckedChange = { deleteTool = it })
+                        Text("Delete input")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onDismiss(); vm.meshBoolean(obj.id, source, tool, operation, deleteTool) }) { Text(operation.label) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun VolumePicker(label: String, volumes: List<SceneVolume>, current: Long, onPick: (Long) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val v = volumes.firstOrNull { it.id == current }
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+        Text(label, Modifier.width(72.dp), style = MaterialTheme.typography.labelLarge)
+        Box(Modifier.weight(1f)) {
+            OutlinedButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) {
+                if (v != null) VolumeBadge(v.type)
+                Spacer(Modifier.width(8.dp))
+                Text(v?.name.orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                for (item in volumes) {
+                    DropdownMenuItem(
+                        text = { Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        leadingIcon = { VolumeBadge(item.type) },
+                        onClick = { open = false; onPick(item.id) },
+                    )
+                }
+            }
         }
     }
 }

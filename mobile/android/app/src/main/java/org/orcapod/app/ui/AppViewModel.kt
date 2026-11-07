@@ -20,6 +20,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.orcapod.app.data.ProfileStore
 import org.orcapod.app.engine.BedTypeState
+import org.orcapod.app.engine.BooleanOperation
+import org.orcapod.app.engine.MeshErrors
+import org.orcapod.app.engine.RepairReport
 import org.orcapod.app.engine.PaintLayer
 import org.orcapod.app.engine.CustomGcode
 import org.orcapod.app.engine.CustomGcodeType
@@ -141,6 +144,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     /** The part highlighted in the object list, if any. */
     var selectedVolume by mutableStateOf<Long?>(null)
+    /** Mesh errors per object id, for desktop's object list warning icons; refreshed with the scene. */
+    var meshErrors by mutableStateOf<Map<Long, MeshErrors>>(emptyMap())
+        private set
     var installedVendors by mutableStateOf<Set<String>>(emptySet())
         private set
 
@@ -448,6 +454,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun refreshScene() {
         val e = engine ?: return
         scene = e.scene()
+        meshErrors = scene.snapshot.objects.associate { it.id to e.meshErrors(it.id) }
         customGcodes = e.customGcodes()
         refreshCalibration(e)
         if (paint != null) refreshPaint()
@@ -715,6 +722,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val n = e.splitToParts(objectId, volumeId)
         _messages.tryEmit("Split into $n parts")
     }
+
+    /** Desktop "Fix model" on objects (every volume) or, with [volumeId], on one part. */
+    fun repair(objectIds: List<Long>, volumeId: Long = 0) = mutate("Repairing…") { e ->
+        val reports = objectIds.map { id -> (objectOf(id)?.name ?: "Object") to e.repair(id, volumeId) }
+        _messages.tryEmit(repairSummary(reports))
+    }
+
+    /** Desktop Mesh Boolean between two volumes of an object; selects the result. */
+    fun meshBoolean(objectId: Long, sourceVolumeId: Long, toolVolumeId: Long, operation: BooleanOperation, deleteTool: Boolean) =
+        mutate("Running ${operation.label.lowercase()}…") { e ->
+            selectedVolume = e.meshBoolean(objectId, sourceVolumeId, toolVolumeId, operation, deleteTool)
+        }
 
     fun mirror(sel: Selection, axis: Int) = mutate { it.mirror(sel.objectId, sel.instanceId, axis) }
     fun setPrintable(objectId: Long, instanceId: Long, printable: Boolean) = mutate { it.setPrintable(objectId, instanceId, printable) }
@@ -1039,4 +1058,17 @@ internal fun worldBounds(positions: FloatArray, matrix: FloatArray): FloatArray 
         }
     }
     return b
+}
+
+/** The notice desktop shows after "Fix model": what was repaired, what failed, what needed nothing. */
+internal fun repairSummary(reports: List<Pair<String, RepairReport>>): String {
+    val repaired = reports.filter { it.second.modified }.map { it.first }
+    val failed = reports.filter { it.second.failedVolumes > 0 }
+    val unchanged = reports.count { !it.second.modified && it.second.failedVolumes == 0 }
+    val lines = mutableListOf<String>()
+    if (repaired.isNotEmpty()) lines += "Repaired: " + repaired.joinToString()
+    for ((name, r) in failed) lines += "Could not repair $name: ${r.failures}"
+    if (unchanged > 0) lines += if (reports.size == 1) "The model needed no repair" else "$unchanged of ${reports.size} needed no repair"
+    if (reports.any { it.second.paintingRemoved }) lines += "Painting on the repaired parts was removed"
+    return lines.joinToString("\n")
 }

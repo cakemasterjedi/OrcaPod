@@ -54,6 +54,21 @@ top of the selected presets through the engine's edited-preset mechanism, so
 slicing picks them up exactly as desktop does; they can be saved as user
 presets.
 
+## Screen layout
+
+On a phone the viewport fills the screen and everything else floats over it:
+the preset bar at the top, the selected object's controls and the plate
+actions at the bottom, and the print settings in a bottom sheet. A window
+that is at least 840 dp wide, or at least 600 dp wide in landscape, and at
+least 480 dp tall (tablets, unfolded foldables, desktop-mode windows) puts
+the viewport next to a fixed side pane instead, so nothing covers the
+model: presets on top, an Objects tab (the selected object's controls and a
+list of every instance, tap one to select it) or a Settings tab (the same
+settings list as the sheet), and the slice controls at the bottom. The
+choice follows the window's current size, so it switches on rotation, fold
+and split screen. A phone in landscape keeps the phone layout because a
+pane under 480 dp tall cannot hold its tabs and controls.
+
 ## Viewport
 
 The plate is drawn in engine coordinates (z-up millimetres). Gestures:

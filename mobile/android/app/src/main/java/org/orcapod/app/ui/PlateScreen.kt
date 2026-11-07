@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -35,14 +36,17 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -66,6 +70,11 @@ fun PlateScreen(vm: AppViewModel) {
     var menuOpen by remember { mutableStateOf(false) }
     var layFlat by remember { mutableStateOf(false) }
     var viewRef by remember { mutableStateOf<PlateView?>(null) }
+    val config = LocalConfiguration.current
+    val twoPane = usesTwoPane(config.screenWidthDp, config.screenHeightDp)
+    var paneTab by rememberSaveable { mutableStateOf(PaneTab.OBJECTS) }
+    // Picking an object in the viewport brings its controls into view.
+    LaunchedEffect(vm.selection) { if (vm.selection != null) paneTab = PaneTab.OBJECTS }
 
     LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
 
@@ -131,7 +140,7 @@ fun PlateScreen(vm: AppViewModel) {
             )
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        val viewport: @Composable () -> Unit = {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx -> PlateView(ctx, listener).also { viewRef = it } },
@@ -146,52 +155,81 @@ fun PlateScreen(vm: AppViewModel) {
                     )
                 },
             )
-
-            Column(Modifier.fillMaxWidth().padding(8.dp)) {
-                PresetBar(vm) { picker = it }
-                vm.busy?.let { label ->
-                    Spacer(Modifier.height(6.dp))
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                    Text(label, style = MaterialTheme.typography.labelMedium)
-                }
-                if (layFlat) {
-                    Spacer(Modifier.height(6.dp))
-                    Hint("Tap the face the object should rest on")
+        }
+        val status: @Composable () -> Unit = {
+            vm.busy?.let { label ->
+                Spacer(Modifier.height(6.dp))
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Text(label, style = MaterialTheme.typography.labelMedium)
+            }
+            if (layFlat) {
+                Spacer(Modifier.height(6.dp))
+                Hint("Tap the face the object should rest on")
+            }
+        }
+        // The preview, slicing progress or the plate actions; the phone also shows the
+        // selected object's controls here, a wide screen shows them in its side pane.
+        val controls: @Composable (withObject: Boolean, onSettings: () -> Unit) -> Unit = { withObject, onSettings ->
+            val sel = vm.selection
+            when {
+                previewing -> PreviewPanel(
+                    vm = vm,
+                    done = done!!,
+                    onShare = {
+                        val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", done.gcode)
+                        val send = Intent(Intent.ACTION_SEND)
+                            .setType("text/x-gcode")
+                            .putExtra(Intent.EXTRA_STREAM, uri)
+                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        context.startActivity(Intent.createChooser(send, "Send G-code"))
+                    },
+                    onSave = { saveGcode.launch(done.gcode.name) },
+                )
+                vm.slice is SliceState.Running -> SlicingPanel(vm.slice as SliceState.Running, vm::cancelSlice)
+                else -> Column {
+                    if (withObject && sel != null && vm.transformOf(sel) != null) {
+                        ObjectPanel(vm, sel, layFlat = layFlat, onLayFlat = { layFlat = !layFlat })
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    ActionBar(
+                        hasObjects = vm.scene.snapshot.objects.isNotEmpty(),
+                        hasResult = done != null,
+                        onImport = { importModels.launch(MODEL_TYPES) },
+                        onArrange = vm::arrange,
+                        onSettings = onSettings,
+                        onSlice = vm::startSlice,
+                        onShowResult = { vm.showPreview = true },
+                    )
                 }
             }
+        }
 
-            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(8.dp)) {
-                val sel = vm.selection
-                when {
-                    previewing -> PreviewPanel(
-                        vm = vm,
-                        done = done!!,
-                        onShare = {
-                            val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", done.gcode)
-                            val send = Intent(Intent.ACTION_SEND)
-                                .setType("text/x-gcode")
-                                .putExtra(Intent.EXTRA_STREAM, uri)
-                                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            context.startActivity(Intent.createChooser(send, "Send G-code"))
-                        },
-                        onSave = { saveGcode.launch(done.gcode.name) },
-                    )
-                    vm.slice is SliceState.Running -> SlicingPanel(vm.slice as SliceState.Running, vm::cancelSlice)
-                    else -> {
-                        if (sel != null && vm.transformOf(sel) != null) {
-                            ObjectPanel(vm, sel, layFlat = layFlat, onLayFlat = { layFlat = !layFlat })
-                            Spacer(Modifier.height(8.dp))
-                        }
-                        ActionBar(
-                            hasObjects = vm.scene.snapshot.objects.isNotEmpty(),
-                            hasResult = done != null,
-                            onImport = { importModels.launch(MODEL_TYPES) },
-                            onArrange = vm::arrange,
-                            onSettings = { settingsOpen = true },
-                            onSlice = vm::startSlice,
-                            onShowResult = { vm.showPreview = true },
-                        )
-                    }
+        if (twoPane) {
+            Row(Modifier.fillMaxSize().padding(padding)) {
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    viewport()
+                    Column(Modifier.fillMaxWidth().padding(8.dp)) { status() }
+                }
+                VerticalDivider()
+                SidePane(
+                    tab = paneTab,
+                    onTab = { paneTab = it },
+                    modifier = Modifier.width(sidePaneWidth(config.screenWidthDp)).fillMaxHeight().navigationBarsPadding(),
+                    header = { PresetBar(vm) { picker = it } },
+                    objects = { ObjectsTab(vm, layFlat = layFlat, onLayFlat = { layFlat = !layFlat }) },
+                    settings = { SettingsContent(vm, Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp), showTitle = false) },
+                    footer = { controls(false) { paneTab = PaneTab.SETTINGS } },
+                )
+            }
+        } else {
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                viewport()
+                Column(Modifier.fillMaxWidth().padding(8.dp)) {
+                    PresetBar(vm) { picker = it }
+                    status()
+                }
+                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(8.dp)) {
+                    controls(true) { settingsOpen = true }
                 }
             }
         }
@@ -218,7 +256,8 @@ fun PlateScreen(vm: AppViewModel) {
             onDismiss = { picker = null },
         )
     }
-    if (settingsOpen) SettingsSheet(vm) { settingsOpen = false }
+    // The side pane already holds the settings, so the sheet closes when the window widens.
+    if (settingsOpen && !twoPane) SettingsSheet(vm) { settingsOpen = false }
 }
 
 @Composable

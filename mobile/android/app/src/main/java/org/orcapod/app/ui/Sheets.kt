@@ -104,29 +104,35 @@ fun PresetPickerSheet(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsSheet(viewModel: AppViewModel, onDismiss: () -> Unit) {
-    var saving by remember { mutableStateOf(false) }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        Column(Modifier.fillMaxHeight(0.9f).padding(horizontal = 16.dp)) {
-            Text("Print settings", style = MaterialTheme.typography.titleLarge)
-            Text(
-                "Changes apply on top of \"${viewModel.process}\" and \"${viewModel.filament}\".",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            LazyColumn(Modifier.weight(1f).padding(top = 8.dp)) {
-                items(viewModel.quickSettings, key = { it.key }) { s ->
-                    SettingRow(
-                        setting = s,
-                        value = viewModel.settings[s.key].orEmpty(),
-                        edited = s.key in viewModel.editedKeys,
-                        onChange = { viewModel.setSetting(s, it) },
-                    )
-                }
+        SettingsContent(viewModel, Modifier.fillMaxHeight(0.9f).padding(horizontal = 16.dp))
+    }
+}
+
+/** The settings list and its actions; the phone shows it in [SettingsSheet], a wide screen in its side pane. */
+@Composable
+fun SettingsContent(viewModel: AppViewModel, modifier: Modifier = Modifier, showTitle: Boolean = true) {
+    var saving by remember { mutableStateOf(false) }
+    Column(modifier) {
+        if (showTitle) Text("Print settings", style = MaterialTheme.typography.titleLarge)
+        Text(
+            "Changes apply on top of \"${viewModel.process}\" and \"${viewModel.filament}\".",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        LazyColumn(Modifier.weight(1f).padding(top = 8.dp)) {
+            items(viewModel.quickSettings, key = { it.key }) { s ->
+                SettingRow(
+                    setting = s,
+                    value = viewModel.settings[s.key].orEmpty(),
+                    edited = s.key in viewModel.editedKeys,
+                    onChange = { viewModel.setSetting(s, it) },
+                )
             }
-            Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = viewModel::resetSettings, enabled = viewModel.editedKeys.isNotEmpty()) { Text("Reset") }
-                Spacer(Modifier.width(8.dp))
-                OutlinedButton(onClick = { saving = true }, enabled = viewModel.editedKeys.isNotEmpty()) { Text("Save as preset") }
-            }
+        }
+        Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = viewModel::resetSettings, enabled = viewModel.editedKeys.isNotEmpty()) { Text("Reset") }
+            Spacer(Modifier.width(8.dp))
+            OutlinedButton(onClick = { saving = true }, enabled = viewModel.editedKeys.isNotEmpty()) { Text("Save as preset") }
         }
     }
     if (saving) {

@@ -448,6 +448,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         scene = e.scene()
         customGcodes = e.customGcodes()
         if (paint != null) refreshPaint()
+        layerHeights?.let { l ->
+            layerHeights = if (objectOf(l.objectId) == null) null else l.copy(profile = e.heightProfile(l.objectId))
+        }
         val sel = selection
         if (sel != null && transformOf(sel) == null) selection = null
         val vol = selectedVolume
@@ -498,6 +501,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun startPaint(objectId: Long) {
         cut = null
+        layerHeights = null
         paint = PaintState(objectId)
         engineAction { refreshPaint() }
     }
@@ -549,6 +553,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun startCut(sel: Selection) {
         paint = null
+        layerHeights = null
         val obj = objectOf(sel.objectId) ?: return
         val inst = obj.instances.firstOrNull { it.id == sel.instanceId } ?: return
         val mesh = scene.meshes[obj.id] ?: return
@@ -573,6 +578,40 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             selection = null
             _messages.tryEmit(if (n == 1) "Cut done" else "Cut into $n objects")
         }
+    }
+
+    // --- variable layer height (desktop layers editing) ---
+
+    /** The object whose layer heights are being edited, with its profile; null when not editing. */
+    var layerHeights by mutableStateOf<LayerHeightState?>(null)
+
+    fun startLayerHeights(sel: Selection) {
+        cut = null
+        paint = null
+        val obj = objectOf(sel.objectId) ?: return
+        val inst = obj.instances.firstOrNull { it.id == sel.instanceId } ?: return
+        val mesh = scene.meshes[obj.id] ?: return
+        val b = worldBounds(mesh.positions, inst.matrix)
+        val layer = valueOf(PresetKind.PROCESS, "layer_height").toDoubleOrNull() ?: 0.2
+        val state = LayerHeightState(sel.objectId, height = (b[5] - b[2]).toDouble(), layerHeight = layer)
+        layerHeights = state
+        engineAction { e -> layerHeights = state.copy(profile = e.heightProfile(sel.objectId), z = state.height / 2) }
+    }
+
+    private fun editHeights(block: suspend (Engine, LayerHeightState) -> Unit) {
+        val l = layerHeights ?: return
+        engineAction { e ->
+            block(e, l)
+            refreshScene()
+            invalidateSlice()
+        }
+    }
+
+    fun adaptiveLayerHeights() = editHeights { e, l -> e.adaptiveHeightProfile(l.objectId, l.quality.toDouble()) }
+    fun smoothLayerHeights() = editHeights { e, l -> e.smoothHeightProfile(l.objectId, l.radius, l.keepMin) }
+    fun resetLayerHeights() = editHeights { e, l -> e.resetHeightProfile(l.objectId) }
+    fun adjustLayerHeights(action: Int) = editHeights { e, l ->
+        e.adjustHeightProfile(l.objectId, l.z, LayerHeightState.STRENGTH, l.band.toDouble(), action)
     }
 
     fun splitToObjects(objectId: Long) = mutate("Splitting…") { e ->

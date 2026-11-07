@@ -478,6 +478,28 @@ class EngineHostTest {
         assertNull(paintOverlay(listOf(e.paint(obj.id, part.id, PaintLayer.SEAM)), PaintLayer.SEAM, emptyList()))
     }
 
+    @Test
+    fun s_editsLayerHeights() = runBlocking {
+        val obj = e.scene().snapshot.objects.single()
+        assertEquals(0, e.heightProfile(obj.id).size)
+        val b = worldBounds(e.scene().meshes.getValue(obj.id).positions, obj.instances.first().matrix)
+        val top = (b[5] - b[2]).toDouble()
+        // Manual edits start from the uniform profile, as on desktop.
+        e.adjustHeightProfile(obj.id, top / 2, 0.02, 2.0, 1)
+        val thinner = e.heightProfile(obj.id)
+        assertTrue(thinner.size >= 4 && thinner.size % 2 == 0)
+        assertEquals(top, thinner[thinner.size - 2], 1e-3)
+        val adaptive = e.adaptiveHeightProfile(obj.id, 0.5)
+        assertTrue(adaptive.size >= 4 && adaptive.size % 2 == 0)
+        assertEquals(top, adaptive[adaptive.size - 2], 1e-3)
+        assertTrue((1 until adaptive.size step 2).all { adaptive[it] > 0 })
+        val smoothed = e.smoothHeightProfile(obj.id, 5, false)
+        assertTrue(smoothed.size >= 4)
+        assertTrue(e.heightProfile(obj.id).contentEquals(smoothed))
+        e.resetHeightProfile(obj.id)
+        assertEquals(0, e.heightProfile(obj.id).size)
+    }
+
     private suspend fun layerHeight() =
         Regex("\"layer_height\"\\s*:\\s*\"([^\"]*)\"").find(e.resolvedConfig())?.groupValues?.get(1)
 

@@ -130,6 +130,26 @@ stroke is one undo step. After each stroke the app reads the painted
 triangles back (`orca_plater_volume_paint`) and draws them as an overlay with
 desktop's enforcer and blocker colours, or the filament's colour.
 
+## Variable layer height
+
+The layer height editor is desktop's layers editing on one object. It works
+on `ModelObject::layer_height_profile`, flat (z, layer height) pairs, where
+an empty profile means the process layer height (and any height ranges).
+The panel draws the profile as desktop's thickness bar: object height
+upwards, layer height to the right, with the process layer height dashed.
+
+Its edits are desktop's:
+- Adaptive (`layer_height_profile_adaptive`) at a quality from -0.1 to 1.
+- Smooth (`smooth_height_profile`) over a radius of layers, optionally
+  keeping local minima.
+- Thicker, thinner or smooth at a picked height over a band
+  (`adjust_layer_height_profile`). One press is four of desktop's timer steps.
+- Reset, which clears the profile.
+
+Smooth and manual edits on an object without a profile start from
+`layer_height_profile_from_ranges`, as desktop does. Each edit is one undo
+step and makes the slice stale.
+
 ## Viewport
 
 The plate is drawn in engine coordinates (z-up millimetres). Gestures:
@@ -186,4 +206,6 @@ engine, and exercises parts and modifiers, per-object and per-part settings,
 height ranges, plates, filament slots, slicing all plates and the project,
 sliced-3MF and STL exports. The preview checks cover travels, markers,
 attributes and layer heights, hidden roles, ranges and slider draw ranges, and
-a pause and filament change that reach the sliced G-code.
+a pause and filament change that reach the sliced G-code. Cut, paint and
+layer height checks cover straight and tilted cuts with connectors, brush and
+fill strokes, and manual, adaptive, smoothed and reset profiles.

@@ -3967,15 +3967,17 @@ orca_result orca_plater_object_height_profile_smooth(
         if (!object)
             return orcapad_fail(ORCA_STATUS_NOT_FOUND, operation,
                                 "object was not found");
-        const std::vector<coordf_t> current = object->layer_height_profile.get();
-        if (current.size() < 4)
-            return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
-                                "object has no layer-height profile to smooth");
         if (!orcapad_revision_available(*plater))
             return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
                                 "document revision is exhausted");
         const Slic3r::SlicingParameters params =
             orcapad_slicing_parameters(presets, *object);
+        // Like desktop's layers editing, an object without a profile starts
+        // from the one its layer height and height ranges give.
+        std::vector<coordf_t> current = object->layer_height_profile.get();
+        if (current.size() < 4)
+            current = Slic3r::layer_height_profile_from_ranges(
+                params, object->layer_config_ranges);
         std::vector<double> doubled(current.begin(), current.end());
         const Slic3r::HeightProfileSmoothingParams smoothing(
             radius, keep_min != 0);
@@ -4017,15 +4019,16 @@ orca_result orca_plater_object_height_profile_adjust(
         if (!object)
             return orcapad_fail(ORCA_STATUS_NOT_FOUND, operation,
                                 "object was not found");
-        std::vector<coordf_t> profile = object->layer_height_profile.get();
-        if (profile.size() < 4)
-            return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
-                                "object has no layer-height profile to adjust");
         if (!orcapad_revision_available(*plater))
             return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
                                 "document revision is exhausted");
         const Slic3r::SlicingParameters params =
             orcapad_slicing_parameters(presets, *object);
+        // Desktop starts editing from the profile the ranges give.
+        std::vector<coordf_t> profile = object->layer_height_profile.get();
+        if (profile.size() < 4)
+            profile = Slic3r::layer_height_profile_from_ranges(
+                params, object->layer_config_ranges);
         Slic3r::adjust_layer_height_profile(
             *object, params, profile, static_cast<coordf_t>(z),
             static_cast<coordf_t>(thickness_delta),

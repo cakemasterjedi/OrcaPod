@@ -103,6 +103,11 @@ internal object Native {
     external fun volumeDelete(plater: Long, objectId: Long, volumeId: Long)
     external fun volumeRename(plater: Long, objectId: Long, volumeId: Long, name: String)
     external fun splitObjects(plater: Long, objectId: Long): Int
+    external fun heightProfile(plater: Long, objectId: Long): DoubleArray
+    external fun setHeightProfile(plater: Long, objectId: Long, pairs: DoubleArray)
+    external fun heightProfileAdaptive(plater: Long, presets: Long, objectId: Long, quality: Double): DoubleArray
+    external fun heightProfileSmooth(plater: Long, presets: Long, objectId: Long, radius: Int, keepMin: Boolean): DoubleArray
+    external fun heightProfileAdjust(plater: Long, presets: Long, objectId: Long, z: Double, delta: Double, band: Double, action: Int)
     external fun volumePaint(plater: Long, objectId: Long, volumeId: Long, layer: Int): Array<Any>
     external fun volumePaintSphere(plater: Long, objectId: Long, volumeId: Long, layer: Int, ray: DoubleArray, radius: Double, state: Int)
     external fun volumePaintFill(plater: Long, objectId: Long, volumeId: Long, layer: Int, ray: DoubleArray, angle: Double, propagate: Boolean, state: Int)

@@ -245,6 +245,7 @@ fun PlateScreen(vm: AppViewModel) {
                     vm.slice is SliceState.Running -> SlicingPanel(vm.slice as SliceState.Running, vm::cancelSlice)
                     vm.cut != null -> CutPanel(vm, vm.cut!!)
                     vm.paint != null -> PaintPanel(vm, vm.paint!!)
+                    vm.layerHeights != null -> LayerHeightPanel(vm, vm.layerHeights!!)
                     else -> {
                         if (sel != null && vm.transformOf(sel) != null) {
                             ObjectPanel(vm, sel, layFlat = layFlat, onLayFlat = { layFlat = !layFlat }, onEdit = { objectSheet = sel })

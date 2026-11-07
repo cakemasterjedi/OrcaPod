@@ -566,7 +566,9 @@ orca_result orca_plater_object_height_profile_adaptive(
     orca_revision *out_revision);
 
 /// Desktop "Smooth": smooth_height_profile over `radius` layers
-/// (keep_min = keep local minima). One undo step.
+/// (keep_min = keep local minima). One undo step. Smooth and adjust start
+/// from the profile the layer height and height ranges give when the object
+/// has none, as desktop's layers editing does.
 orca_result orca_plater_object_height_profile_smooth(
     orca_plater *plater, orca_presets *presets, orca_object_id object_id,
     uint32_t radius, uint8_t keep_min, double **out_pairs, uint32_t *out_count,

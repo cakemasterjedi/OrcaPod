@@ -254,6 +254,23 @@ class Engine private constructor(private var presets: Long, private val plater: 
 
     suspend fun splitToObjects(objectId: Long): Int = onEngine { Native.splitObjects(plater, objectId) }
 
+    /** Variable layer height: flat (z, layer height) pairs; empty follows the process layer height. */
+    suspend fun heightProfile(objectId: Long): DoubleArray = onEngine { Native.heightProfile(plater, objectId) }
+
+    /** Desktop "Reset": the object follows the process layer height again. */
+    suspend fun resetHeightProfile(objectId: Long) = onEngine { Native.setHeightProfile(plater, objectId, DoubleArray(0)) }
+
+    /** Desktop "Adaptive", at [quality] -0.1 (fast) to 1 (fine detail). */
+    suspend fun adaptiveHeightProfile(objectId: Long, quality: Double): DoubleArray =
+        onEngine { Native.heightProfileAdaptive(plater, presets, objectId, quality) }
+
+    suspend fun smoothHeightProfile(objectId: Long, radius: Int, keepMin: Boolean): DoubleArray =
+        onEngine { Native.heightProfileSmooth(plater, presets, objectId, radius, keepMin) }
+
+    /** Desktop manual editing at [z]: [action] 0 increase, 1 decrease, 2 reduce, 3 smooth, over [band] mm. */
+    suspend fun adjustHeightProfile(objectId: Long, z: Double, delta: Double, band: Double, action: Int) =
+        onEngine { Native.heightProfileAdjust(plater, presets, objectId, z, delta, band, action) }
+
     /** One paint layer of a volume, as world triangles with their states. */
     suspend fun paint(objectId: Long, volumeId: Long, layer: PaintLayer): PaintMesh = onEngine {
         val r = Native.volumePaint(plater, objectId, volumeId, layer.code)

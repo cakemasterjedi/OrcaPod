@@ -1073,6 +1073,67 @@ JNI_FN(void, volumePaintReset)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong 
     check(env, orca_plater_volume_paint_reset(plater_of(pl), orca_object_id(obj), orca_volume_id(vol), uint8_t(layer), &rev));
 }
 
+// --- variable layer height (desktop layers editing) -------------------------------
+
+static jdoubleArray take_pairs(JNIEnv *env, bool ok, double *pairs, uint32_t count)
+{
+    if (!ok)
+        return nullptr;
+    jdoubleArray out = env->NewDoubleArray(jsize(count));
+    if (out && count)
+        env->SetDoubleArrayRegion(out, 0, jsize(count), pairs);
+    orca_height_profile_dispose(pairs);
+    return out;
+}
+
+/** Flat (z, layer height) pairs; empty when the object follows the process layer height. */
+JNI_FN(jdoubleArray, heightProfile)(JNIEnv *env, jobject, jlong pl, jlong obj)
+{
+    double *pairs = nullptr;
+    uint32_t count = 0;
+    const bool ok = check(env, orca_plater_object_height_profile(plater_of(pl), orca_object_id(obj), &pairs, &count));
+    return take_pairs(env, ok, pairs, count);
+}
+
+JNI_FN(void, setHeightProfile)(JNIEnv *env, jobject, jlong pl, jlong obj, jdoubleArray pairs)
+{
+    const jsize n = env->GetArrayLength(pairs);
+    std::vector<double> v(static_cast<size_t>(n));
+    if (n)
+        env->GetDoubleArrayRegion(pairs, 0, n, v.data());
+    orca_revision rev = 0;
+    check(env, orca_plater_object_set_height_profile(plater_of(pl), orca_object_id(obj), n ? v.data() : nullptr,
+                                                     uint32_t(n), &rev));
+}
+
+JNI_FN(jdoubleArray, heightProfileAdaptive)(JNIEnv *env, jobject, jlong pl, jlong pr, jlong obj, jdouble quality)
+{
+    double *pairs = nullptr;
+    uint32_t count = 0;
+    orca_revision rev = 0;
+    const bool ok = check(env, orca_plater_object_height_profile_adaptive(plater_of(pl), presets_of(pr), orca_object_id(obj),
+                                                                          quality, &pairs, &count, &rev));
+    return take_pairs(env, ok, pairs, count);
+}
+
+JNI_FN(jdoubleArray, heightProfileSmooth)(JNIEnv *env, jobject, jlong pl, jlong pr, jlong obj, jint radius, jboolean keep_min)
+{
+    double *pairs = nullptr;
+    uint32_t count = 0;
+    orca_revision rev = 0;
+    const bool ok = check(env, orca_plater_object_height_profile_smooth(plater_of(pl), presets_of(pr), orca_object_id(obj),
+                                                                        uint32_t(radius), keep_min ? 1 : 0, &pairs, &count, &rev));
+    return take_pairs(env, ok, pairs, count);
+}
+
+JNI_FN(void, heightProfileAdjust)(JNIEnv *env, jobject, jlong pl, jlong pr, jlong obj, jdouble z, jdouble delta,
+                                  jdouble band, jint action)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_object_height_profile_adjust(plater_of(pl), presets_of(pr), orca_object_id(obj), z, delta, band,
+                                                        action, &rev));
+}
+
 JNI_FN(jint, splitParts)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol)
 {
     uint32_t count = 0;

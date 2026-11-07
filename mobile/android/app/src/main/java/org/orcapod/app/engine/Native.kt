@@ -120,6 +120,7 @@ internal object Native {
     external fun measureBetween(measure: Long, a: DoubleArray, b: DoubleArray): DoubleArray
     external fun volumePaint(plater: Long, objectId: Long, volumeId: Long, layer: Int): Array<Any>
     external fun volumePaintSphere(plater: Long, objectId: Long, volumeId: Long, layer: Int, ray: DoubleArray, radius: Double, state: Int)
+    external fun volumePaintStroke(plater: Long, objectId: Long, volumeId: Long, layer: Int, hits: DoubleArray, views: DoubleArray, radius: Double, state: Int, continueStroke: Boolean): Long
     external fun volumePaintFill(plater: Long, objectId: Long, volumeId: Long, layer: Int, ray: DoubleArray, angle: Double, propagate: Boolean, state: Int)
     external fun volumePaintReset(plater: Long, objectId: Long, volumeId: Long, layer: Int)
     external fun objectCut(plater: Long, objectId: Long, instanceId: Long, plane: DoubleArray, keep: Int): Int

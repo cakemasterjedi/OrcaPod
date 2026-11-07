@@ -1067,6 +1067,24 @@ JNI_FN(void, volumePaintFill)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong v
                                              r[0], r[1], r[2], r[3], r[4], r[5], angle, propagate ? 1 : 0, state, &rev));
 }
 
+JNI_FN(jlong, volumePaintStroke)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol, jint layer, jdoubleArray hits,
+                                 jdoubleArray views, jdouble radius, jint state, jboolean continueStroke)
+{
+    const jsize n = env->GetArrayLength(hits);
+    if (n % 3 != 0 || env->GetArrayLength(views) != n) {
+        env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"), "hits and views need three doubles per dab");
+        return 0;
+    }
+    std::vector<double> h(static_cast<size_t>(n)), v(static_cast<size_t>(n));
+    env->GetDoubleArrayRegion(hits, 0, n, h.data());
+    env->GetDoubleArrayRegion(views, 0, n, v.data());
+    orca_revision rev = 0;
+    check(env, orca_plater_volume_paint_stroke(plater_of(pl), orca_object_id(obj), orca_volume_id(vol), uint8_t(layer),
+                                               h.data(), v.data(), uint32_t(n / 3), radius, state,
+                                               continueStroke ? 1 : 0, &rev));
+    return jlong(rev);
+}
+
 JNI_FN(void, volumePaintReset)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol, jint layer)
 {
     orca_revision rev = 0;

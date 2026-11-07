@@ -20,7 +20,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -130,10 +132,21 @@ fun PaintPanel(vm: AppViewModel, paint: PaintState) {
                 PaintTool.BUCKET -> Text("Tap a face to fill its connected area.", style = MaterialTheme.typography.labelMedium)
             }
             Text(
-                if (paint.tool == PaintTool.BRUSH) "Drag on the object to paint; drag elsewhere to turn the view."
+                if (paint.tool == PaintTool.BRUSH) "Drag on the object to paint; drag elsewhere to turn the view. Undo takes back a whole stroke."
                 else "Tap the object to fill; drag elsewhere to turn the view.",
                 style = MaterialTheme.typography.bodySmall,
             )
+            if (paint.layer == PaintLayer.SUPPORT && vm.paintSupportsOff) {
+                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Supports are off for this object, so painted enforcers have no effect.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { vm.enableSupportsForPaint() }) { Text("Turn on supports") }
+                }
+            }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 OutlinedButton(onClick = { vm.clearPaint() }) { Text("Clear ${paint.layer.label.lowercase()}") }
                 Spacer(Modifier.width(8.dp))

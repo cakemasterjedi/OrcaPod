@@ -278,7 +278,7 @@ static void test_md5_shim() {
 
 static void test_abi_version() {
     CHECK_EQ(orca_bridge_abi_version(), ORCA_BRIDGE_ABI_VERSION);
-    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 44);
+    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 45);
 }
 
 struct ProgressRecord {
@@ -3672,6 +3672,62 @@ static void test_painting(const std::string &dir) {
     expect_ok(q4, "paint query after reset");
     CHECK_EQ(paint.count, 0u);
     orca_paint_mesh_dispose(&paint);
+
+    // ABI v45 brush strokes: a stroke and its continuations are one undo
+    // step; dabs off the mesh are skipped; repainting changes nothing.
+    {
+        const double q = 0.25 * size;
+        const double hits1[6] = {midX - q, midY, maxZ, midX + 100, midY, maxZ + 100};
+        const double hits2[3] = {midX + q, midY, maxZ};
+        const double down[6] = {0, 0, -1, 0, 0, -1};
+        orca_revision r1 = 0, r2 = 0, r3 = 0;
+        GUARD(s1, orca_plater_volume_paint_stroke(plater, object_id, volume, ORCA_PAINT_SEAM,
+                                                  hits1, down, 2, 0.2 * size, 1, 0, &r1));
+        expect_ok(s1, "stroke starts");
+        CHECK(r1 > revision);
+        GUARD(s2, orca_plater_volume_paint_stroke(plater, object_id, volume, ORCA_PAINT_SEAM,
+                                                  hits2, down, 1, 0.2 * size, 1, 1, &r2));
+        expect_ok(s2, "stroke continues");
+        CHECK_EQ(r2, r1 + 1);
+        GUARD(s3, orca_plater_volume_paint_stroke(plater, object_id, volume, ORCA_PAINT_SEAM,
+                                                  hits2, down, 1, 0.2 * size, 1, 1, &r3));
+        expect_ok(s3, "repainting is not an error");
+        CHECK_EQ(r3, r2);
+        GUARD(s4, orca_plater_volume_paint_stroke(plater, object_id, volume, ORCA_PAINT_SEAM,
+                                                  hits1 + 3, down, 1, 0.2 * size, 1, 0, &r3));
+        expect_ok(s4, "a stroke entirely off the mesh paints nothing");
+        CHECK_EQ(r3, r2);
+        GUARD(q5, orca_plater_volume_paint(plater, object_id, volume, ORCA_PAINT_SEAM, &paint));
+        expect_ok(q5, "seam query after stroke");
+        bool left = false, right = false;
+        for (uint32_t i = 0; i < paint.count; ++i) {
+            CHECK_EQ(paint.triangles[i].state, 1);
+            const float x = paint.triangles[i].positions[0];
+            if (x < midX) left = true; else right = true;
+        }
+        CHECK(left && right);
+        orca_paint_mesh_dispose(&paint);
+        GUARD(x4, orca_plater_volume_paint_stroke(plater, object_id, volume, ORCA_PAINT_SEAM,
+                                                  nullptr, down, 1, 1.0, 1, 0, &r3));
+        expect_code(x4, ORCA_STATUS_INVALID_ARGUMENT, "stroke without points");
+
+        GUARD(u2, orca_plater_undo(plater, &revision));
+        expect_ok(u2, "undo the whole stroke");
+        GUARD(q6, orca_plater_volume_paint(plater, object_id, volume, ORCA_PAINT_SEAM, &paint));
+        expect_ok(q6, "seam query after undo");
+        CHECK_EQ(paint.count, 0u);
+        orca_paint_mesh_dispose(&paint);
+        // After any other change a continuation starts its own step.
+        GUARD(s5, orca_plater_volume_paint_stroke(plater, object_id, volume, ORCA_PAINT_SEAM,
+                                                  hits2, down, 1, 0.2 * size, 2, 1, &r3));
+        expect_ok(s5, "continuation after undo");
+        GUARD(u3, orca_plater_undo(plater, &revision));
+        expect_ok(u3, "undo the continuation alone");
+        GUARD(q7, orca_plater_volume_paint(plater, object_id, volume, ORCA_PAINT_SEAM, &paint));
+        expect_ok(q7, "seam query after second undo");
+        CHECK_EQ(paint.count, 0u);
+        orca_paint_mesh_dispose(&paint);
+    }
 
     (void)instance;
     orca_plater_free(plater);

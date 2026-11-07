@@ -42,6 +42,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -81,40 +82,54 @@ private val MODEL_TYPES = arrayOf("*/*")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ObjectListSheet(vm: AppViewModel, onOpen: (Selection) -> Unit, onDismiss: () -> Unit) {
-    var checked by remember { mutableStateOf(setOf<Long>()) }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        Column(Modifier.fillMaxHeight(0.85f).padding(horizontal = 16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Objects", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                if (checked.size >= 2) {
-                    TextButton(onClick = { vm.mergeObjects(checked.toList()); checked = emptySet() }) { Text("Assemble ${checked.size}") }
-                }
+        ObjectListContent(vm, onOpen, Modifier.fillMaxHeight(0.85f).padding(horizontal = 16.dp))
+    }
+}
+
+/**
+ * The body of [ObjectListSheet]; a wide screen shows it in its side pane, without
+ * the title, and highlights the selected object.
+ */
+@Composable
+fun ObjectListContent(vm: AppViewModel, onOpen: (Selection) -> Unit, modifier: Modifier = Modifier, showTitle: Boolean = true) {
+    var checked by remember { mutableStateOf(setOf<Long>()) }
+    Column(modifier) {
+        if (showTitle || checked.size >= 2) Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(if (showTitle) "Objects" else "", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            if (checked.size >= 2) {
+                TextButton(onClick = { vm.mergeObjects(checked.toList()); checked = emptySet() }) { Text("Assemble ${checked.size}") }
             }
-            val objects = vm.scene.snapshot.objects
-            if (objects.isEmpty()) Text("The plate is empty.", Modifier.padding(vertical = 16.dp))
-            LazyColumn(Modifier.weight(1f)) {
-                items(objects.toList(), key = { it.id }) { obj ->
-                    val plates = obj.instances.map { it.plate }.distinct().filter { it >= 0 }
-                    ListItem(
-                        modifier = Modifier.clickable { obj.instances.firstOrNull()?.let { onOpen(Selection(obj.id, it.id)) } },
-                        leadingContent = {
-                            Checkbox(checked = obj.id in checked, onCheckedChange = { c -> checked = if (c) checked + obj.id else checked - obj.id })
-                        },
-                        headlineContent = { Text(obj.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        supportingContent = {
-                            val bits = listOfNotNull(
-                                if (obj.instances.size > 1) "${obj.instances.size} copies" else null,
-                                plates.takeIf { it.isNotEmpty() }?.joinToString(prefix = "Plate ") { (it + 1).toString() } ?: "Off the plates",
-                                obj.volumes.size.takeIf { it > 1 }?.let { "$it parts and modifiers" },
-                                obj.overrideCount.takeIf { it > 0 }?.let { "$it settings" },
-                                if (obj.instances.none { it.printable }) "Not printable" else null,
-                            )
-                            Text(bits.joinToString(" · "))
-                        },
-                        trailingContent = { FilamentSwatch(vm, obj.extruder) },
-                    )
-                    HorizontalDivider()
-                }
+        }
+        val objects = vm.scene.snapshot.objects
+        if (objects.isEmpty()) Text("The plate is empty.", Modifier.padding(vertical = 16.dp))
+        LazyColumn(Modifier.weight(1f)) {
+            items(objects.toList(), key = { it.id }) { obj ->
+                val plates = obj.instances.map { it.plate }.distinct().filter { it >= 0 }
+                ListItem(
+                    modifier = Modifier.clickable { obj.instances.firstOrNull()?.let { onOpen(Selection(obj.id, it.id)) } },
+                    colors = if (!showTitle && vm.selection?.objectId == obj.id) {
+                        ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                    } else {
+                        ListItemDefaults.colors()
+                    },
+                    leadingContent = {
+                        Checkbox(checked = obj.id in checked, onCheckedChange = { c -> checked = if (c) checked + obj.id else checked - obj.id })
+                    },
+                    headlineContent = { Text(obj.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    supportingContent = {
+                        val bits = listOfNotNull(
+                            if (obj.instances.size > 1) "${obj.instances.size} copies" else null,
+                            plates.takeIf { it.isNotEmpty() }?.joinToString(prefix = "Plate ") { (it + 1).toString() } ?: "Off the plates",
+                            obj.volumes.size.takeIf { it > 1 }?.let { "$it parts and modifiers" },
+                            obj.overrideCount.takeIf { it > 0 }?.let { "$it settings" },
+                            if (obj.instances.none { it.printable }) "Not printable" else null,
+                        )
+                        Text(bits.joinToString(" · "))
+                    },
+                    trailingContent = { FilamentSwatch(vm, obj.extruder) },
+                )
+                HorizontalDivider()
             }
         }
     }

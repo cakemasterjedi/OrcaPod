@@ -3,26 +3,25 @@ package org.orcapod.app.ui
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.ui.graphics.Color
-import org.orcapod.app.engine.Shape
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
@@ -43,14 +42,18 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -58,6 +61,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.orcapod.app.engine.PresetKind
+import org.orcapod.app.engine.Shape
 import org.orcapod.app.ui.viewport.PlateView
 import org.orcapod.app.ui.viewport.Selection
 import org.orcapod.app.ui.viewport.ViewportListener
@@ -84,6 +88,11 @@ fun PlateScreen(vm: AppViewModel) {
     var calibrating by remember { mutableStateOf(false) }
     var layFlat by remember { mutableStateOf(false) }
     var viewRef by remember { mutableStateOf<PlateView?>(null) }
+    val config = LocalConfiguration.current
+    val twoPane = usesTwoPane(config.screenWidthDp, config.screenHeightDp)
+    var paneTab by rememberSaveable { mutableStateOf(PaneTab.OBJECTS) }
+    // Picking an object in the viewport brings its controls into view.
+    LaunchedEffect(vm.selection) { if (vm.selection != null) paneTab = PaneTab.OBJECTS }
 
     LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
     LaunchedEffect(Unit) { printerVm.messages.collect { snackbar.showSnackbar(it) } }
@@ -234,50 +243,51 @@ fun PlateScreen(vm: AppViewModel) {
             )
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx -> PlateView(ctx, listener).also { viewRef = it } },
-                update = { view ->
-                    view.pickFaces = layFlat
-                    view.rayTaps = vm.cut?.placing == true
-                    view.lockDrag = vm.cut != null || vm.paint != null || vm.measure != null || vm.layerHeights != null
-                    view.paintObject = vm.paint?.objectId
-                    view.measureObject = vm.measure?.objectId
-                    view.state = ViewportState(
-                        scene = vm.scene,
-                        selection = vm.selection,
-                        toolpath = done?.toolpath,
-                        range = vm.previewRange,
-                        previewStyle = vm.previewStyle,
-                        showToolpath = previewing && done?.toolpath != null,
-                        toolpathPlate = done?.plate ?: 0,
-                        selectedVolume = vm.selectedVolume,
-                        filamentColours = vm.filamentSlots.map { it.colour },
-                        cutQuad = vm.cut?.quad(),
-                        cutPoints = vm.cut?.connectorPoints(),
-                        paintOverlay = if (vm.paint != null) vm.paintOverlay else null,
-                        measureLines = vm.measure?.lines(),
-                        measurePoints = vm.measure?.points(),
-                    )
-                },
-            )
-
-            Column(Modifier.fillMaxWidth().padding(8.dp)) {
-                PresetBar(vm, onFilaments = { filamentSlots = true }) { picker = it }
-                if (!previewing) PlateStrip(vm)
-                vm.busy?.let { label ->
-                    Spacer(Modifier.height(6.dp))
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                    Text(label, style = MaterialTheme.typography.labelMedium)
-                }
-                if (layFlat) {
-                    Spacer(Modifier.height(6.dp))
-                    Hint("Tap the face the object should rest on")
-                }
+        val viewport: @Composable () -> Unit = {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx -> PlateView(ctx, listener).also { viewRef = it } },
+            update = { view ->
+                view.pickFaces = layFlat
+                view.rayTaps = vm.cut?.placing == true
+                view.lockDrag = vm.cut != null || vm.paint != null || vm.measure != null || vm.layerHeights != null
+                view.paintObject = vm.paint?.objectId
+                view.measureObject = vm.measure?.objectId
+                view.state = ViewportState(
+                    scene = vm.scene,
+                    selection = vm.selection,
+                    toolpath = done?.toolpath,
+                    range = vm.previewRange,
+                    previewStyle = vm.previewStyle,
+                    showToolpath = previewing && done?.toolpath != null,
+                    toolpathPlate = done?.plate ?: 0,
+                    selectedVolume = vm.selectedVolume,
+                    filamentColours = vm.filamentSlots.map { it.colour },
+                    cutQuad = vm.cut?.quad(),
+                    cutPoints = vm.cut?.connectorPoints(),
+                    paintOverlay = if (vm.paint != null) vm.paintOverlay else null,
+                    measureLines = vm.measure?.lines(),
+                    measurePoints = vm.measure?.points(),
+                )
+            },
+        )
+        }
+        val status: @Composable () -> Unit = {
+            if (!previewing) PlateStrip(vm)
+            vm.busy?.let { label ->
+                Spacer(Modifier.height(6.dp))
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Text(label, style = MaterialTheme.typography.labelMedium)
             }
-
-            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(8.dp)) {
+            if (layFlat) {
+                Spacer(Modifier.height(6.dp))
+                Hint("Tap the face the object should rest on")
+            }
+        }
+        // The preview, slicing progress, tool panels or the plate actions; the phone also shows
+        // the selected object's controls here, a wide screen shows them in its side pane.
+        val controls: @Composable (withObject: Boolean, onObjects: () -> Unit, onSettings: () -> Unit) -> Unit =
+            { withObject, onObjects, onSettings ->
                 val sel = vm.selection
                 when {
                     previewing -> PreviewPanel(
@@ -299,8 +309,8 @@ fun PlateScreen(vm: AppViewModel) {
                     vm.paint != null -> PaintPanel(vm, vm.paint!!)
                     vm.layerHeights != null -> LayerHeightPanel(vm, vm.layerHeights!!)
                     vm.measure != null -> MeasurePanel(vm, vm.measure!!)
-                    else -> {
-                        if (sel != null && vm.transformOf(sel) != null) {
+                    else -> Column {
+                        if (withObject && sel != null && vm.transformOf(sel) != null) {
                             ObjectPanel(vm, sel, layFlat = layFlat, onLayFlat = { layFlat = !layFlat }, onEdit = { objectSheet = sel })
                             Spacer(Modifier.height(8.dp))
                         }
@@ -313,14 +323,43 @@ fun PlateScreen(vm: AppViewModel) {
                             hasResult = done != null,
                             plates = vm.scene.snapshot.plates.size,
                             onImport = { importModels.launch(MODEL_TYPES) },
-                            onObjects = { objectList = true },
+                            onObjects = onObjects,
                             onLibrary = { vm.openLibrary() },
                             onArrange = vm::arrange,
-                            onSettings = { settingsFor = PresetKind.PROCESS },
+                            onSettings = onSettings,
                             onSlice = { vm.startSlice(allPlates = it) },
                             onShowResult = { vm.showPreview = true },
                         )
                     }
+                }
+            }
+
+        if (twoPane) {
+            Row(Modifier.fillMaxSize().padding(padding)) {
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    viewport()
+                    Column(Modifier.fillMaxWidth().padding(8.dp)) { status() }
+                }
+                VerticalDivider()
+                SidePane(
+                    tab = paneTab,
+                    onTab = { paneTab = it },
+                    modifier = Modifier.width(sidePaneWidth(config.screenWidthDp)).fillMaxHeight().navigationBarsPadding(),
+                    header = { PresetBar(vm, onFilaments = { filamentSlots = true }) { picker = it } },
+                    objects = { ObjectsTab(vm, layFlat = layFlat, onLayFlat = { layFlat = !layFlat }, onEdit = { objectSheet = it }) },
+                    settings = { SettingsContent(vm, PresetKind.PROCESS, Modifier.fillMaxSize()) },
+                    footer = { controls(false, { paneTab = PaneTab.OBJECTS }, { paneTab = PaneTab.SETTINGS }) },
+                )
+            }
+        } else {
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                viewport()
+                Column(Modifier.fillMaxWidth().padding(8.dp)) {
+                    PresetBar(vm, onFilaments = { filamentSlots = true }) { picker = it }
+                    status()
+                }
+                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(8.dp)) {
+                    controls(true, { objectList = true }, { settingsFor = PresetKind.PROCESS })
                 }
             }
         }
@@ -352,7 +391,8 @@ fun PlateScreen(vm: AppViewModel) {
         )
     }
     settingsFor?.let { kind -> SettingsScreen(vm, kind) { settingsFor = null } }
-    if (objectList) ObjectListSheet(vm, onOpen = { objectList = false; vm.selection = it; objectSheet = it }) { objectList = false }
+    // The side pane already shows the object list.
+    if (objectList && !twoPane) ObjectListSheet(vm, onOpen = { objectList = false; vm.selection = it; objectSheet = it }) { objectList = false }
     objectSheet?.let { sel -> ObjectSheet(vm, sel) { objectSheet = null } }
     if (calibrating) CalibrationDialog(vm) { calibrating = false }
     if (recentSheet) {

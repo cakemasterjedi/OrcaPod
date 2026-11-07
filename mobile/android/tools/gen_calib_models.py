@@ -22,6 +22,9 @@ MODELS = {
     "volumetric_speed/SpeedTestStructure.drc": "volumetric_speed.3mf",
     "vfa/vfa.drc": "vfa.3mf",
     "retraction/retraction_tower.drc": "retraction_tower.3mf",
+    "input_shaping/ringing_tower.drc": "ringing_tower.3mf",
+    "input_shaping/fast_tower_test.drc": "fast_tower.3mf",
+    "cornering/SCV-V2.drc": "scv_v2.3mf",
     "filament_flow/flowrate-test-pass1.3mf": "flowrate_pass1.3mf",
     "filament_flow/flowrate-test-pass2.3mf": "flowrate_pass2.3mf",
     "filament_flow/Orca-LinearFlow.3mf": "flowrate_yolo.3mf",
@@ -59,10 +62,12 @@ def write_3mf(mesh, name: str, path: Path) -> None:
     lines += [f'     <triangle v1="{f[0]}" v2="{f[1]}" v3="{f[2]}"/>' for f in faces]
     lines += ["    </triangles>", "   </mesh>", "  </object>", " </resources>",
               ' <build>', '  <item objectid="1"/>', ' </build>', "</model>", ""]
+    # Fixed entry dates keep the output identical from run to run.
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
-        z.writestr("[Content_Types].xml", CONTENT_TYPES)
-        z.writestr("_rels/.rels", RELS)
-        z.writestr("3D/3dmodel.model", "\n".join(lines))
+        for name, text in (("[Content_Types].xml", CONTENT_TYPES), ("_rels/.rels", RELS),
+                           ("3D/3dmodel.model", "\n".join(lines))):
+            z.writestr(zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0)), text,
+                       compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
 
 
 def main() -> None:

@@ -130,6 +130,7 @@ void orca_result_dispose(orca_result *result) {
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Flow.hpp"
 #include "libslic3r/calib.hpp"
+#include "libslic3r/Arrange.hpp"
 #include "libslic3r/Geometry/ConvexHull.hpp"
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/Print.hpp"
@@ -1363,6 +1364,9 @@ struct orca_plater {
     /// set_calib_params): G-code generation varies PA, temperature, speed
     /// or retraction along the test. Calib_None for ordinary documents.
     Slic3r::Calib_Params calib;
+    /// The PA pattern test's generator (desktop Model::calib_pa_pattern):
+    /// it draws each handle's pattern into every slice of the plate.
+    std::unique_ptr<Slic3r::CalibPressureAdvancePattern> pa_pattern;
 };
 
 /// Desktop keeps a memory-bounded undo stack; OrcaPad bounds it by steps.
@@ -2195,6 +2199,7 @@ orca_result orca_plater_clear(orca_plater *plater, orca_revision *out_revision) 
         plater->model.clear_objects();
         plater->mesh_revisions.clear();
         plater->calib = Slic3r::Calib_Params();
+        plater->pa_pattern.reset();
         // Plates survive "Delete all" (desktop parity); the pin sweep on
         // the next snapshot drops the dead pins.
         *out_revision = mutation.commit();
@@ -5107,6 +5112,190 @@ static void orcapad_calib_flow_rate(orca_plater &plater, Slic3r::PresetBundle &b
     bundle.printers.get_edited_preset().config.set_key_value("resonance_avoidance", new ConfigOptionBool{false});
 }
 
+/// Desktop has_junction_deviation: Marlin 2 with a junction deviation set.
+static bool orcapad_has_junction_deviation(const Slic3r::DynamicPrintConfig &printer) {
+    const auto *flavor = printer.option<Slic3r::ConfigOptionEnum<Slic3r::GCodeFlavor>>("gcode_flavor");
+    const auto *jd = printer.option<Slic3r::ConfigOptionFloats>("machine_max_junction_deviation");
+    return flavor && flavor->value == Slic3r::GCodeFlavor::gcfMarlinFirmware && jd && !jd->values.empty() &&
+           jd->values.front() > 0.0;
+}
+
+/// Desktop zero_pressure_advance_where_disabled: PA 0 on each variant that has it off.
+static void orcapad_zero_disabled_pa(Slic3r::DynamicPrintConfig &filament) {
+    auto *enable = filament.option<Slic3r::ConfigOptionBools>("enable_pressure_advance");
+    auto *pa = filament.option<Slic3r::ConfigOptionFloats>("pressure_advance");
+    auto *adaptive = filament.option<Slic3r::ConfigOptionBools>("adaptive_pressure_advance");
+    if (!enable || !pa || !adaptive || pa->empty() || adaptive->empty()) return;
+    if (pa->size() < enable->size()) pa->resize(enable->size());
+    if (adaptive->size() < enable->size()) adaptive->resize(enable->size());
+    for (size_t v = 0; v < enable->size(); ++v) {
+        if (enable->get_at(v)) continue;
+        enable->values[v] = true;
+        pa->values[v] = 0.0;
+        adaptive->values[v] = false;
+    }
+}
+
+/// The settings desktop's input shaping and cornering tests share: one
+/// spiral wall at the machine's top speed and acceleration, no slowdowns.
+static void orcapad_calib_motion_tower(Slic3r::PresetBundle &bundle, Slic3r::ModelObject &object) {
+    using namespace Slic3r;
+    auto &print = bundle.prints.get_edited_preset().config;
+    auto &printer = bundle.printers.get_edited_preset().config;
+    auto &filament = bundle.filaments.get_edited_preset().config;
+    orcapad_zero_disabled_pa(filament);
+    printer.set_key_value("resonance_avoidance", new ConfigOptionBool{false});
+    filament.set_key_value("slow_down_layer_time", new ConfigOptionFloats{0.0});
+    filament.set_key_value("slow_down_min_speed", new ConfigOptionFloats{0.0});
+    filament.set_key_value("slow_down_for_layer_cooling", new ConfigOptionBools{false});
+    orcapad_set_all<ConfigOptionBoolsNullable>(print, "enable_overhang_speed", false);
+    print.set_key_value("timelapse_type", new ConfigOptionEnum<TimelapseType>(tlTraditional));
+    print.set_key_value("wall_loops", new ConfigOptionInt(1));
+    print.set_key_value("top_shell_layers", new ConfigOptionInt(0));
+    print.set_key_value("bottom_shell_layers", new ConfigOptionInt(1));
+    print.set_key_value("sparse_infill_density", new ConfigOptionPercent(0));
+    print.set_key_value("detect_thin_wall", new ConfigOptionBool(false));
+    print.set_key_value("spiral_mode", new ConfigOptionBool(true));
+    print.set_key_value("spiral_mode_smooth", new ConfigOptionBool(false));
+    print.set_key_value("bottom_surface_pattern", new ConfigOptionEnum<InfillPattern>(ipRectilinear));
+    const double max_speed = std::min(orcapad_first_float(printer, "machine_max_speed_x", 500),
+                                      orcapad_first_float(printer, "machine_max_speed_y", 500));
+    const double max_accel = orcapad_first_float(printer, "machine_max_acceleration_extruding", 10000);
+    orcapad_set_all<ConfigOptionFloatsNullable>(print, "outer_wall_speed", max_speed);
+    orcapad_set_all<ConfigOptionFloatsNullable>(print, "default_acceleration", max_accel);
+    orcapad_set_all<ConfigOptionFloatsNullable>(print, "outer_wall_acceleration", max_accel);
+    print.set_key_value("precise_z_height", new ConfigOptionBool(false));
+    object.config.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btOuterOnly));
+    object.config.set_key_value("brim_width", new ConfigOptionFloat(3.0));
+    object.config.set_key_value("brim_object_gap", new ConfigOptionFloat(0.0));
+}
+
+/// Desktop Plater::_calib_pa_pattern: one handle cube per speed and
+/// acceleration pair, arranged on the bed, and the pattern generator that
+/// draws the test next to each handle at slicing.
+static orca_result orcapad_calib_pa_pattern(const char *operation, orca_plater &plater, Slic3r::PresetBundle &bundle,
+                                            const orca_calibration &in) {
+    // The generator keeps a reference to its parameters: give it the plater's.
+    const Slic3r::Calib_Params &params = plater.calib;
+    using namespace Slic3r;
+    auto &print = bundle.prints.get_edited_preset().config;
+    auto &printer = bundle.printers.get_edited_preset().config;
+    auto &filament = bundle.filaments.get_edited_preset().config;
+    const double nozzle = orcapad_first_float(printer, "nozzle_diameter", 0.4);
+    std::vector<double> speeds(in.speeds, in.speeds + (in.speeds ? in.speed_count : 0));
+    std::vector<double> accels(in.accelerations, in.accelerations + (in.accelerations ? in.acceleration_count : 0));
+    orcapad_set_all<ConfigOptionBoolsNullable>(filament, "filament_retract_when_changing_layer", false);
+    orcapad_set_all<ConfigOptionBoolsNullable>(filament, "filament_wipe", false);
+    orcapad_set_all<ConfigOptionBools>(printer, "wipe", false);
+    orcapad_set_all<ConfigOptionBools>(printer, "retract_when_changing_layer", false);
+    printer.set_key_value("resonance_avoidance", new ConfigOptionBool(false));
+
+    double accel = print.get_abs_value_at("outer_wall_acceleration", 0);
+    if (accel == 0) accel = print.get_abs_value_at("inner_wall_acceleration", 0);
+    if (accel == 0) accel = print.get_abs_value_at("default_acceleration", 0);
+    if (accels.empty()) accels.assign({accel});
+    else accel = *std::max_element(accels.begin(), accels.end());  // sizes the pattern for the batch
+    orcapad_set_all<ConfigOptionFloatsNullable>(print, "outer_wall_acceleration", accel);
+    print.set_key_value("print_sequence", new ConfigOptionEnum<PrintSequence>(PrintSequence::ByLayer));
+
+    if (!orcapad_has_junction_deviation(printer) && print.get_abs_value_at("default_jerk", 0) > 0) {
+        double jerk = print.get_abs_value_at("outer_wall_jerk", 0);
+        if (jerk == 0) jerk = print.get_abs_value_at("inner_wall_jerk", 0);
+        if (jerk == 0) jerk = print.get_abs_value_at("default_jerk", 0);
+        for (const char *key : {"default_jerk", "outer_wall_jerk", "inner_wall_jerk", "top_surface_jerk", "infill_jerk", "travel_jerk"})
+            orcapad_set_all<ConfigOptionFloatsNullable>(print, key, jerk);
+    }
+    if (orcapad_has_junction_deviation(printer))
+        orcapad_set_all<ConfigOptionFloatsNullable>(print, "default_junction_deviation", 0.0);
+    const SuggestedConfigCalibPAPattern suggested;
+    for (const auto &opt : suggested.floats_pairs)
+        orcapad_set_all<ConfigOptionFloatsNullable>(print, opt.first.c_str(), opt.second[0]);
+    for (const auto &opt : suggested.nozzle_ratio_pairs)
+        print.set_key_value(opt.first, new ConfigOptionFloatOrPercent(nozzle * opt.second / 100, false));
+    for (const auto &opt : suggested.int_pairs) print.set_key_value(opt.first, new ConfigOptionInt(opt.second));
+    print.set_key_value(suggested.brim_pair.first, new ConfigOptionEnum<BrimType>(suggested.brim_pair.second));
+    print.set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
+    if (speeds.empty()) {
+        const double speed = CalibPressureAdvance::find_optimal_PA_speed(
+            bundle.full_config(), print.get_abs_value("line_width", nozzle), print.get_abs_value("layer_height"), 0, 0);
+        orcapad_set_all<ConfigOptionFloatsNullable>(print, "outer_wall_speed", speed);
+        speeds.assign({speed});
+    } else if (speeds.size() == 1) {
+        orcapad_set_all<ConfigOptionFloatsNullable>(print, "outer_wall_speed", speeds.front());
+    }
+
+    const DynamicPrintConfig full = bundle.full_config();
+    const Vec3d origin = orcapad_plate_origin(plater, 0);
+    TriangleMesh cube_mesh(its_make_cube(1, 1, 1));
+    cube_mesh.translate(-0.5f, -0.5f, -0.5f);
+    ModelObject *cube = plater.model.add_object("pa_pattern", "", std::move(cube_mesh));
+    if (!cube) return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation, "engine did not create the handle");
+    cube->add_instance();
+    CalibPressureAdvancePattern pattern(params, full, bundle.is_bbl_vendor(), *cube, origin);
+
+    // Arrange test-sized stand-ins to place each pattern, then shrink the
+    // cubes back to the handles the pattern is drawn from.
+    BoundingBoxf3 box = cube->raw_bounding_box();
+    cube->scale((pattern.print_size_x() + 4) / box.size().x(), (pattern.print_size_y() + 4) / box.size().y(),
+                pattern.max_layer_z() / box.size().z());
+    arrangement::ArrangePolygons items;
+    arrangement::ArrangeParams ap;
+    const Points bed = arrangement::get_shrink_bedpts(&full, ap);
+    for (size_t i = 0; i < speeds.size() * accels.size(); ++i) {
+        arrangement::ArrangePolygon polygon;
+        cube->instances[0]->get_arrange_polygon(&polygon);
+        polygon.bed_idx = 0;
+        items.emplace_back(polygon);
+    }
+    arrangement::arrange(items, bed, ap);
+    box = cube->raw_bounding_box();
+    cube->scale(pattern.handle_xy_size() / box.size().x(), pattern.handle_xy_size() / box.size().y(),
+                pattern.max_layer_z() / box.size().z());
+
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (items[i].bed_idx != 0)
+            return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                                "the speed and acceleration patterns do not fit on one plate");
+        const double speed = speeds[i % speeds.size()];
+        const double acceleration = accels[i / speeds.size()];
+        ModelObject *object = i == 0 ? cube : plater.model.add_object(*cube);
+        object->name = "pa_pattern_" + std::to_string(int(speed)) + "_" + std::to_string(int(acceleration));
+        if (speeds.size() > 1) object->config.set_key_value("outer_wall_speed", new ConfigOptionFloatsNullable(1, speed));
+        if (accels.size() > 1)
+            object->config.set_key_value("outer_wall_acceleration", new ConfigOptionFloatsNullable(1, acceleration));
+        const Vec3d offset(unscale<double>(items[i].translation(X)), unscale<double>(items[i].translation(Y)), 0);
+        object->instances[0]->set_offset(origin + offset + pattern.handle_pos_offset());
+        object->ensure_on_bed();
+        if (!orcapad_register_object(plater, *object))
+            return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation, "engine returned an invalid or reused object ID");
+    }
+    plater.pa_pattern = std::make_unique<CalibPressureAdvancePattern>(pattern);
+    return orcapad_ok();
+}
+
+/// Desktop Plater::_calib_pa_pattern_gen_gcode, run on each slice of a PA
+/// pattern plate: every handle's pattern as per-layer G-code, merged into
+/// the sliced copy's custom G-code for that plate.
+static void orcapad_pa_pattern_gcode(orca_plater &plater, const Slic3r::DynamicPrintConfig &config, bool is_bbl,
+                                     int32_t plate_index, Slic3r::Model &plate_model) {
+    if (plater.calib.mode != Slic3r::CalibMode::Calib_PA_Pattern || !plater.pa_pattern || plate_model.objects.empty())
+        return;
+    const Slic3r::Vec3d origin = orcapad_plate_origin(plater, plate_index);
+    Slic3r::CustomGCode::Info merged;
+    bool first = true;
+    for (const Slic3r::ModelObject *object : plate_model.objects) {
+        Slic3r::CustomGCode::Info gcode = plater.pa_pattern->generate_custom_gcodes(config, is_bbl, *object, origin);
+        if (first) {
+            merged = std::move(gcode);
+            first = false;
+            continue;
+        }
+        for (size_t i = 0; i < merged.gcodes.size() && i < gcode.gcodes.size(); ++i)
+            merged.gcodes[i].extra += gcode.gcodes[i].extra;
+    }
+    plate_model.plates_custom_gcodes[plate_index] = std::move(merged);
+}
+
 /// The rest of desktop's calib_* for the modes the bridge offers: settings
 /// edits on the edited presets and the model, cuts to the tested range, and
 /// the parameters G-code generation reads.
@@ -5297,6 +5486,44 @@ static orca_result orcapad_calib_setup(const char *operation, orca_plater &plate
             return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation, "could not cut the tower to the length range");
         break;
     }
+    case CalibMode::Calib_Input_shaping_freq:
+    case CalibMode::Calib_Input_shaping_damp: {
+        if (orcapad_has_junction_deviation(printer)) {
+            printer.set_key_value("machine_max_junction_deviation", new ConfigOptionFloats{
+                std::max(orcapad_first_float(printer, "machine_max_junction_deviation", 0), 0.25)});
+            orcapad_set_all<ConfigOptionFloatsNullable>(print, "default_junction_deviation", 0.0);
+        } else {
+            const auto *flavor = printer.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor");
+            const double jerk = flavor && flavor->value == GCodeFlavor::gcfKlipper ? 5.0 : 10.0;
+            printer.set_key_value("machine_max_jerk_x", new ConfigOptionFloats{std::max(orcapad_first_float(printer, "machine_max_jerk_x", 0), jerk)});
+            printer.set_key_value("machine_max_jerk_y", new ConfigOptionFloats{std::max(orcapad_first_float(printer, "machine_max_jerk_y", 0), jerk)});
+            orcapad_set_all<ConfigOptionFloatsNullable>(print, "default_jerk", 0.0);
+        }
+        printer.set_key_value("input_shaping_emit", new ConfigOptionBool{false});
+        if (params.mode == CalibMode::Calib_Input_shaping_freq)
+            print.set_key_value("layer_height", new ConfigOptionFloat(0.2));
+        // A 100% factor sends Klipper MINIMUM_CRUISE_RATIO=0 with every acceleration change.
+        print.set_key_value("accel_to_decel_enable", new ConfigOptionBool(true));
+        print.set_key_value("accel_to_decel_factor", new ConfigOptionPercent(100));
+        orcapad_calib_motion_tower(bundle, *obj);
+        break;
+    }
+    case CalibMode::Calib_Cornering: {
+        if (orcapad_has_junction_deviation(printer)) {
+            printer.set_key_value("machine_max_junction_deviation", new ConfigOptionFloats{params.end});
+            orcapad_set_all<ConfigOptionFloatsNullable>(print, "default_junction_deviation", 0.0);
+        } else {
+            printer.set_key_value("machine_max_jerk_x", new ConfigOptionFloats{params.end});
+            printer.set_key_value("machine_max_jerk_y", new ConfigOptionFloats{params.end});
+            orcapad_set_all<ConfigOptionFloatsNullable>(print, "default_jerk", 0.0);
+        }
+        printer.set_key_value("input_shaping_emit", new ConfigOptionBool{true});
+        printer.set_key_value("input_shaping_type", new ConfigOptionEnum<InputShaperType>(InputShaperType::Disable));
+        filament.set_key_value("filament_max_volumetric_speed", new ConfigOptionFloats{
+            std::max(orcapad_first_float(filament, "filament_max_volumetric_speed", 0), 200.0)});
+        orcapad_calib_motion_tower(bundle, *obj);
+        break;
+    }
     default:
         break;
     }
@@ -5310,9 +5537,10 @@ orca_result orca_plater_start_calibration(orca_plater *plater, orca_presets *pre
     if (out_revision) *out_revision = 0;
     if (!plater || !presets)
         return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, operation, "plater or presets handle is null");
-    if (!calibration || !model_path || !model_path[0] || !out_revision)
-        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
-                            "calibration, model path or output pointer is missing");
+    if (!calibration || !out_revision)
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation, "calibration or output pointer is missing");
+    if (calibration->mode != ORCA_CALIB_PA_PATTERN && (!model_path || !model_path[0]))
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation, "calibration model path is missing");
     const orca_calibration &in = *calibration;
     using Slic3r::CalibMode;
     const CalibMode mode = static_cast<CalibMode>(in.mode);
@@ -5324,11 +5552,25 @@ orca_result orca_plater_start_calibration(orca_plater *plater, orca_presets *pre
     case CalibMode::Calib_Vol_speed_Tower:
     case CalibMode::Calib_VFA_Tower:
     case CalibMode::Calib_Retraction_tower:
+    case CalibMode::Calib_PA_Pattern:
+    case CalibMode::Calib_Input_shaping_freq:
+    case CalibMode::Calib_Input_shaping_damp:
+    case CalibMode::Calib_Cornering:
         break;
     default:
-        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
-                            "mode must be PA line or tower, flow rate, temperature, volumetric speed, VFA or retraction");
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation, "unknown calibration mode");
     }
+    if (!std::isfinite(in.freq_start_x) || !std::isfinite(in.freq_end_x) || !std::isfinite(in.freq_start_y) ||
+        !std::isfinite(in.freq_end_y))
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation, "frequency contains a non-finite value");
+    if ((in.speed_count && !in.speeds) || (in.acceleration_count && !in.accelerations))
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation, "speed or acceleration list is null");
+    for (uint32_t i = 0; i < in.speed_count; ++i)
+        if (!(in.speeds[i] > 0) || !std::isfinite(in.speeds[i]))
+            return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation, "speeds must be positive");
+    for (uint32_t i = 0; i < in.acceleration_count; ++i)
+        if (!(in.accelerations[i] > 0) || !std::isfinite(in.accelerations[i]))
+            return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation, "accelerations must be positive");
     if (!std::isfinite(in.start) || !std::isfinite(in.end) || !std::isfinite(in.step) ||
         !std::isfinite(in.vfa_layer_height))
         return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation, "range contains a non-finite value");
@@ -5338,6 +5580,23 @@ orca_result orca_plater_start_calibration(orca_plater *plater, orca_presets *pre
         if (in.flow_pattern < 0 || in.flow_pattern > 1)
             return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
                                 "top surface pattern must be 0 (Archimedean chords) or 1 (monotonic)");
+    } else if (mode == CalibMode::Calib_Input_shaping_freq) {
+        // Desktop Input_Shaping_Freq_Test_Dlg limits.
+        if (in.freq_start_x < 0 || in.freq_end_x > 500 || in.freq_start_x >= in.freq_end_x ||
+            in.freq_start_y < 0 || in.freq_end_y > 500 || in.freq_start_y >= in.freq_end_y)
+            return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                                "frequencies must rise from at least 0 to at most 500 Hz");
+        if (in.start < 0 || in.start >= 1)
+            return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation, "damping must be from 0 to below 1");
+    } else if (mode == CalibMode::Calib_Input_shaping_damp) {
+        if (in.freq_start_x < 0 || in.freq_start_x > 500 || in.freq_start_y < 0 || in.freq_start_y > 500)
+            return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation, "frequencies must be 0 to 500 Hz");
+        if (in.start < 0 || in.end > 1 || in.start >= in.end)
+            return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                                "damping must rise from at least 0 to at most 1");
+    } else if (mode == CalibMode::Calib_Cornering) {
+        if (in.start < 0 || in.start >= in.end)
+            return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation, "cornering must rise from at least 0");
     } else if (mode == CalibMode::Calib_Temp_Tower) {
         // Desktop Temp_Calibration_Dlg limits.
         if (in.start > 500 || in.end < 155 || in.end > in.start - 5)
@@ -5347,18 +5606,21 @@ orca_result orca_plater_start_calibration(orca_plater *plater, orca_presets *pre
         return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
                             "start must be at least 0, the step positive and the end above the start");
     }
+    const bool pattern = mode == CalibMode::Calib_PA_Pattern;
     struct stat path_status;
-    if (stat(model_path, &path_status) != 0)
+    if (!pattern && stat(model_path, &path_status) != 0)
         return orcapad_fail(ORCA_STATUS_IO_FAILURE, operation, "calibration model is not accessible");
 
     return orcapad_guard(operation, [&]() -> orca_result {
         if (!orcapad_revision_available(*plater))
             return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation, "document revision is exhausted");
         Slic3r::Model temporary;
-        const orca_result read = orcapad_read_import(operation, model_path,
-                                                     plater->bed_origin_x + plater->bed_width / 2,
-                                                     plater->bed_origin_y + plater->bed_depth / 2, temporary);
-        if (read.code != ORCA_STATUS_OK) return read;
+        if (!pattern) {
+            const orca_result read = orcapad_read_import(operation, model_path,
+                                                         plater->bed_origin_x + plater->bed_width / 2,
+                                                         plater->bed_origin_y + plater->bed_depth / 2, temporary);
+            if (read.code != ORCA_STATUS_OK) return read;
+        }
 
         Slic3r::Calib_Params params;
         params.mode = mode;
@@ -5368,6 +5630,14 @@ orca_result orca_plater_start_calibration(orca_plater *plater, orca_presets *pre
         params.print_numbers = in.print_numbers != 0;
         params.nozzle_based_resize = in.nozzle_based_resize != 0;
         params.vfa_layer_height = in.vfa_layer_height;
+        params.freqStartX = in.freq_start_x;
+        params.freqEndX = in.freq_end_x;
+        params.freqStartY = in.freq_start_y;
+        params.freqEndY = in.freq_end_y;
+        params.test_model = in.test_model;
+        params.shaper_type = in.shaper_type ? in.shaper_type : "";
+        if (in.speed_count) params.speeds.assign(in.speeds, in.speeds + in.speed_count);
+        if (in.acceleration_count) params.accelerations.assign(in.accelerations, in.accelerations + in.acceleration_count);
 
         // Desktop new_project: the test replaces the document.
         OrcapadMutation mutation(*plater, "Calibration");
@@ -5379,8 +5649,17 @@ orca_result orca_plater_start_calibration(orca_plater *plater, orca_presets *pre
                 return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
                                     "engine did not create the calibration object");
         }
-        const orca_result set_up = orcapad_calib_setup(operation, *plater, *presets->bundle, in, params);
-        if (set_up.code != ORCA_STATUS_OK) return set_up;
+        plater->pa_pattern.reset();
+        const Slic3r::Calib_Params previous = plater->calib;
+        if (pattern) plater->calib = params;
+        const orca_result set_up = pattern
+            ? orcapad_calib_pa_pattern(operation, *plater, *presets->bundle, in)
+            : orcapad_calib_setup(operation, *plater, *presets->bundle, in, params);
+        if (set_up.code != ORCA_STATUS_OK) {
+            plater->pa_pattern.reset();
+            plater->calib = previous;
+            return set_up;
+        }
         for (Slic3r::ModelObject *object : plater->model.objects) orcapad_touch_object(*plater, object->id().id);
         plater->calib = params;
         *out_revision = mutation.commit();
@@ -5408,6 +5687,7 @@ orca_result orca_plater_calibration_clear(orca_plater *plater) {
     if (!plater)
         return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, "orca_plater_calibration_clear", "plater handle is null");
     plater->calib = Slic3r::Calib_Params();
+    plater->pa_pattern.reset();
     return orcapad_ok();
 }
 
@@ -8274,6 +8554,7 @@ orca_result orca_plater_slice_to_gcode_with_presets(
         const orca_result filtered =
             orcapad_build_plate_model(*plater, operation, plater->current_plate, plate_model);
         if (filtered.code != ORCA_STATUS_OK) return filtered;
+        orcapad_pa_pattern_gcode(*plater, config, presets->bundle->is_bbl_vendor(), plater->current_plate, plate_model);
         Slic3r::Print print;
         print.apply(plate_model, std::move(config));
         print.is_BBL_printer() = presets->bundle->is_bbl_vendor();
@@ -8376,6 +8657,7 @@ static orca_result orcapad_slice_plate(
         aggregate.warnings.insert(
             aggregate.warnings.end(), repairs.begin(), repairs.end());
 
+    if (presets) orcapad_pa_pattern_gcode(plater, config, presets->bundle->is_bbl_vendor(), plate_index, plate_model);
     Slic3r::Print print;
     print.apply(plate_model, std::move(config));
     print.is_BBL_printer() = presets ? presets->bundle->is_bbl_vendor() : false;
@@ -9312,6 +9594,7 @@ orca_result orca_project_open(orca_plater *plater, orca_presets *presets,
         plater->model = std::move(loaded);
         plater->mesh_revisions.swap(revisions);
         plater->calib = Slic3r::Calib_Params();  // an opened project is not a test
+        plater->pa_pattern.reset();
         plater->next_mesh_revision = next_mesh_revision;
         plater->undo.clear();
         plater->redo.clear();

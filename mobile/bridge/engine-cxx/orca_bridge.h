@@ -593,6 +593,10 @@ orca_result orca_plater_object_height_profile_adjust(
 #define ORCA_CALIB_VOLUMETRIC_SPEED  ((int32_t)7)
 #define ORCA_CALIB_VFA               ((int32_t)8)
 #define ORCA_CALIB_RETRACTION        ((int32_t)9)
+#define ORCA_CALIB_PA_PATTERN        ((int32_t)2)
+#define ORCA_CALIB_SHAPING_FREQ      ((int32_t)10)
+#define ORCA_CALIB_SHAPING_DAMP      ((int32_t)11)
+#define ORCA_CALIB_CORNERING         ((int32_t)12)
 
 /// One test's parameters (desktop Calib_Params and its dialogs). start,
 /// end and step are the tested range in the mode's unit: PA, degrees C
@@ -607,13 +611,29 @@ typedef struct {
     uint8_t reserved;
     int32_t flow_pattern;         // flow rate top surface: 0 Archimedean chords, 1 monotonic
     double vfa_layer_height;      // VFA: 0 = nozzle diameter / 2
+    /// Input shaping: the frequency range per axis (Hz); the damping test
+    /// uses only the starts. start/end are the damping factors there (the
+    /// frequency test's damping is `start`). Cornering: start/end are jerk
+    /// (mm/s) or junction deviation (mm).
+    double freq_start_x, freq_end_x, freq_start_y, freq_end_y;
+    /// Input shaping: 0 ringing tower, 1 fast tower; cornering adds 2 SCV-V2.
+    int32_t test_model;
+    uint32_t speed_count;         // PA pattern: speeds (mm/s); 0 = optimal speed
+    const char *shaper_type;      // input shaping: input_shaping_type value; NULL/"" = firmware default
+    const double *speeds;
+    const double *accelerations;  // PA pattern: accelerations (mm/s2); 0 = the profile's
+    uint32_t acceleration_count;
+    uint32_t reserved3;
 } orca_calibration;
 
 /// Desktop Plater::calib_*: replaces the document with the test model at
-/// `model_path` (the desktop resources/calib file, as STL or 3MF), edits
+/// `model_path` (the desktop resources/calib file, as STL or 3MF; NULL for
+/// the PA pattern, whose handles are generated cubes), edits
 /// the session's edited print, filament and printer presets and the
 /// objects' settings as desktop does, cuts the model to the tested range,
 /// and keeps the parameters so slicing this plater generates the test.
+/// The PA pattern lays out one pattern per speed and acceleration pair, as
+/// desktop does, and its G-code is generated into each slice of the plate.
 /// One undo step "Calibration"; the preset edits are not undone.
 orca_result orca_plater_start_calibration(orca_plater *plater, orca_presets *presets,
                                           const orca_calibration *calibration,

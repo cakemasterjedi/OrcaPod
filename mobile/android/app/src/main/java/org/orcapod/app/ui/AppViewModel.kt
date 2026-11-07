@@ -30,6 +30,7 @@ import org.orcapod.app.engine.InstanceTransform
 import org.orcapod.app.engine.OrcaException
 import org.orcapod.app.engine.PresetEntry
 import org.orcapod.app.engine.PresetKind
+import org.orcapod.app.engine.CalibrationSetup
 import org.orcapod.app.engine.CalibrationTest
 import org.orcapod.app.engine.PlateSettings
 import org.orcapod.app.engine.Scene
@@ -595,21 +596,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Desktop Plater::calib_*: the test's model replaces the plate's objects,
      * and the print, filament and printer settings change as desktop changes them.
      */
-    fun startCalibration(test: CalibrationTest, start: Double, end: Double, step: Double, printNumbers: Boolean, resize: Boolean) =
-        engineAction("Setting up ${test.label.lowercase()}…") { e ->
-            val model = withContext(Dispatchers.IO) {
-                val file = File(File(getApplication<Application>().cacheDir, "calib").apply { mkdirs() }, test.model)
-                getApplication<Application>().assets.open("calib/${test.model}").use { input ->
-                    file.outputStream().use { input.copyTo(it) }
+    fun startCalibration(setup: CalibrationSetup) =
+        engineAction("Setting up ${setup.test.label.lowercase()}…") { e ->
+            val model = setup.model?.let { name ->
+                withContext(Dispatchers.IO) {
+                    val file = File(File(getApplication<Application>().cacheDir, "calib").apply { mkdirs() }, name)
+                    getApplication<Application>().assets.open("calib/$name").use { input ->
+                        file.outputStream().use { input.copyTo(it) }
+                    }
+                    file
                 }
-                file
             }
+            val test = setup.test
             cut = null
             paint = null
             layerHeights = null
             measure = null
             selection = null
-            e.startCalibration(test, start, end, step, printNumbers, resize, model.path)
+            e.startCalibration(setup, model?.path)
             readSettings()
             refreshScene()
             invalidateSlice()

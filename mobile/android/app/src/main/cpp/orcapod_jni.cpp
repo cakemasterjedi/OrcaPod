@@ -1224,13 +1224,25 @@ JNI_FN(jdoubleArray, measureBetween)(JNIEnv *env, jobject, jlong m, jdoubleArray
 
 // --- calibration (desktop Calibration menu) ----------------------------------------
 
-/** ints: mode, flow pass, flow pattern, print numbers, nozzle resize, flow linear; doubles: start, end, step, VFA layer. */
-JNI_FN(void, calibrationStart)(JNIEnv *env, jobject, jlong pl, jlong pr, jintArray ints, jdoubleArray doubles, jstring model)
+/**
+ * ints: mode, flow pass, flow pattern, print numbers, nozzle resize, flow linear, test model;
+ * doubles: start, end, step, VFA layer, frequency start X, end X, start Y, end Y.
+ */
+JNI_FN(void, calibrationStart)(JNIEnv *env, jobject, jlong pl, jlong pr, jintArray ints, jdoubleArray doubles,
+                               jstring shaper, jdoubleArray speeds, jdoubleArray accels, jstring model)
 {
-    jint i[6] = {};
-    jdouble d[4] = {};
-    env->GetIntArrayRegion(ints, 0, 6, i);
-    env->GetDoubleArrayRegion(doubles, 0, 4, d);
+    jint i[7] = {};
+    jdouble d[8] = {};
+    env->GetIntArrayRegion(ints, 0, 7, i);
+    env->GetDoubleArrayRegion(doubles, 0, 8, d);
+    auto list = [&](jdoubleArray a) {
+        std::vector<double> v(static_cast<size_t>(env->GetArrayLength(a)));
+        if (!v.empty())
+            env->GetDoubleArrayRegion(a, 0, jsize(v.size()), v.data());
+        return v;
+    };
+    const std::vector<double> speed_list = list(speeds);
+    const std::vector<double> accel_list = list(accels);
     orca_calibration c{};
     c.mode = i[0];
     c.flow_pass = i[1];
@@ -1238,14 +1250,27 @@ JNI_FN(void, calibrationStart)(JNIEnv *env, jobject, jlong pl, jlong pr, jintArr
     c.print_numbers = uint8_t(i[3] != 0);
     c.nozzle_based_resize = uint8_t(i[4] != 0);
     c.flow_linear = uint8_t(i[5] != 0);
+    c.test_model = i[6];
     c.start = d[0];
     c.end = d[1];
     c.step = d[2];
     c.vfa_layer_height = d[3];
-    const char *path = env->GetStringUTFChars(model, nullptr);
+    c.freq_start_x = d[4];
+    c.freq_end_x = d[5];
+    c.freq_start_y = d[6];
+    c.freq_end_y = d[7];
+    c.speeds = speed_list.data();
+    c.speed_count = uint32_t(speed_list.size());
+    c.accelerations = accel_list.data();
+    c.acceleration_count = uint32_t(accel_list.size());
+    const char *shaper_type = env->GetStringUTFChars(shaper, nullptr);
+    c.shaper_type = shaper_type;
+    const char *path = model ? env->GetStringUTFChars(model, nullptr) : nullptr;
     orca_revision rev = 0;
     check(env, orca_plater_start_calibration(plater_of(pl), presets_of(pr), &c, path, &rev));
-    env->ReleaseStringUTFChars(model, path);
+    if (path)
+        env->ReleaseStringUTFChars(model, path);
+    env->ReleaseStringUTFChars(shaper, shaper_type);
 }
 
 /** mode, start, end, step of the document's test. */

@@ -442,12 +442,35 @@ enum class CalibrationTest(
     PA_LINE("Pressure advance: line", 1, "pa_line.3mf", 0.0, 0.1, 0.002, ""),
     VOLUMETRIC_SPEED("Max volumetric speed", 7, "volumetric_speed.3mf", 5.0, 20.0, 0.5, "mm³/s"),
     VFA("VFA", 8, "vfa.3mf", 40.0, 200.0, 10.0, "mm/s"),
-    RETRACTION("Retraction test", 9, "retraction_tower.3mf", 0.0, 2.0, 0.1, "mm");
+    RETRACTION("Retraction test", 9, "retraction_tower.3mf", 0.0, 2.0, 0.1, "mm"),
+    PA_PATTERN("Pressure advance: pattern", 2, "", 0.0, 0.08, 0.005, ""),
+    SHAPING_FREQUENCY("Input shaping: frequency", 10, "ringing_tower.3mf", 15.0, 110.0, 0.0, "Hz"),
+    SHAPING_DAMPING("Input shaping: damping", 11, "ringing_tower.3mf", 0.0, 0.4, 0.0, ""),
+    CORNERING("Cornering", 12, "ringing_tower.3mf", 1.0, 15.0, 0.0, "mm/s");
 
     val hasRange get() = mode != 5
     val isFlow get() = mode == 5
+    val isPa get() = this == PA_TOWER || this == PA_LINE || this == PA_PATTERN
+    val isMotion get() = this == SHAPING_FREQUENCY || this == SHAPING_DAMPING || this == CORNERING
+    /** Desktop asks for a step only for the stepped towers and patterns. */
+    val hasStep get() = hasRange && !isMotion && this != TEMPERATURE
+
+    /** Desktop's test model choices: ringing and fast towers, and SCV-V2 for cornering. */
+    fun models(): List<Pair<String, String>> = when (this) {
+        SHAPING_FREQUENCY, SHAPING_DAMPING -> listOf("Ringing tower" to "ringing_tower.3mf", "Fast tower" to "fast_tower.3mf")
+        CORNERING -> listOf("Ringing tower" to "ringing_tower.3mf", "Fast tower" to "fast_tower.3mf", "SCV-V2" to "scv_v2.3mf")
+        else -> emptyList()
+    }
 
     companion object {
+        /** Desktop input_shaper_types_for_flavor, without Disable, by gcode_flavor value. */
+        fun shaperTypes(flavor: String): List<String> = when (flavor) {
+            "klipper" -> listOf("Default", "ZV", "MZV", "ZVD", "EI", "2HUMP_EI", "3HUMP_EI")
+            "reprapfirmware" -> listOf("Default", "MZV", "ZVD", "ZVDD", "ZVDDD", "EI2", "EI3", "DAA")
+            "marlin2" -> listOf("ZV")
+            else -> listOf("Default")
+        }
+
         /** Desktop Temp_Calibration_Dlg ranges by filament type. */
         fun temperatureRange(filamentType: String): Pair<Double, Double> = when (filamentType.uppercase()) {
             "ABS", "ASA" -> 270.0 to 230.0
@@ -458,4 +481,26 @@ enum class CalibrationTest(
             else -> 230.0 to 190.0
         }
     }
+}
+
+/** One test as the calibration dialog fills it in (desktop Calib_Params). */
+data class CalibrationSetup(
+    val test: CalibrationTest,
+    val start: Double = test.start,
+    val end: Double = test.end,
+    val step: Double = test.step,
+    val printNumbers: Boolean = true,
+    val resize: Boolean = true,
+    /** Input shaping and cornering: index into [CalibrationTest.models]. */
+    val testModel: Int = 0,
+    val freqStartX: Double = 0.0,
+    val freqEndX: Double = 0.0,
+    val freqStartY: Double = 0.0,
+    val freqEndY: Double = 0.0,
+    val shaperType: String = "",
+    /** PA pattern batch: empty uses the profile's acceleration and the optimal speed. */
+    val speeds: List<Double> = emptyList(),
+    val accelerations: List<Double> = emptyList(),
+) {
+    val model: String? get() = test.models().getOrNull(testModel)?.second ?: test.model.ifEmpty { null }
 }

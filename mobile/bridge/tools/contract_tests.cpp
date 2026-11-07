@@ -5496,6 +5496,66 @@ static void test_calibration(const std::string &dir, const std::string &data_dir
         CHECK_NEAR(object_height(plater, 0), t.height, 0.5);
     }
 
+    // Earlier tests leave desktop's spiral vase edits; start the pattern from the profiles.
+    for (int32_t kind = 0; kind < 3; ++kind) orca_presets_reset_kind(presets, kind);
+    // PA pattern, two speeds: one handle each, and each slice draws the patterns.
+    orca_calibration pattern{};
+    pattern.mode = ORCA_CALIB_PA_PATTERN;
+    pattern.start = 0;
+    pattern.end = 0.08;
+    pattern.step = 0.005;
+    const double pattern_speeds[] = {100, 200};
+    pattern.speeds = pattern_speeds;
+    pattern.speed_count = 2;
+    GUARD(pp1, orca_plater_start_calibration(plater, presets, &pattern, nullptr, &revision));
+    expect_ok(pp1, "PA pattern");
+    GUARD(pp2, orca_plater_snapshot(plater, &snapshot));
+    expect_ok(pp2, "pattern snapshot");
+    CHECK_EQ(snapshot.object_count, 2);
+    orca_scene_snapshot_dispose(&snapshot);
+    const std::string pattern_gcode = dir + "/calib_pa_pattern.gcode";
+    GUARD(pp3, orca_plater_slice_to_gcode_with_presets(plater, presets, pattern_gcode.c_str(), nullptr, nullptr, nullptr, &report));
+    expect_ok(pp3, "slice PA pattern");
+    orca_slice_report_dispose(&report);
+    std::ifstream pattern_in(pattern_gcode);
+    std::set<std::string> pattern_pa;
+    for (std::string line; std::getline(pattern_in, line);)
+        if (line.rfind("M900 K", 0) == 0 || line.rfind("SET_PRESSURE_ADVANCE", 0) == 0) pattern_pa.insert(line);
+    CHECK(pattern_pa.size() >= 17); // 0 to 0.08 by 0.005, per pattern
+
+    // Input shaping and cornering towers.
+    orca_calibration shaping{};
+    shaping.mode = ORCA_CALIB_SHAPING_FREQ;
+    shaping.freq_start_x = shaping.freq_start_y = 15;
+    shaping.freq_end_x = shaping.freq_end_y = 110;
+    shaping.start = 0.15;
+    GUARD(is1, orca_plater_start_calibration(plater, presets, &shaping, calib_model("ringing_tower.3mf").c_str(), &revision));
+    expect_ok(is1, "input shaping frequency");
+    CHECK(resolved_value(presets, "spiral_mode") == "1");
+    shaping.freq_end_x = 5;
+    GUARD(is2, orca_plater_start_calibration(plater, presets, &shaping, calib_model("ringing_tower.3mf").c_str(), &revision));
+    expect_code(is2, ORCA_STATUS_INVALID_ARGUMENT, "falling frequency range");
+    orca_calibration damping{};
+    damping.mode = ORCA_CALIB_SHAPING_DAMP;
+    damping.freq_start_x = damping.freq_start_y = 30;
+    damping.start = 0;
+    damping.end = 0.4;
+    damping.test_model = 1;
+    GUARD(is3, orca_plater_start_calibration(plater, presets, &damping, calib_model("fast_tower.3mf").c_str(), &revision));
+    expect_ok(is3, "input shaping damping");
+    orca_calibration cornering{};
+    cornering.mode = ORCA_CALIB_CORNERING;
+    cornering.start = 1;
+    cornering.end = 15;
+    cornering.test_model = 2;
+    GUARD(cn1, orca_plater_start_calibration(plater, presets, &cornering, calib_model("scv_v2.3mf").c_str(), &revision));
+    expect_ok(cn1, "cornering");
+    // Machine limits resolve as normal and silent values.
+    CHECK(resolved_value(presets, "machine_max_jerk_x").rfind("15", 0) == 0);
+    GUARD(cn2, orca_plater_calibration(plater, &kept));
+    expect_ok(cn2, "cornering kept");
+    CHECK_EQ(kept.mode, ORCA_CALIB_CORNERING);
+
     GUARD(x1, orca_plater_clear(plater, &revision));
     expect_ok(x1, "clear ends the test");
     GUARD(x2, orca_plater_calibration(plater, &kept));

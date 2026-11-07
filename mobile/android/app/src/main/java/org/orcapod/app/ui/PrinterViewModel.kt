@@ -14,9 +14,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.orcapod.app.data.PrintLog
 import org.orcapod.app.data.PrinterDiscovery
-import org.orcapod.app.data.PrinterStore
+import org.orcapod.app.data.PrinterFleet
 import org.orcapod.app.printhost.BambuLanHost
 import org.orcapod.app.printhost.CameraSource
 import org.orcapod.app.printhost.DiscoveredPrinter
@@ -27,31 +26,27 @@ import org.orcapod.app.printhost.PrintHost
 import org.orcapod.app.printhost.PrintOptions
 import org.orcapod.app.printhost.PrinterConnection
 import org.orcapod.app.printhost.PrinterStatus
-import org.orcapod.app.printhost.UploadCancelled
 import java.io.File
 import java.io.IOException
 import java.util.UUID
 
-sealed interface UploadState {
-    data object Idle : UploadState
-    data class Running(val printer: String, val fileName: String, val fraction: Float) : UploadState
-    data class Done(val printer: String, val fileName: String, val started: Boolean) : UploadState
-    data class Failed(val message: String) : UploadState
-}
-
-/** Printer connections, sending G-code and watching a print: desktop's physical printers and device tab. */
+/**
+ * Printer connections, sending G-code and watching prints: desktop's physical
+ * printers and device tab. Connections, their open hosts and the print queue
+ * live in [PrinterFleet] so they outlive this view model.
+ */
 class PrinterViewModel(app: Application) : AndroidViewModel(app) {
-    private val store = PrinterStore(app)
-    private val log = PrintLog(File(app.filesDir, "print-log.json"))
-    private val hosts = HashMap<String, PrintHost>()
-    private var uploadJob: Job? = null
-    @Volatile private var uploadCancelled = false
+    val fleet = PrinterFleet.get(app)
+    private val store = fleet.store
+    private val log = fleet.log
     private var monitorJob: Job? = null
     private var discovery: PrinterDiscovery? = null
 
-    var connections by mutableStateOf(store.load())
+    var connections by mutableStateOf(fleet.connections.value)
         private set
-    var upload by mutableStateOf<UploadState>(UploadState.Idle)
+    var queue by mutableStateOf(fleet.queue.items.value)
+        private set
+    var fleetStatus by mutableStateOf(fleet.queue.printers.value)
         private set
     /** The connection being watched, its last status, and the error if the last poll failed. */
     var monitored by mutableStateOf<String?>(null)
@@ -66,6 +61,12 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages
 
+    init {
+        viewModelScope.launch { fleet.connections.collect { connections = it } }
+        viewModelScope.launch { fleet.queue.items.collect { queue = it } }
+        viewModelScope.launch { fleet.queue.printers.collect { fleetStatus = it } }
+    }
+
     /** The connection to preselect for [printerPreset]: the one used with it last, else the last used. */
     fun preferredFor(printerPreset: String): PrinterConnection? =
         connections.firstOrNull { it.printerPreset == printerPreset && printerPreset.isNotEmpty() }
@@ -75,16 +76,14 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
     fun newId(): String = UUID.randomUUID().toString()
 
     fun save(c: PrinterConnection) {
-        synchronized(this) { hosts.remove(c.id) }?.let(::closeQuietly)
-        connections = connections.filterNot { it.id == c.id } + c
-        store.save(connections)
+        fleet.save(c)
+        connections = fleet.connections.value
     }
 
     fun delete(id: String) {
-        synchronized(this) { hosts.remove(id) }?.let(::closeQuietly)
         if (monitored == id) stopMonitor()
-        connections = connections.filterNot { it.id == id }
-        store.save(connections)
+        fleet.delete(id)
+        connections = fleet.connections.value
     }
 
     /**
@@ -113,44 +112,48 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearSentHistory(id: String) = viewModelScope.launch(Dispatchers.IO) { log.clear(id) }
 
-    fun send(c: PrinterConnection, gcode: File, remoteName: String, start: Boolean, options: PrintOptions, printerPreset: String) {
-        if (upload is UploadState.Running) return
-        val name = PrintHost.safeFileName(remoteName).let { if (it.contains('.')) it else "$it.gcode" }
-        uploadCancelled = false
-        upload = UploadState.Running(c.name, name, 0f)
-        uploadJob = viewModelScope.launch {
-            upload = try {
-                val stored = withContext(Dispatchers.IO) {
-                    host(c).upload(gcode, name, start, options) { sent, total ->
-                        val f = if (total > 0) sent.toFloat() / total else 0f
-                        viewModelScope.launch { if (upload is UploadState.Running) upload = UploadState.Running(c.name, name, f) }
-                        !uploadCancelled
-                    }
-                }
-                withContext(Dispatchers.IO) {
-                    log.add(c.id, c.name, JobRecord(stored, if (start) JobOutcome.PRINTING else JobOutcome.UPLOADED, System.currentTimeMillis()))
-                }
-                store.lastUsed = c.id
-                if (printerPreset.isNotEmpty() && c.printerPreset != printerPreset) save(c.copy(printerPreset = printerPreset))
-                if (start) watch(c.id)
-                UploadState.Done(c.name, stored, start)
-            } catch (e: UploadCancelled) {
-                UploadState.Idle
-            } catch (e: IOException) {
-                withContext(Dispatchers.IO) {
-                    log.add(c.id, c.name, JobRecord(name, JobOutcome.UPLOAD_FAILED, System.currentTimeMillis(), message = e.message))
-                }
-                UploadState.Failed(e.message ?: "Upload failed")
-            }
+    /**
+     * Queues [gcode] for every printer in [targets]: each gets it as soon as
+     * it can take it (see [PrintQueue]). Returns the new items' ids.
+     */
+    suspend fun enqueue(targets: List<PrinterConnection>, gcode: File, remoteName: String, start: Boolean, options: PrintOptions, printerPreset: String): Set<String> {
+        // Remember the preset for each printer, so the next send preselects it.
+        if (printerPreset.isNotEmpty()) for (c in targets) if (c.printerPreset != printerPreset) save(c.copy(printerPreset = printerPreset))
+        targets.lastOrNull()?.let { store.lastUsed = it.id }
+        val ids = targets.map { it.id }.toSet()
+        val current = connections.filter { it.id in ids }
+        return try {
+            // Copying the G-code into the queue's spool can take a moment for a big plate.
+            withContext(Dispatchers.IO) { fleet.queue.enqueue(gcode, remoteName, current, start, options) }.map { it.id }.toSet()
+        } catch (e: IOException) {
+            _messages.tryEmit("Could not queue the plate: ${e.message}")
+            emptySet()
         }
     }
 
-    fun cancelUpload() {
-        uploadCancelled = true
-    }
+    fun cancelQueued(id: String) = fleet.queue.cancel(id)
+    fun retryQueued(id: String) = fleet.queue.retry(id)
+    fun moveQueuedUp(id: String) = fleet.queue.moveUp(id)
+    fun removeQueued(id: String) = fleet.queue.remove(listOf(id))
+    fun clearEndedQueue() = fleet.queue.clearEnded()
+    fun confirmBedClear(connectionId: String) = fleet.queue.confirmBedClear(connectionId)
 
-    fun clearUpload() {
-        if (upload !is UploadState.Running) upload = UploadState.Idle
+    /** Pause, resume or stop on any printer of the dashboard. */
+    fun pause(id: String) = control(id, "Pausing") { it.pause() }
+    fun resume(id: String) = control(id, "Resuming") { it.resume() }
+    fun cancelPrint(id: String) = control(id, "Stopping the print") { it.cancel() }
+
+    private fun control(id: String, label: String, action: (PrintHost) -> Unit) {
+        val name = connections.firstOrNull { it.id == id }?.name ?: return
+        viewModelScope.launch {
+            try {
+                fleet.queue.control(id, action)
+                _messages.tryEmit("$label on $name…")
+                fleet.queue.poll()
+            } catch (e: IOException) {
+                _messages.tryEmit(e.message ?: "The printer did not accept the command")
+            }
+        }
     }
 
     /** Polls [id]'s status every few seconds until [stopMonitor]. */
@@ -197,15 +200,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
     fun cancelPrint() = control("Stopping the print") { it.cancel() }
 
     private fun control(label: String, action: (PrintHost) -> Unit) {
-        val c = connections.firstOrNull { it.id == monitored } ?: return
-        viewModelScope.launch {
-            try {
-                withContext(Dispatchers.IO) { action(host(c)) }
-                _messages.tryEmit("$label…")
-            } catch (e: IOException) {
-                _messages.tryEmit(e.message ?: "The printer did not accept the command")
-            }
-        }
+        monitored?.let { control(it, label, action) }
     }
 
     fun startDiscovery() {
@@ -223,22 +218,9 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         discovery = null
     }
 
-    @Synchronized
-    private fun host(c: PrinterConnection): PrintHost =
-        hosts[c.id]?.takeIf { connections.firstOrNull { it.id == c.id } == c } ?: run {
-            hosts.remove(c.id)?.let(::closeQuietly)
-            PrintHost.create(c).also { hosts[c.id] = it }
-        }
-
-    private fun closeQuietly(h: PrintHost) {
-        viewModelScope.launch(Dispatchers.IO) { runCatching { h.close() } }
-    }
+    private fun host(c: PrinterConnection): PrintHost = fleet.host(c)
 
     override fun onCleared() {
         stopDiscovery()
-        uploadCancelled = true
-        // viewModelScope is gone by now; close on a plain thread so MQTT sockets don't leak.
-        val open = synchronized(this) { hosts.values.toList().also { hosts.clear() } }
-        Thread { open.forEach { runCatching { it.close() } } }.start()
     }
 }

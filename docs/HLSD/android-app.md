@@ -12,6 +12,8 @@ logic is the engine's; the app is a client of the bridge's C API
 ```
 Compose UI (ui/)          screens, sheets, panels; state in AppViewModel
  ├─ PlateView (ui/viewport)  GLSurfaceView: OpenGL ES 3 plate, gestures, picking
+ ├─ PrinterViewModel      saved printers, uploads, status polling
+ │   └─ PrintHost (printhost/)  one class per printer network API, plain JVM
  └─ Engine (engine/)      Kotlin session over one presets bundle + one plater
      └─ Native / orcapod_jni.cpp   JNI: one function per bridge call
          └─ liborcapod.so  the engine and bridge, from build-android.sh
@@ -65,13 +67,57 @@ for "Lay on face". After slicing, the G-code is parsed by the engine's
 `GCodeProcessor` (`orca_gcode_toolpath`) and the extrusion moves are drawn as
 lines coloured by extrusion role, up to the layer on the slider.
 
+## Printers
+
+The app sends sliced G-code to printers on the network, like desktop's
+physical printers and print host upload. A saved connection
+(`PrinterConnection`, kept in app-private preferences and excluded from
+backups because it holds API keys and access codes) names a protocol, an
+address and that protocol's login. `PrintHost` is the one interface every
+protocol implements: test the connection, upload with or without starting
+the print, read the status, pause, resume and cancel. Each implementation
+follows the matching desktop class in `src/slic3r/Utils/`:
+
+| Type | Upload | Status and control |
+| --- | --- | --- |
+| OctoPrint | `POST /api/files/local` form, `print=true` | `/api/job`, `/api/printer` |
+| Moonraker | `POST /server/files/upload`, then `/printer/print/start` if Moonraker did not start or queue it | `/printer/objects/query`, `/printer/print/*` |
+| PrusaLink | `PUT /api/v1/files/<storage>/<name>` with `Print-After-Upload`, else OctoPrint's form; API key or digest login | `/api/v1/status`, `/api/v1/job/<id>` |
+| Duet | `rr_upload` + `M32`, or the SBC's `/machine/file` + `/machine/code`; `M37` simulates | the object model (`rr_model` or `/machine/status`) |
+| Bambu Lab LAN | FTPS on port 990, as a `.gcode.3mf`, then MQTT `project_file` | MQTT reports on `device/<serial>/report` |
+
+Desktop reaches Bambu printers through Bambu's closed network plugin, which
+cannot run on Android, so `BambuLanHost` speaks the printer's LAN protocol
+directly: MQTT 3.1.1 over TLS on port 8883 and implicit FTPS on port 990,
+both as user `bblp` with the access code from the printer's screen. Current
+firmware starts LAN jobs from a `.gcode.3mf`, so the G-code is wrapped in
+the smallest such package (plate 1 and its MD5) before upload. The printer's
+FTP server requires the data connection to resume the control connection's
+TLS session; TLS session caches are keyed by peer host and port, so the data
+socket reports the control port. P1 and A1 printers report only changes, so
+the host asks for a full report on connect and merges the deltas. Bambu
+printers use self-signed certificates and the access code is the
+credential, so their TLS is not verified; HTTP hosts verify certificates
+unless the connection allows self-signed ones.
+
+Printers are found by Bambu's UDP announcements on port 2021 and by the
+`_octoprint._tcp` and `_moonraker._tcp` mDNS services; others are added by
+address. Status is polled every few seconds while a printer sheet is open
+(Bambu's MQTT connection stays open and pushes reports instead).
+
+The hosts are plain JVM code over `HttpURLConnection` and sockets, with no
+Android or third-party network library, so `HttpHostsTest` and
+`BambuLanHostTest` run each against a mock of its printer's API, including a
+TLS MQTT broker and an FTPS server that refuses data connections without
+session reuse.
+
 ## Limits
 
 - STEP import needs OCCT, which the bridge does not build; the app says so
   and asks for STL or 3MF instead.
 - One filament slot: multi-material assignment is not exposed yet.
-- G-code goes out through the Android share sheet or a saved file; there is
-  no direct printer connection.
+- Bambu printers are reached in LAN mode only; Bambu's cloud needs its
+  closed network plugin. The AMS maps the single filament to one tray.
 
 ## Verification
 

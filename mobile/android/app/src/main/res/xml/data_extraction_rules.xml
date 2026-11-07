@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Saved printer logins (API keys, access codes) stay on the device. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="printers.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="printers.xml" />
+    </device-transfer>
+</data-extraction-rules>

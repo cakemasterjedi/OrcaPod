@@ -48,6 +48,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
+import androidx.lifecycle.viewmodel.compose.viewModel
 import org.orcapod.app.engine.PresetKind
 import org.orcapod.app.ui.viewport.PlateView
 import org.orcapod.app.ui.viewport.Selection
@@ -60,6 +61,9 @@ private val MODEL_TYPES = arrayOf("*/*")
 @Composable
 fun PlateScreen(vm: AppViewModel) {
     val context = LocalContext.current
+    val printerVm: PrinterViewModel = viewModel()
+    var sendOpen by remember { mutableStateOf(false) }
+    var printersOpen by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     var picker by remember { mutableStateOf<PresetKind?>(null) }
     var settingsOpen by remember { mutableStateOf(false) }
@@ -68,6 +72,7 @@ fun PlateScreen(vm: AppViewModel) {
     var viewRef by remember { mutableStateOf<PlateView?>(null) }
 
     LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
+    LaunchedEffect(Unit) { printerVm.messages.collect { snackbar.showSnackbar(it) } }
 
     val importModels = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) vm.importUris(uris)
@@ -123,6 +128,7 @@ fun PlateScreen(vm: AppViewModel) {
                                 onClick = { menuOpen = false; vm.clearPlate() },
                             )
                             HorizontalDivider()
+                            DropdownMenuItem(text = { Text("Printers") }, onClick = { menuOpen = false; printersOpen = true })
                             DropdownMenuItem(text = { Text("Reset view") }, onClick = { menuOpen = false; viewRef?.resetView() })
                             DropdownMenuItem(text = { Text("Printer brands") }, onClick = { menuOpen = false; vm.manageVendors() })
                         }
@@ -175,6 +181,7 @@ fun PlateScreen(vm: AppViewModel) {
                             context.startActivity(Intent.createChooser(send, "Send G-code"))
                         },
                         onSave = { saveGcode.launch(done.gcode.name) },
+                        onPrint = { sendOpen = true },
                     )
                     vm.slice is SliceState.Running -> SlicingPanel(vm.slice as SliceState.Running, vm::cancelSlice)
                     else -> {
@@ -219,6 +226,8 @@ fun PlateScreen(vm: AppViewModel) {
         )
     }
     if (settingsOpen) SettingsSheet(vm) { settingsOpen = false }
+    if (sendOpen && done != null) SendToPrinterSheet(printerVm, done.gcode, vm.printer) { sendOpen = false }
+    if (printersOpen) PrintersSheet(printerVm, vm.printer) { printersOpen = false }
 }
 
 @Composable

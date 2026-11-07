@@ -70,6 +70,19 @@ fun OrcaPodApp(viewModel: AppViewModel, pendingImports: List<Uri>, onImportsTake
                         }
                     }
                     PlateScreen(viewModel)
+                    // Drawn over the plate so the 3D view keeps its state while the library is open.
+                    viewModel.library?.let { request ->
+                        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                            LibraryScreen(
+                                startUrl = request.url,
+                                onImport = { files ->
+                                    viewModel.importFiles(files)
+                                    viewModel.closeLibrary()
+                                },
+                                onClose = viewModel::closeLibrary,
+                            )
+                        }
+                    }
                 }
             }
         }

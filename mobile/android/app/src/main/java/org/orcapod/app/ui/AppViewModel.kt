@@ -44,6 +44,9 @@ sealed interface SliceState {
     data class Done(val report: SliceReport, val gcode: File, val toolpath: Toolpath?) : SliceState
 }
 
+/** An open model library, optionally starting at a web page. */
+data class LibraryRequest(val url: String? = null)
+
 /** A process or filament setting exposed for quick editing. */
 data class QuickSetting(
     val kind: PresetKind,
@@ -71,6 +74,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var slice by mutableStateOf<SliceState>(SliceState.Idle)
         private set
     var showPreview by mutableStateOf(false)
+    /** The model library is open; a URL opens it on that page (a link shared to the app). */
+    var library by mutableStateOf<LibraryRequest?>(null)
+        private set
     var previewLayer by mutableStateOf(0)
 
     var printers by mutableStateOf<List<PresetEntry>>(emptyList())
@@ -327,11 +333,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- document ---
 
+    fun openLibrary(url: String? = null) { library = LibraryRequest(url) }
+    fun closeLibrary() { library = null }
+
     /** Copies picked files into the cache (the engine reads by extension) and imports them. */
     fun importUris(uris: List<Uri>, asProject: Boolean = false) = engineAction("Importing…") { e ->
+        importFiles(e, uris.map { copyToCache(it) }, asProject)
+    }
+
+    /** Imports model files already on disk, such as downloads from the model library. */
+    fun importFiles(files: List<File>) = engineAction("Importing…") { e -> importFiles(e, files, asProject = false) }
+
+    private suspend fun importFiles(e: Engine, files: List<File>, asProject: Boolean) {
         var imported = 0
-        for (uri in uris) {
-            val file = copyToCache(uri)
+        for (file in files) {
             val ext = file.extension.lowercase()
             if (ext == "step" || ext == "stp") {
                 _messages.tryEmit("STEP files are not supported yet; export the model as STL or 3MF")
@@ -348,7 +363,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 imported += e.import(file.path)
             }
         }
-        if (uris.size > 1 && imported > 1) {
+        if (files.size > 1 && imported > 1) {
             val unfit = e.arrange()
             if (unfit > 0) _messages.tryEmit("$unfit object(s) do not fit on the plate")
         }

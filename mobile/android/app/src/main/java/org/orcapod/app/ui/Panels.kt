@@ -87,6 +87,7 @@ fun ObjectPanel(vm: AppViewModel, sel: Selection, layFlat: Boolean, onLayFlat: (
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 AssistChip(onClick = onEdit, label = { Text("Parts and settings") }, leadingIcon = { Icon(AppIcons.Tune, null) })
                 AssistChip(onClick = { vm.startCut(sel) }, label = { Text("Cut") })
+                AssistChip(onClick = { vm.startPaint(sel.objectId) }, label = { Text("Paint") })
                 AssistChip(onClick = { vm.rotate(sel, 2, 90.0) }, label = { Text("Z 90°") }, leadingIcon = { Icon(AppIcons.Rotate, null) })
                 AssistChip(onClick = { vm.rotate(sel, 0, 90.0) }, label = { Text("X 90°") }, leadingIcon = { Icon(AppIcons.Rotate, null) })
                 AssistChip(onClick = { vm.rotate(sel, 1, 90.0) }, label = { Text("Y 90°") }, leadingIcon = { Icon(AppIcons.Rotate, null) })

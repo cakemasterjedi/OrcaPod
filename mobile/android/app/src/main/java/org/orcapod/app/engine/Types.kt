@@ -332,3 +332,13 @@ data class CutConnector(
     val radiusTolerance: Float, val depthTolerance: Float,
     val type: ConnectorType, val style: ConnectorStyle, val shape: ConnectorShape,
 )
+
+/** Desktop painter gizmos (ORCA_PAINT_*). */
+enum class PaintLayer(val code: Int, val label: String) {
+    SUPPORT(0, "Supports"), SEAM(1, "Seams"), MMU(2, "Colour"), FUZZY(3, "Fuzzy skin")
+}
+
+/** Painted triangles of one layer: nine world floats and one state per triangle. */
+class PaintMesh(val positions: FloatArray, val states: ByteArray) {
+    val count get() = states.size
+}

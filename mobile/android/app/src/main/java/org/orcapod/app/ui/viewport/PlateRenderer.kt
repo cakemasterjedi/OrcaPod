@@ -35,6 +35,8 @@ data class ViewportState(
     val cutQuad: FloatArray? = null,
     /** Cut connector centres, three floats each. */
     val cutPoints: FloatArray? = null,
+    /** Painted triangles of the paint tool's layer: interleaved world position + colour, three vertices each. */
+    val paintOverlay: FloatArray? = null,
 )
 
 data class Selection(val objectId: Long, val instanceId: Long)
@@ -103,6 +105,7 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
             drawToolpath(s.toolpath, s.previewStyle, s.range, dx, dy)
         } else {
             drawObjects(s)
+            drawPaint(s)
             drawCut(s)
         }
     }
@@ -118,6 +121,17 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
         glUniform1f(colorProgram.alpha, alpha)
         bindInterleaved(overlayVbo)
         glDrawArrays(mode, 0, data.size / 6)
+    }
+
+    private fun drawPaint(s: ViewportState) {
+        val data = s.paintOverlay ?: return
+        // Painted facets lie on the object's own faces; pull them towards the eye.
+        glEnable(GL_POLYGON_OFFSET_FILL)
+        glPolygonOffset(-1f, -2f)
+        glDepthFunc(GL_LEQUAL)
+        drawOverlay(data, GL_TRIANGLES, 1f)
+        glDepthFunc(GL_LESS)
+        glDisable(GL_POLYGON_OFFSET_FILL)
     }
 
     private fun drawCut(s: ViewportState) {

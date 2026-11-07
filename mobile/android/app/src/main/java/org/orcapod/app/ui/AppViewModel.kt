@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.orcapod.app.data.ProfileStore
 import org.orcapod.app.engine.BedTypeState
+import org.orcapod.app.engine.PaintLayer
 import org.orcapod.app.engine.CustomGcode
 import org.orcapod.app.engine.CustomGcodeType
 import org.orcapod.app.engine.Engine
@@ -446,6 +447,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val e = engine ?: return
         scene = e.scene()
         customGcodes = e.customGcodes()
+        if (paint != null) refreshPaint()
         val sel = selection
         if (sel != null && transformOf(sel) == null) selection = null
         val vol = selectedVolume
@@ -486,12 +488,67 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (selectedVolume == volumeId) selectedVolume = null
     }
 
+    // --- painting (desktop painter gizmos) ---
+
+    /** The painter in use, if any. */
+    var paint by mutableStateOf<PaintState?>(null)
+    /** The painted facets of the painter's layer, ready for the viewport. */
+    var paintOverlay by mutableStateOf<FloatArray?>(null)
+        private set
+
+    fun startPaint(objectId: Long) {
+        cut = null
+        paint = PaintState(objectId)
+        engineAction { refreshPaint() }
+    }
+
+    fun choosePaintLayer(layer: PaintLayer) {
+        val p = paint ?: return
+        paint = p.copy(layer = layer, state = 1)
+        engineAction { refreshPaint() }
+    }
+
+    /** A dab or fill from the viewport; brush strokes send one per finger step, fills only the first touch. */
+    fun paintAt(objectId: Long, volumeId: Long, hit: FloatArray, view: FloatArray, first: Boolean) {
+        val p = paint ?: return
+        if (p.objectId != objectId || (p.tool != PaintTool.BRUSH && !first)) return
+        engineAction { e ->
+            when (p.tool) {
+                PaintTool.BRUSH -> e.paintSphere(objectId, volumeId, p.layer, hit, view, p.radius.toDouble(), p.state)
+                PaintTool.SMART_FILL -> e.paintFill(objectId, volumeId, p.layer, hit, view, p.angle.toDouble(), p.state)
+                PaintTool.BUCKET -> e.paintFill(objectId, volumeId, p.layer, hit, view, 0.0, p.state)
+            }
+            refreshScene()
+            invalidateSlice()
+        }
+    }
+
+    fun clearPaint() {
+        val p = paint ?: return
+        val obj = objectOf(p.objectId) ?: return
+        mutate { e -> for (part in obj.parts) e.paintReset(p.objectId, part.id, p.layer) }
+    }
+
+    private suspend fun refreshPaint() {
+        val e = engine ?: return
+        val p = paint
+        val obj = p?.let { objectOf(it.objectId) }
+        if (p == null || obj == null) {
+            paintOverlay = null
+            if (p != null) paint = null
+            return
+        }
+        val meshes = obj.parts.map { e.paint(p.objectId, it.id, p.layer) }
+        paintOverlay = paintOverlay(meshes, p.layer, filamentSlots.map { it.colour })
+    }
+
     // --- cut (desktop cut gizmo) ---
 
     /** The cut being set up, shown as a plane in the viewport; null when not cutting. */
     var cut by mutableStateOf<CutState?>(null)
 
     fun startCut(sel: Selection) {
+        paint = null
         val obj = objectOf(sel.objectId) ?: return
         val inst = obj.instances.firstOrNull { it.id == sel.instanceId } ?: return
         val mesh = scene.meshes[obj.id] ?: return

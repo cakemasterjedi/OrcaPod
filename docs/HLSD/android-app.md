@@ -111,6 +111,25 @@ On "Perform cut" they become the engine's cut connectors, stored as desktop
 stores them (the world point minus the instance offset). The cut
 (`orca_plater_object_cut`) then drills them into both faces in one undo step.
 
+## Painting
+
+The painter is desktop's painter gizmos on one object. Each layer is a
+`FacetsAnnotation` that slicing reads:
+- support enforcers and blockers
+- seam enforcers and blockers
+- multi-material colour (one state per filament)
+- fuzzy skin
+
+Its tools are a sphere brush, smart fill by angle and bucket fill.
+
+While painting, a finger on the object paints and a finger elsewhere turns
+the view. The viewport finds the part under the finger from the hit
+triangle's range in the merged mesh. It sends one engine stroke
+(`orca_plater_volume_paint_sphere` / `_fill`) per finger step, and each
+stroke is one undo step. After each stroke the app reads the painted
+triangles back (`orca_plater_volume_paint`) and draws them as an overlay with
+desktop's enforcer and blocker colours, or the filament's colour.
+
 ## Viewport
 
 The plate is drawn in engine coordinates (z-up millimetres). Gestures:

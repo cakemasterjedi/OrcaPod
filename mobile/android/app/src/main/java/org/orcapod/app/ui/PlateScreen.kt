@@ -114,6 +114,9 @@ fun PlateScreen(vm: AppViewModel) {
                 layFlat = false
             }
             override fun onRay(origin: FloatArray, direction: FloatArray) { vm.placeConnector(origin, direction) }
+            override fun onPaint(objectId: Long, volumeId: Long, hit: FloatArray, view: FloatArray, first: Boolean) {
+                vm.paintAt(objectId, volumeId, hit, view, first)
+            }
         }
     }
 
@@ -190,7 +193,8 @@ fun PlateScreen(vm: AppViewModel) {
                 update = { view ->
                     view.pickFaces = layFlat
                     view.rayTaps = vm.cut?.placing == true
-                    view.lockDrag = vm.cut != null
+                    view.lockDrag = vm.cut != null || vm.paint != null
+                    view.paintObject = vm.paint?.objectId
                     view.state = ViewportState(
                         scene = vm.scene,
                         selection = vm.selection,
@@ -203,6 +207,7 @@ fun PlateScreen(vm: AppViewModel) {
                         filamentColours = vm.filamentSlots.map { it.colour },
                         cutQuad = vm.cut?.quad(),
                         cutPoints = vm.cut?.connectorPoints(),
+                        paintOverlay = if (vm.paint != null) vm.paintOverlay else null,
                     )
                 },
             )
@@ -239,6 +244,7 @@ fun PlateScreen(vm: AppViewModel) {
                     )
                     vm.slice is SliceState.Running -> SlicingPanel(vm.slice as SliceState.Running, vm::cancelSlice)
                     vm.cut != null -> CutPanel(vm, vm.cut!!)
+                    vm.paint != null -> PaintPanel(vm, vm.paint!!)
                     else -> {
                         if (sel != null && vm.transformOf(sel) != null) {
                             ObjectPanel(vm, sel, layFlat = layFlat, onLayFlat = { layFlat = !layFlat }, onEdit = { objectSheet = sel })

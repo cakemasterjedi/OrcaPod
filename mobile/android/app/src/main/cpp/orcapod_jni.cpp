@@ -1019,6 +1019,60 @@ JNI_FN(void, cutConnectorsClear)(JNIEnv *env, jobject, jlong pl, jlong obj)
     check(env, orca_plater_object_cut_connectors_clear(plater_of(pl), orca_object_id(obj), &rev));
 }
 
+// --- painting (desktop painter gizmos) ------------------------------------------
+
+/** One paint layer of a volume: [positions (9 floats per triangle, world), states (1 byte each)]. */
+JNI_FN(jobjectArray, volumePaint)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol, jint layer)
+{
+    orca_paint_mesh mesh{};
+    if (!check(env, orca_plater_volume_paint(plater_of(pl), orca_object_id(obj), orca_volume_id(vol), uint8_t(layer), &mesh)))
+        return nullptr;
+    std::vector<float> pos(size_t(mesh.count) * 9);
+    std::vector<jbyte> states(mesh.count);
+    for (uint32_t i = 0; i < mesh.count; ++i) {
+        std::copy(mesh.triangles[i].positions, mesh.triangles[i].positions + 9, pos.begin() + size_t(i) * 9);
+        states[i] = jbyte(mesh.triangles[i].state);
+    }
+    orca_paint_mesh_dispose(&mesh);
+    jfloatArray jpos = floats(env, pos.data(), jsize(pos.size()));
+    jbyteArray jstates = env->NewByteArray(jsize(states.size()));
+    if (jstates && !states.empty())
+        env->SetByteArrayRegion(jstates, 0, jsize(states.size()), states.data());
+    jobjectArray out = env->NewObjectArray(2, env->FindClass("java/lang/Object"), nullptr);
+    if (env->ExceptionCheck())
+        return nullptr;
+    env->SetObjectArrayElement(out, 0, jpos);
+    env->SetObjectArrayElement(out, 1, jstates);
+    return out;
+}
+
+/** `ray` is the world hit point then the view direction. */
+JNI_FN(void, volumePaintSphere)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol, jint layer, jdoubleArray ray,
+                                jdouble radius, jint state)
+{
+    double r[6] = {};
+    env->GetDoubleArrayRegion(ray, 0, 6, r);
+    orca_revision rev = 0;
+    check(env, orca_plater_volume_paint_sphere(plater_of(pl), orca_object_id(obj), orca_volume_id(vol), uint8_t(layer),
+                                               r[0], r[1], r[2], r[3], r[4], r[5], radius, state, &rev));
+}
+
+JNI_FN(void, volumePaintFill)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol, jint layer, jdoubleArray ray,
+                              jdouble angle, jboolean propagate, jint state)
+{
+    double r[6] = {};
+    env->GetDoubleArrayRegion(ray, 0, 6, r);
+    orca_revision rev = 0;
+    check(env, orca_plater_volume_paint_fill(plater_of(pl), orca_object_id(obj), orca_volume_id(vol), uint8_t(layer),
+                                             r[0], r[1], r[2], r[3], r[4], r[5], angle, propagate ? 1 : 0, state, &rev));
+}
+
+JNI_FN(void, volumePaintReset)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol, jint layer)
+{
+    orca_revision rev = 0;
+    check(env, orca_plater_volume_paint_reset(plater_of(pl), orca_object_id(obj), orca_volume_id(vol), uint8_t(layer), &rev));
+}
+
 JNI_FN(jint, splitParts)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol)
 {
     uint32_t count = 0;

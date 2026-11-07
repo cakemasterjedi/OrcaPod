@@ -6,6 +6,7 @@ import org.orcapod.app.settings.SettingsLayout
 import org.orcapod.app.settings.parseKeys
 import org.orcapod.app.settings.parseValues
 import org.orcapod.app.ui.CutState
+import org.orcapod.app.ui.paintOverlay
 import org.orcapod.app.ui.worldBounds
 import org.orcapod.app.ui.viewport.PreviewOption
 import org.orcapod.app.ui.viewport.Selection
@@ -448,6 +449,33 @@ class EngineHostTest {
         assertEquals(20f, heights[1], 0.05f)
         e.undo()
         assertEquals(1, e.scene().snapshot.objects.size)
+    }
+
+    @Test
+    fun r_paintsFacets() = runBlocking {
+        val obj = e.scene().snapshot.objects.single()
+        val part = obj.parts.single()
+        val sc = e.scene()
+        val b = worldBounds(sc.meshes.getValue(obj.id).positions, obj.instances.first().matrix)
+        val top = floatArrayOf((b[0] + b[3]) / 2, (b[1] + b[4]) / 2, b[5])
+        val down = floatArrayOf(0f, 0f, -1f)
+        e.paintSphere(obj.id, part.id, PaintLayer.SUPPORT, top, down, 3.0, 1)
+        val brushed = e.paint(obj.id, part.id, PaintLayer.SUPPORT)
+        assertTrue(brushed.count > 0)
+        assertTrue(brushed.states.all { it.toInt() == 1 })
+        assertEquals(brushed.count * 9, brushed.positions.size)
+        assertTrue("painted on the top face", (0 until brushed.count).all { abs(brushed.positions[it * 9 + 2] - b[5]) < 0.01f })
+        // Smart fill takes the whole flat top face, into another layer.
+        e.paintFill(obj.id, part.id, PaintLayer.SEAM, top, down, 30.0, 2)
+        val seams = e.paint(obj.id, part.id, PaintLayer.SEAM)
+        assertTrue(seams.count >= 2)
+        val overlay = paintOverlay(listOf(seams), PaintLayer.SEAM, emptyList())!!
+        assertEquals(seams.count * 18, overlay.size)
+        assertEquals(0.9f, overlay[3], 1e-6f) // blocker red
+        e.paintReset(obj.id, part.id, PaintLayer.SUPPORT)
+        e.paintReset(obj.id, part.id, PaintLayer.SEAM)
+        assertEquals(0, e.paint(obj.id, part.id, PaintLayer.SUPPORT).count)
+        assertNull(paintOverlay(listOf(e.paint(obj.id, part.id, PaintLayer.SEAM)), PaintLayer.SEAM, emptyList()))
     }
 
     private suspend fun layerHeight() =

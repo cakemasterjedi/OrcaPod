@@ -254,6 +254,26 @@ class Engine private constructor(private var presets: Long, private val plater: 
 
     suspend fun splitToObjects(objectId: Long): Int = onEngine { Native.splitObjects(plater, objectId) }
 
+    /** One paint layer of a volume, as world triangles with their states. */
+    suspend fun paint(objectId: Long, volumeId: Long, layer: PaintLayer): PaintMesh = onEngine {
+        val r = Native.volumePaint(plater, objectId, volumeId, layer.code)
+        PaintMesh(r[0] as FloatArray, r[1] as ByteArray)
+    }
+
+    /** One brush dab at a world [hit], seen along [view] (one undo step). */
+    suspend fun paintSphere(objectId: Long, volumeId: Long, layer: PaintLayer, hit: FloatArray, view: FloatArray, radius: Double, state: Int) =
+        onEngine { Native.volumePaintSphere(plater, objectId, volumeId, layer.code, ray(hit, view), radius, state) }
+
+    /** Smart fill with [angle] > 0, else bucket fill of the hit facet's region. */
+    suspend fun paintFill(objectId: Long, volumeId: Long, layer: PaintLayer, hit: FloatArray, view: FloatArray, angle: Double, state: Int) =
+        onEngine { Native.volumePaintFill(plater, objectId, volumeId, layer.code, ray(hit, view), angle, angle <= 0.0, state) }
+
+    suspend fun paintReset(objectId: Long, volumeId: Long, layer: PaintLayer) =
+        onEngine { Native.volumePaintReset(plater, objectId, volumeId, layer.code) }
+
+    private fun ray(hit: FloatArray, view: FloatArray) =
+        doubleArrayOf(hit[0].toDouble(), hit[1].toDouble(), hit[2].toDouble(), view[0].toDouble(), view[1].toDouble(), view[2].toDouble())
+
     /**
      * Desktop cut: replaces the object by the [keep] result of cutting it
      * through [plane]. Its connectors are drilled into the cut faces; the

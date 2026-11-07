@@ -65,6 +65,30 @@ for "Lay on face". After slicing, the G-code is parsed by the engine's
 `GCodeProcessor` (`orca_gcode_toolpath`) and the extrusion moves are drawn as
 lines coloured by extrusion role, up to the layer on the slider.
 
+## Model library
+
+The library screen (`library/`, `ui/LibraryScreen.kt`) brings models in
+from the web, through two routes chosen by what each site offers:
+
+- **Thingiverse** has an official REST API, so it gets a native search grid
+  and a file picker. The API needs an app token; OrcaPod ships none, and the
+  user pastes their own (created free at thingiverse.com/apps/create), kept
+  in the app's private preferences.
+- **Printables, MakerWorld, MyMiniFactory, Cults** have no public API for
+  searching and downloading (MyMiniFactory's needs a registered OAuth app),
+  so they open in an in-app WebView where the user browses and signs in as in
+  a browser. The WebView's download listener re-fetches each download with
+  the page's cookies, or, for files a page builds in a `blob:` URL, has the
+  page read the blob and hand it back through a JavaScript interface that
+  only accepts the nonce issued for that download.
+
+Downloads land in a per-download cache directory. Zip archives are unpacked
+flat (entry paths are reduced to base names, so nothing escapes the
+directory) to their model files; a 3MF is kept whole. One model file goes
+straight to the plate, several open a picker. Credentials (the API token,
+site cookies) are not forwarded when a download redirects to another host.
+A web link shared to the app from a browser opens the library on that page.
+
 ## Limits
 
 - STEP import needs OCCT, which the bridge does not build; the app says so

@@ -51,6 +51,152 @@ After an app update the same brands are re-extracted, since the bundled
 profiles may have changed. User presets live beside them in `user/default`
 and survive both.
 
+## Settings editors
+
+The settings screen is desktop's three tabs (process, filament, printer)
+with every option, in desktop's pages and groups. The structure comes from
+`assets/settings_layout.json`, which `tools/gen_settings_layout.py` extracts
+from the desktop tab builders in `src/slic3r/GUI/Tab.cpp`, so the app does not
+keep its own copy of the option list. Labels, types, units, ranges, enum
+choices, tooltips and visibility levels come from the engine at run time
+(`orca_config_option_defs`, the same `ConfigOptionDef`s desktop renders),
+so options added upstream appear with their real metadata once they are in
+the layout. A Simple / Advanced / Expert switch filters by the option's
+mode, and search reaches every level, as on desktop.
+
+Edits go to the engine's edited presets (`orca_presets_set_value`), so slicing
+picks them up exactly as desktop does. A value is "modified" when the edited
+preset differs from the saved one (`orca_presets_config_dump`, both copies);
+it can be reset per option or per tab and saved as a user preset.
+
+The same option editor serves per-object and per-part settings: the object
+sheet lists the target's overrides (`orca_plater_settings_dump`) and adds any
+key the engine accepts for that target (`orca_plater_settings_keys`:
+object and region options for objects, region options for parts and
+modifiers), seeded with the value slicing would otherwise use.
+
+## Objects, parts and plates
+
+The object list and object sheet expose desktop's object-list features
+through the bridge: parts, negative parts, modifiers and support
+blockers/enforcers (built-in shapes or loaded files) with type changes,
+renames and deletes; per-part filament assignment; height range modifiers
+(layer height per Z band); split, mirror, unit conversion, simplify,
+subdivide, copies, clone and fill plate. The scene snapshot carries every
+volume: parts are triangle ranges of the object's merged mesh, so the
+viewport colours each part by its filament without a second copy of the
+geometry, and the other roles carry their own meshes, drawn translucent over
+the parts like desktop.
+
+Plates are desktop's plate tabs: add, rename, lock, duplicate, reorder,
+delete and per-plate settings (plate type, sequence, spiral vase, first-layer
+filament order). Slicing works on the selected plate or every plate into one
+file; the preview shows a single plate, offset to where it sits beside the
+bed. Projects save as OrcaSlicer 3MF with plates and settings, and sliced
+3MF files (G-code inside a 3MF) export per plate or for all plates.
+
+Filament slots (preset and colour per slot) follow desktop's sidebar list;
+objects and parts take a slot through the "extruder" option, which slicing
+maps to a tool.
+
+## Cut
+
+The cut tool is desktop's cut gizmo:
+- A plane through the selected instance, at a height and with a tilt about
+  X and Y, drawn translucent over the objects.
+- Keep options: upper part (flipped onto the cut face), lower part, both as
+  parts, or both as objects.
+- Plug, dowel or snap connectors, placed by tapping the plane.
+
+Connectors stay in plane coordinates while the plane moves, as on desktop.
+On "Perform cut" they become the engine's cut connectors, stored as desktop
+stores them (the world point minus the instance offset). The cut
+(`orca_plater_object_cut`) then drills them into both faces in one undo step.
+
+## Painting
+
+The painter is desktop's painter gizmos on one object. Each layer is a
+`FacetsAnnotation` that slicing reads:
+- support enforcers and blockers
+- seam enforcers and blockers
+- multi-material colour (one state per filament)
+- fuzzy skin
+
+Its tools are a sphere brush, smart fill by angle and bucket fill.
+
+While painting, a finger on the object paints and a finger elsewhere turns
+the view. The viewport finds the part under the finger from the hit
+triangle's range in the merged mesh. It sends one engine stroke
+(`orca_plater_volume_paint_sphere` / `_fill`) per finger step, and each
+stroke is one undo step. After each stroke the app reads the painted
+triangles back (`orca_plater_volume_paint`) and draws them as an overlay with
+desktop's enforcer and blocker colours, or the filament's colour.
+
+## Variable layer height
+
+The layer height editor is desktop's layers editing on one object. It works
+on `ModelObject::layer_height_profile`, flat (z, layer height) pairs, where
+an empty profile means the process layer height (and any height ranges).
+The panel draws the profile as desktop's thickness bar: object height
+upwards, layer height to the right, with the process layer height dashed.
+
+Its edits are desktop's:
+- Adaptive (`layer_height_profile_adaptive`) at a quality from -0.1 to 1.
+- Smooth (`smooth_height_profile`) over a radius of layers, optionally
+  keeping local minima.
+- Thicker, thinner or smooth at a picked height over a band
+  (`adjust_layer_height_profile`). One press is four of desktop's timer steps.
+- Reset, which clears the profile.
+
+Smooth and manual edits on an object without a profile start from
+`layer_height_profile_from_ranges`, as desktop does. Each edit is one undo
+step and makes the slice stale.
+
+## Measure
+
+The measure tool is desktop's measure gizmo on one object. A tap on the
+object picks the feature under the finger (`orca_measure_pick`): a point, an
+edge, a circle or a plane. The engine's `Measure::Measuring` segments the
+object's merged mesh, the same mesh the viewport picks against, so the tapped
+triangle and the object-space hit go to it unchanged. Building it is slow, so
+the engine keeps one per object and mesh revision.
+
+Like desktop, the app measures in world space: it carries both features
+through the instance matrix (normals through the cofactor matrix, which also
+scales plane areas and circle radii) before `orca_measure_between`. The panel
+shows desktop's distance, per-axis distance and angle, and the viewport draws
+the features and the dimension line over the objects.
+
+## Calibration
+
+The Calibration menu is desktop's: temperature tower, flow rate (passes 1
+and 2, and Orca YOLO with its perfectionist version), pressure advance tower
+line and pattern, max volumetric speed, VFA, retraction, input shaping
+frequency and damping, and cornering. The dialog takes desktop's default
+ranges, by filament type for the temperature tower, by extruder type for
+pressure advance, and by firmware for cornering, which tests junction
+deviation instead of jerk on Marlin 2 printers that set one. The input
+shaper types it offers follow the printer's G-code flavor, as desktop's do.
+
+`orca_plater_start_calibration` is desktop's `Plater::calib_*` in the
+engine. It replaces the document with the test model, makes desktop's edits
+to the edited print, filament and printer presets and to the objects'
+settings, and cuts the model to the tested range. It keeps the test's
+`Calib_Params` on the plater, so every slice of it goes through
+`Print::set_calib_params` and G-code generation steps the temperature, PA,
+speed, retraction, shaper frequency or damping, or cornering up the model.
+
+The PA pattern has no test model. As on desktop, the plate gets one cube
+handle per speed and acceleration pair, and the plater keeps a
+`CalibPressureAdvancePattern` built from its own `Calib_Params`, which the
+pattern holds by reference. Each slice writes the pattern's G-code into the
+plate's custom G-code, where desktop's GUI plater puts it. Clearing the plate, opening a project or
+"End test" makes the plater ordinary again.
+
+The engine has no Draco decoder, so `mobile/android/tools/gen_calib_models.py`
+turns desktop's `.drc` test models into plain 3MF meshes in `assets/calib`,
+next to copies of the flow rate 3MFs. The app copies the chosen model out of
+the assets before the engine reads it.
 The engine loads every vendor under `system/`, and parsing a vendor's preset
 tree dominates startup, so only one installed brand sits there at a time: the
 brand of the printer in use. The others are parked in `orca-brands/`, outside
@@ -73,9 +219,36 @@ a finger on the selected object drags it over a plane at the touched height,
 and the move is committed to the engine on release; a finger elsewhere
 orbits; two fingers pinch to zoom and pan. Taps are resolved by a CPU ray
 cast against the instance meshes, which also gives the tapped face's normal
-for "Lay on face". After slicing, the G-code is parsed by the engine's
-`GCodeProcessor` (`orca_gcode_toolpath`) and the extrusion moves are drawn as
-lines coloured by extrusion role, up to the layer on the slider.
+for "Lay on face".
+
+## G-code preview
+
+After slicing, the engine's `GCodeProcessor` parses the G-code
+(`orca_gcode_toolpath`). The JNI layer keeps every extrusion, travel and wipe
+as a line segment in file order, grouped by layer, with the attributes
+desktop's colour schemes use (speed, actual speed, height, width, fan,
+temperature, flow, layer time, acceleration, jerk, pressure advance).
+Retractions, seams, tool changes, pauses and custom G-code become point
+markers. Layers without extrusions are dropped.
+
+`ToolpathGeometry` (`ui/viewport/ToolpathStyle.kt`) turns a toolpath and a
+`PreviewStyle` into one line buffer and one point buffer. It does no GL work,
+so the host tests cover it. The style is the colour scheme, the hidden
+extrusion roles and the shown options. Range schemes use libvgcode's palette
+and its linear or logarithmic interpolation. The ranges are computed over the
+shown extrusions, without travels, as desktop computes them. Each segment
+records how many visible segments come before it, so the layer range slider
+and the move slider of the top layer each map to a single draw call.
+
+The legend gives the time and share of each line type (tap a type to hide
+it), the value scale for range schemes, or the filament used per slot. The
+summary gives normal and silent time, travel time, and filament length,
+weight and cost per slot.
+
+Per-layer custom G-code follows desktop's layer slider:
+- Add a pause, custom G-code or, with several filaments, a filament change
+  before the top layer shown (`orca_plater_custom_gcode_*`).
+- The shown slice stays until the next one, which applies the changes.
 
 ## Printers
 
@@ -178,7 +351,6 @@ A web link shared to the app from a browser opens the library on that page.
 
 - STEP import needs OCCT, which the bridge does not build; the app says so
   and asks for STL or 3MF instead.
-- One filament slot: multi-material assignment is not exposed yet.
 - Bambu printers are reached in LAN mode only; Bambu's cloud needs its
   closed network plugin. The AMS maps the single filament to one tray.
 - Prints the app did not send appear in its history only for Klipper.
@@ -188,4 +360,18 @@ A web link shared to the app from a browser opens the library on that page.
 `mobile/android/tools/host-jni-test.sh` builds the engine for the desktop
 host, links the same `orcapod_jni.cpp` into a host JNI library and runs
 `EngineHostTest` on the JVM: profiles load, a model imports, moves, undoes
-and arranges, settings edit, and a plate slices, previews and cancels.
+and arranges, settings edit, and a plate slices, previews and cancels. It
+also checks that every option of the shipped settings layout is known to the
+engine, and exercises parts and modifiers, per-object and per-part settings,
+height ranges, plates, filament slots, slicing all plates and the project,
+sliced-3MF and STL exports. The preview checks cover travels, markers,
+attributes and layer heights, hidden roles, ranges and slider draw ranges, and
+a pause and filament change that reach the sliced G-code. Cut, paint and
+layer height checks cover straight and tilted cuts with connectors, brush and
+fill strokes, and manual, adaptive, smoothed and reset profiles. The measure check picks a
+point and a plane, measures between them, and carries features through a
+scaled instance. The calibration check sets up a temperature tower, a
+flow rate pass, a PA pattern and a cornering test and ends the test; the
+bridge contract tests also check each tower's height, that PA tower and
+pattern G-code steps PA, the input shaping and cornering printer settings,
+and the dialogs' range checks.

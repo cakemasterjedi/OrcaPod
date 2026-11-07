@@ -20,6 +20,15 @@ interface ViewportListener {
     fun onMoved(selection: Selection, dx: Double, dy: Double)
     /** "Lay on face" tap: the world-space normal of the tapped face. */
     fun onFacePicked(selection: Selection, nx: Double, ny: Double, nz: Double)
+    /** A tap while [PlateView.rayTaps] is set: the world ray under the finger. */
+    fun onRay(origin: FloatArray, direction: FloatArray) {}
+    /**
+     * A paint dab on [PlateView.paintObject]: the part under the finger, the
+     * world hit point and the viewing direction. [first] marks a new stroke.
+     */
+    fun onPaint(objectId: Long, volumeId: Long, hit: FloatArray, view: FloatArray, first: Boolean) {}
+    /** A tap on [PlateView.measureObject]: the merged-mesh triangle and the object-space point under the finger. */
+    fun onMeasure(selection: Selection, triangle: Int, local: FloatArray) {}
 }
 
 /**
@@ -34,6 +43,14 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
 
     /** When set, a tap on an object reports the tapped face instead of selecting. */
     var pickFaces = false
+    /** When set, a tap reports its world ray (cut connector placement) instead of selecting. */
+    var rayTaps = false
+    /** When set, objects cannot be dragged (a tool such as the cut is open). */
+    var lockDrag = false
+    /** The object being painted: a finger on it paints instead of orbiting. */
+    var paintObject: Long? = null
+    /** The object being measured: a tap on it picks a feature instead of selecting. */
+    var measureObject: Long? = null
 
     init {
         setEGLContextClientVersion(3)
@@ -64,7 +81,7 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
 
     // --- gestures ---
 
-    private enum class Mode { NONE, ORBIT, DRAG_OBJECT, MULTI }
+    private enum class Mode { NONE, ORBIT, DRAG_OBJECT, MULTI, PAINT }
 
     private var mode = Mode.NONE
     private var lastX = 0f
@@ -95,7 +112,10 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
                 moved = false
                 val hit = pick(e.x, e.y)
                 val sel = state.selection
-                if (!pickFaces && hit != null && sel != null && hit.selection == sel) {
+                if (paintObject != null && hit != null && hit.selection.objectId == paintObject) {
+                    mode = Mode.PAINT
+                    paintAt(hit, e.x, e.y, first = true)
+                } else if (!pickFaces && !lockDrag && hit != null && sel != null && hit.selection == sel) {
                     // Drag the already selected object over a plane at the touched height.
                     mode = Mode.DRAG_OBJECT
                     dragTarget = hit.selection
@@ -107,6 +127,7 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (mode == Mode.DRAG_OBJECT) cancelDrag()
+                lastPaint = null
                 mode = Mode.MULTI
                 lastFocusX = focusX(e); lastFocusY = focusY(e)
                 moved = true
@@ -125,6 +146,12 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
                         if (start != null && now != null && t != null) {
                             renderer.state = state.copy(drag = Drag(t.objectId, t.instanceId, now[0] - start[0], now[1] - start[1]))
                             requestRender()
+                        }
+                    }
+                    Mode.PAINT -> {
+                        val last = lastPaint
+                        if (last == null || hypot(e.x - last[0], e.y - last[1]) > PAINT_SPACING_PX) {
+                            pick(e.x, e.y)?.takeIf { it.selection.objectId == paintObject }?.let { paintAt(it, e.x, e.y, first = false) }
                         }
                     }
                     Mode.MULTI -> if (e.pointerCount >= 2) {
@@ -146,6 +173,7 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
                 }
             }
             MotionEvent.ACTION_UP -> {
+                if (mode == Mode.PAINT) { mode = Mode.NONE; lastPaint = null; return true }
                 if (!moved) tap(e.x, e.y)
                 else if (mode == Mode.DRAG_OBJECT) finishDrag()
                 mode = Mode.NONE
@@ -156,6 +184,17 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
             }
         }
         return true
+    }
+
+    private var lastPaint: FloatArray? = null
+
+    private fun paintAt(hit: Hit, x: Float, y: Float, first: Boolean) {
+        val obj = state.scene.snapshot.objects.firstOrNull { it.id == hit.selection.objectId } ?: return
+        val part = obj.parts.firstOrNull { hit.triangle >= it.mergedTriangleStart && hit.triangle < it.mergedTriangleStart + it.mergedTriangleCount }
+            ?: return
+        val r = camera.ray(x, y)
+        listener.onPaint(obj.id, part.id, hit.point, floatArrayOf(r[3], r[4], r[5]), first)
+        lastPaint = floatArrayOf(x, y)
     }
 
     private val touchSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop.toFloat()
@@ -170,7 +209,16 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
     }
 
     private fun tap(x: Float, y: Float) {
+        if (rayTaps) {
+            val r = camera.ray(x, y)
+            listener.onRay(r.copyOfRange(0, 3), r.copyOfRange(3, 6))
+            return
+        }
         val hit = pick(x, y)
+        if (measureObject != null) {
+            if (hit != null && hit.selection.objectId == measureObject) listener.onMeasure(hit.selection, hit.triangle, hit.local)
+            return
+        }
         if (pickFaces && hit != null) {
             listener.onFacePicked(hit.selection, hit.normal[0].toDouble(), hit.normal[1].toDouble(), hit.normal[2].toDouble())
         } else {
@@ -205,7 +253,11 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
 
     // --- picking ---
 
-    private class Hit(val selection: Selection, val t: Float, val point: FloatArray, val normal: FloatArray)
+    private class Hit(
+        val selection: Selection, val t: Float, val point: FloatArray, val normal: FloatArray, val triangle: Int,
+        /** The hit in object space. */
+        val local: FloatArray,
+    )
 
     private val boundsCache = WeakHashMap<Mesh, FloatArray>()
 
@@ -228,7 +280,8 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
                 val tri = intersect(mesh, o, d, best?.t ?: Float.MAX_VALUE) ?: continue
                 val t = tri.first
                 val point = floatArrayOf(ray[0] + t * ray[3], ray[1] + t * ray[4], ray[2] + t * ray[5])
-                best = Hit(Selection(obj.id, inst.id), t, point, worldNormal(mesh, tri.second, inv))
+                val local = floatArrayOf(o[0] + t * d[0], o[1] + t * d[1], o[2] + t * d[2])
+                best = Hit(Selection(obj.id, inst.id), t, point, worldNormal(mesh, tri.second, inv), tri.second, local)
             }
         }
         return best
@@ -311,5 +364,10 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
         val len = hypot(hypot(w[0], w[1]), w[2])
         if (len > 0f) for (k in 0 until 3) w[k] /= len
         return w
+    }
+
+    private companion object {
+        /** Finger travel between brush dabs; each dab is one engine stroke. */
+        const val PAINT_SPACING_PX = 24f
     }
 }

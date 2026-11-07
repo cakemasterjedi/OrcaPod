@@ -129,7 +129,7 @@ fun PlateScreen(vm: AppViewModel) {
                             DropdownMenuItem(
                                 text = { Text("Ask for STEP import options") },
                                 trailingIcon = { Checkbox(checked = vm.askStepOptions, onCheckedChange = null) },
-                                onClick = { vm.setAskStepOptions(!vm.askStepOptions) },
+                                onClick = { vm.askStepOptions = !vm.askStepOptions },
                             )
                         }
                     }

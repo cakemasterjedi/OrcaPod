@@ -387,7 +387,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 .putBoolean(KEY_STEP_ASSEMBLY, o.asAssembly)
                 .apply()
         }
-        if (answer.dontAsk) setAskStepOptions(false)
+        if (answer.dontAsk) askStepOptions = false
         return answer.options
     }
 
@@ -410,13 +410,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Desktop Preferences "Show the STEP mesh parameter setting dialog". */
-    var askStepOptions by mutableStateOf(prefs.getBoolean(KEY_STEP_SHOW_DIALOG, true))
-        private set
-
-    fun setAskStepOptions(ask: Boolean) {
-        askStepOptions = ask
-        prefs.edit().putBoolean(KEY_STEP_SHOW_DIALOG, ask).apply()
-    }
+    var askStepOptions: Boolean
+        get() = askStepOptionsState
+        set(ask) {
+            askStepOptionsState = ask
+            prefs.edit().putBoolean(KEY_STEP_SHOW_DIALOG, ask).apply()
+        }
+    private var askStepOptionsState by mutableStateOf(prefs.getBoolean(KEY_STEP_SHOW_DIALOG, true))
 
     fun exportProject(uri: Uri) = engineAction("Exporting…") { e ->
         val tmp = File(getApplication<Application>().cacheDir, "export.3mf")

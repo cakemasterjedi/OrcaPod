@@ -31,6 +31,10 @@ data class ViewportState(
     val selectedVolume: Long? = null,
     /** Filament slot colours (#rrggbb); objects are drawn in their filament's colour when there are several. */
     val filamentColours: List<String> = emptyList(),
+    /** The cut plane's four corners (12 floats), drawn translucent over the objects. */
+    val cutQuad: FloatArray? = null,
+    /** Cut connector centres, three floats each. */
+    val cutPoints: FloatArray? = null,
 )
 
 data class Selection(val objectId: Long, val instanceId: Long)
@@ -59,6 +63,7 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
     private var toolpathVbo = 0
     private var pointVbo = 0
     private var toolVbo = 0
+    private var overlayVbo = 0
 
     private val mvp = FloatArray(16)
     private val model = FloatArray(16)
@@ -74,6 +79,7 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
         bedKey = null
         toolpathSource = null
         toolVbo = 0
+        overlayVbo = 0
         glEnable(GL_DEPTH_TEST)
         glClearColor(0.13f, 0.14f, 0.16f, 1f)
     }
@@ -97,7 +103,45 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
             drawToolpath(s.toolpath, s.previewStyle, s.range, dx, dy)
         } else {
             drawObjects(s)
+            drawCut(s)
         }
+    }
+
+    /** Uploads [data] (interleaved position + colour) into the shared overlay buffer and draws it. */
+    private fun drawOverlay(data: FloatArray, mode: Int, alpha: Float) {
+        if (data.isEmpty()) return
+        if (overlayVbo == 0) overlayVbo = IntArray(1).also { glGenBuffers(1, it, 0) }[0]
+        glBindBuffer(GL_ARRAY_BUFFER, overlayVbo)
+        glBufferData(GL_ARRAY_BUFFER, data.size * 4, Gl.floatBuffer(data), GL_DYNAMIC_DRAW)
+        glUseProgram(colorProgram.id)
+        glUniformMatrix4fv(colorProgram.mvp, 1, false, camera.viewProjection, 0)
+        glUniform1f(colorProgram.alpha, alpha)
+        bindInterleaved(overlayVbo)
+        glDrawArrays(mode, 0, data.size / 6)
+    }
+
+    private fun drawCut(s: ViewportState) {
+        val q = s.cutQuad ?: return
+        val quad = FloatArray(36)
+        for ((i, corner) in intArrayOf(0, 1, 2, 0, 2, 3).withIndex()) {
+            for (k in 0 until 3) quad[i * 6 + k] = q[corner * 3 + k]
+            quad[i * 6 + 3] = CUT_PLANE[0]; quad[i * 6 + 4] = CUT_PLANE[1]; quad[i * 6 + 5] = CUT_PLANE[2]
+        }
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glDepthMask(false)
+        drawOverlay(quad, GL_TRIANGLES, 0.35f)
+        glDepthMask(true)
+        glDisable(GL_BLEND)
+        val p = s.cutPoints ?: return
+        val pts = FloatArray(p.size * 2)
+        for (i in 0 until p.size / 3) {
+            for (k in 0 until 3) pts[i * 6 + k] = p[i * 3 + k]
+            pts[i * 6 + 3] = CONNECTOR[0]; pts[i * 6 + 4] = CONNECTOR[1]; pts[i * 6 + 5] = CONNECTOR[2]
+        }
+        glDisable(GL_DEPTH_TEST)
+        drawOverlay(pts, GL_POINTS, 1f)
+        glEnable(GL_DEPTH_TEST)
     }
 
     // --- bed ---
@@ -357,6 +401,8 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
         private val MODIFIER = floatArrayOf(0.95f, 0.8f, 0.25f, 0.35f)
         private val BLOCKER = floatArrayOf(0.9f, 0.25f, 0.25f, 0.4f)
         private val ENFORCER = floatArrayOf(0.25f, 0.45f, 0.95f, 0.4f)
+        private val CUT_PLANE = floatArrayOf(0.95f, 0.55f, 0.2f)
+        private val CONNECTOR = floatArrayOf(1f, 1f, 1f)
 
         internal fun parseHex(hex: String): FloatArray {
             val v = hex.trim().removePrefix("#").take(6).toIntOrNull(16) ?: return DEFAULT

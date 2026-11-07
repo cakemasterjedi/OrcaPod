@@ -20,6 +20,8 @@ interface ViewportListener {
     fun onMoved(selection: Selection, dx: Double, dy: Double)
     /** "Lay on face" tap: the world-space normal of the tapped face. */
     fun onFacePicked(selection: Selection, nx: Double, ny: Double, nz: Double)
+    /** A tap while [PlateView.rayTaps] is set: the world ray under the finger. */
+    fun onRay(origin: FloatArray, direction: FloatArray) {}
 }
 
 /**
@@ -34,6 +36,10 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
 
     /** When set, a tap on an object reports the tapped face instead of selecting. */
     var pickFaces = false
+    /** When set, a tap reports its world ray (cut connector placement) instead of selecting. */
+    var rayTaps = false
+    /** When set, objects cannot be dragged (a tool such as the cut is open). */
+    var lockDrag = false
 
     init {
         setEGLContextClientVersion(3)
@@ -95,7 +101,7 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
                 moved = false
                 val hit = pick(e.x, e.y)
                 val sel = state.selection
-                if (!pickFaces && hit != null && sel != null && hit.selection == sel) {
+                if (!pickFaces && !lockDrag && hit != null && sel != null && hit.selection == sel) {
                     // Drag the already selected object over a plane at the touched height.
                     mode = Mode.DRAG_OBJECT
                     dragTarget = hit.selection
@@ -170,6 +176,11 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
     }
 
     private fun tap(x: Float, y: Float) {
+        if (rayTaps) {
+            val r = camera.ray(x, y)
+            listener.onRay(r.copyOfRange(0, 3), r.copyOfRange(3, 6))
+            return
+        }
         val hit = pick(x, y)
         if (pickFaces && hit != null) {
             listener.onFacePicked(hit.selection, hit.normal[0].toDouble(), hit.normal[1].toDouble(), hit.normal[2].toDouble())

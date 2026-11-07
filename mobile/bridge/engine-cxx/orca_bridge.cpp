@@ -2841,8 +2841,10 @@ static Slic3r::Transform3d orcapad_cut_matrix(const Slic3r::Vec3d &point,
     Slic3r::Vec3d axis;
     double angle = 0.0;
     Slic3r::Matrix3d rotation = Slic3r::Matrix3d::Identity();
+    // The cut frame maps its Z onto the plane normal (desktop GLGizmoCut3D's
+    // m_rotation_m); CutUtils inverts it to bring the mesh into cut space.
     Slic3r::Geometry::rotation_from_two_vectors(
-        normal.normalized(), Slic3r::Vec3d::UnitZ(), axis, angle, &rotation);
+        Slic3r::Vec3d::UnitZ(), normal.normalized(), axis, angle, &rotation);
     return Slic3r::Geometry::translation_transform(point) *
            Slic3r::Transform3d(rotation);
 }
@@ -2916,10 +2918,13 @@ orca_result orca_plater_object_cut(orca_plater *plater,
 
         // Cut runs on a scratch model (CutUtils clones the object); the
         // results enter the document as copies, like convert_units.
+        // CutUtils works on the instance mesh without its offset, so the
+        // plane is placed relative to it (desktop GLGizmoCut3D::get_cut_matrix).
+        const Slic3r::Vec3d plane_point =
+            Slic3r::Vec3d(plane_x, plane_y, plane_z) -
+            object->instances[instance_index]->get_offset();
         Slic3r::Cut cut(object, static_cast<int>(instance_index),
-                        orcapad_cut_matrix(Slic3r::Vec3d(plane_x, plane_y, plane_z),
-                                           normal),
-                        attributes);
+                        orcapad_cut_matrix(plane_point, normal), attributes);
         const Slic3r::ModelObjectPtrs &results = cut.perform_with_plane();
         if (results.empty())
             return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,

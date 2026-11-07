@@ -253,6 +253,24 @@ class Engine private constructor(private var presets: Long, private val plater: 
     }
 
     suspend fun splitToObjects(objectId: Long): Int = onEngine { Native.splitObjects(plater, objectId) }
+
+    /**
+     * Desktop cut: replaces the object by the [keep] result of cutting it
+     * through [plane]. Its connectors are drilled into the cut faces; the
+     * object's earlier connectors are replaced. Returns the objects produced.
+     */
+    suspend fun cut(objectId: Long, instanceId: Long, plane: CutPlane, keep: CutKeep, connectors: List<CutConnector>): Int =
+        onEngine {
+            Native.cutConnectorsClear(plater, objectId)
+            for (c in connectors) {
+                Native.cutConnectorAdd(
+                    plater, objectId, doubleArrayOf(c.x, c.y, c.z, plane.nx, plane.ny, plane.nz),
+                    floatArrayOf(c.radius, c.depth, c.radiusTolerance, c.depthTolerance),
+                    intArrayOf(c.type.ordinal, c.style.ordinal, c.shape.ordinal),
+                )
+            }
+            Native.objectCut(plater, objectId, instanceId, doubleArrayOf(plane.x, plane.y, plane.z, plane.nx, plane.ny, plane.nz), keep.code)
+        }
     suspend fun splitToParts(objectId: Long, volumeId: Long): Int = onEngine { Native.splitParts(plater, objectId, volumeId) }
     suspend fun mirror(objectId: Long, instanceId: Long, axis: Int) = onEngine { Native.instanceMirror(plater, objectId, instanceId, axis) }
     /** [instanceId] 0 applies to every instance of the object. */

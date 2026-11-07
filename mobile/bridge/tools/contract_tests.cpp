@@ -3770,9 +3770,12 @@ static void test_cut(const std::string &dir) {
     orca_scene_snapshot snap = take_snapshot(plater);
     CHECK_EQ(snap.object_count, 1);
     const orca_scene_object &source = snap.objects[0];
-    const double cx = 0.5 * (source.bbox_min[0] + source.bbox_max[0]);
-    const double cy = 0.5 * (source.bbox_min[1] + source.bbox_max[1]);
-    const double midZ = 0.5 * (source.bbox_min[2] + source.bbox_max[2]);
+    // the plane is a WORLD point: the object-space bbox centre moved by the
+    // instance offset (matrix translation; the cube is neither rotated nor scaled)
+    const double *m = source.instances[0].matrix;
+    const double cx = 0.5 * (source.bbox_min[0] + source.bbox_max[0]) + m[12];
+    const double cy = 0.5 * (source.bbox_min[1] + source.bbox_max[1]) + m[13];
+    const double midZ = 0.5 * (source.bbox_min[2] + source.bbox_max[2]) + m[14];
     const float sourceHeight = source.bbox_max[2] - source.bbox_min[2];
     const orca_instance_id instance = source.instances[0].id;
     orca_scene_snapshot_dispose(&snap);
@@ -3817,6 +3820,20 @@ static void test_cut(const std::string &dir) {
         orca_scene_snapshot restored = take_snapshot(plater);
         CHECK_EQ(restored.object_count, 1);
         orca_scene_snapshot_dispose(&restored);
+    }
+
+    // a tilted plane through the object's centre still splits it: the plane
+    // is placed relative to the instance offset, its frame maps Z onto the
+    // normal (desktop get_cut_matrix)
+    for (int axis = 0; axis < 2; ++axis) {
+        const double t = 0.5; // ~30 degrees
+        GUARD(ct, orca_plater_object_cut(plater, object_id, instance, cx, cy, midZ,
+                                         axis == 0 ? t : 0.0, axis == 1 ? t : 0.0, 0.866,
+                                         3, &first, &count, &revision));
+        expect_ok(ct, "tilted cut");
+        CHECK_EQ(count, 2u);
+        GUARD(ut, orca_plater_undo(plater, &revision));
+        expect_ok(ut, "undo tilted cut");
     }
 
     // both halves as PARTS: one object, two volumes

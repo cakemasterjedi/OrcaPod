@@ -486,6 +486,38 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (selectedVolume == volumeId) selectedVolume = null
     }
 
+    // --- cut (desktop cut gizmo) ---
+
+    /** The cut being set up, shown as a plane in the viewport; null when not cutting. */
+    var cut by mutableStateOf<CutState?>(null)
+
+    fun startCut(sel: Selection) {
+        val obj = objectOf(sel.objectId) ?: return
+        val inst = obj.instances.firstOrNull { it.id == sel.instanceId } ?: return
+        val mesh = scene.meshes[obj.id] ?: return
+        val b = worldBounds(mesh.positions, inst.matrix)
+        val t = inst.transform
+        cut = CutState(sel, b, doubleArrayOf(t.offsetX, t.offsetY, t.offsetZ), height = (b[2] + b[5]) / 2)
+    }
+
+    /** A tap while placing connectors: adds one where the ray meets the plane. */
+    fun placeConnector(origin: FloatArray, direction: FloatArray) {
+        val c = cut ?: return
+        val uv = c.hit(origin, direction) ?: return
+        if (kotlin.math.abs(uv.first) > c.extent || kotlin.math.abs(uv.second) > c.extent) return
+        cut = c.copy(connectors = c.connectors + uv)
+    }
+
+    fun performCut() {
+        val c = cut ?: return
+        mutate("Cutting…") { e ->
+            val n = e.cut(c.selection.objectId, c.selection.instanceId, c.plane, c.keep, c.engineConnectors())
+            cut = null
+            selection = null
+            _messages.tryEmit(if (n == 1) "Cut done" else "Cut into $n objects")
+        }
+    }
+
     fun splitToObjects(objectId: Long) = mutate("Splitting…") { e ->
         val n = e.splitToObjects(objectId)
         selection = null
@@ -806,4 +838,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         /** Colours for new filament slots, like desktop's default palette. */
         val NEW_SLOT_COLOURS = listOf("#00AE42", "#F4EE2A", "#2850E0", "#EC008C", "#FF6A13", "#FFFFFF", "#161616", "#A3D8E1")
     }
+}
+
+/** World bounding box (min xyz, max xyz) of object-space [positions] under a column-major [matrix]. */
+internal fun worldBounds(positions: FloatArray, matrix: FloatArray): FloatArray {
+    val b = floatArrayOf(Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE)
+    for (i in positions.indices step 3) {
+        val x = positions[i]; val y = positions[i + 1]; val z = positions[i + 2]
+        for (k in 0 until 3) {
+            val w = matrix[k] * x + matrix[4 + k] * y + matrix[8 + k] * z + matrix[12 + k]
+            if (w < b[k]) b[k] = w
+            if (w > b[k + 3]) b[k + 3] = w
+        }
+    }
+    return b
 }

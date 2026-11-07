@@ -97,6 +97,20 @@ Filament slots (preset and colour per slot) follow desktop's sidebar list;
 objects and parts take a slot through the "extruder" option, which slicing
 maps to a tool.
 
+## Cut
+
+The cut tool is desktop's cut gizmo:
+- A plane through the selected instance, at a height and with a tilt about
+  X and Y, drawn translucent over the objects.
+- Keep options: upper part (flipped onto the cut face), lower part, both as
+  parts, or both as objects.
+- Plug, dowel or snap connectors, placed by tapping the plane.
+
+Connectors stay in plane coordinates while the plane moves, as on desktop.
+On "Perform cut" they become the engine's cut connectors, stored as desktop
+stores them (the world point minus the instance offset). The cut
+(`orca_plater_object_cut`) then drills them into both faces in one undo step.
+
 ## Viewport
 
 The plate is drawn in engine coordinates (z-up millimetres). Gestures:

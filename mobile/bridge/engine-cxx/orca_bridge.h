@@ -717,7 +717,7 @@ orca_result orca_plater_instance_assemble_action(orca_plater *plater,
 /// 2 snap), style (0 prism, 1 frustum), shape (0 triangle, 1 square,
 /// 2 hexagon, 3 circle).
 typedef struct {
-    double position[3];       // world (engine) space, on the cut plane
+    double position[3];       // on the cut plane: world point minus the instance offset (desktop CutConnector::pos)
     double normal[3];         // cut plane normal the connector is drilled along
     float  radius;            // mm
     float  height;            // mm

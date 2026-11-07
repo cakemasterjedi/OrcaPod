@@ -964,6 +964,61 @@ JNI_FN(jint, splitObjects)(JNIEnv *env, jobject, jlong pl, jlong obj)
     return jint(count);
 }
 
+// Desktop cut gizmo: plane (engine world point and normal) and the kept result.
+// Returns the number of objects the cut produced.
+JNI_FN(jint, objectCut)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong inst, jdoubleArray plane, jint keep)
+{
+    double v[6] = {};
+    env->GetDoubleArrayRegion(plane, 0, 6, v);
+    orca_object_id first = 0;
+    uint32_t count = 0;
+    orca_revision rev = 0;
+    if (!check(env, orca_plater_object_cut(plater_of(pl), orca_object_id(obj), orca_instance_id(inst), v[0], v[1], v[2],
+                                           v[3], v[4], v[5], keep, &first, &count, &rev)))
+        return 0;
+    return jint(count);
+}
+
+/** `geometry` is position xyz and normal xyz; `sizes` radius, height and their tolerances; `kinds` type, style, shape. */
+JNI_FN(void, cutConnectorAdd)(JNIEnv *env, jobject, jlong pl, jlong obj, jdoubleArray geometry, jfloatArray sizes,
+                              jintArray kinds)
+{
+    double g[6] = {};
+    float sz[4] = {};
+    jint k[3] = {};
+    env->GetDoubleArrayRegion(geometry, 0, 6, g);
+    env->GetFloatArrayRegion(sizes, 0, 4, sz);
+    env->GetIntArrayRegion(kinds, 0, 3, k);
+    orca_cut_connector c{};
+    for (int i = 0; i < 3; ++i) {
+        c.position[i] = g[i];
+        c.normal[i] = g[3 + i];
+    }
+    c.radius = sz[0];
+    c.height = sz[1];
+    c.radius_tolerance = sz[2];
+    c.height_tolerance = sz[3];
+    c.type = k[0];
+    c.style = k[1];
+    c.shape = k[2];
+    orca_revision rev = 0;
+    check(env, orca_plater_object_cut_connector_add(plater_of(pl), orca_object_id(obj), &c, &rev));
+}
+
+/** Removes the object's connectors, if it has any (the bridge refuses an empty clear). */
+JNI_FN(void, cutConnectorsClear)(JNIEnv *env, jobject, jlong pl, jlong obj)
+{
+    orca_cut_connector *list = nullptr;
+    uint32_t count = 0;
+    if (!check(env, orca_plater_object_cut_connectors(plater_of(pl), orca_object_id(obj), &list, &count)))
+        return;
+    orca_cut_connectors_dispose(list);
+    if (count == 0)
+        return;
+    orca_revision rev = 0;
+    check(env, orca_plater_object_cut_connectors_clear(plater_of(pl), orca_object_id(obj), &rev));
+}
+
 JNI_FN(jint, splitParts)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol)
 {
     uint32_t count = 0;

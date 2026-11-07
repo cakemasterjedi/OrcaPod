@@ -308,3 +308,27 @@ data class CustomGcode(val printZ: Double, val type: CustomGcodeType, val extrud
     constructor(printZ: Double, type: Int, extruder: Int, colour: String, extra: String) :
         this(printZ, CustomGcodeType.of(type), extruder, colour, extra)
 }
+
+/** A cut plane through [x], [y], [z] (engine world mm) with normal ([nx], [ny], [nz]). */
+data class CutPlane(val x: Double, val y: Double, val z: Double, val nx: Double, val ny: Double, val nz: Double)
+
+/** What the cut keeps (orca_plater_object_cut). */
+enum class CutKeep(val code: Int, val label: String) {
+    UPPER(0, "Upper part"), LOWER(1, "Lower part"), PARTS(2, "Both, as parts"), OBJECTS(3, "Both, as objects")
+}
+
+/** Desktop CutConnectorType / Style / Shape, in engine order. */
+enum class ConnectorType(val label: String) { PLUG("Plug"), DOWEL("Dowel"), SNAP("Snap") }
+enum class ConnectorStyle(val label: String) { PRISM("Prism"), FRUSTUM("Frustum") }
+enum class ConnectorShape(val label: String) { TRIANGLE("Triangle"), SQUARE("Square"), HEXAGON("Hexagon"), CIRCLE("Circle") }
+
+/**
+ * One cut connector. Like desktop's, its position is the world point on the
+ * cut plane minus the instance offset; sizes are millimetres.
+ */
+data class CutConnector(
+    val x: Double, val y: Double, val z: Double,
+    val radius: Float, val depth: Float,
+    val radiusTolerance: Float, val depthTolerance: Float,
+    val type: ConnectorType, val style: ConnectorStyle, val shape: ConnectorShape,
+)

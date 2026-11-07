@@ -113,6 +113,7 @@ fun PlateScreen(vm: AppViewModel) {
                 vm.layFlat(selection, nx, ny, nz)
                 layFlat = false
             }
+            override fun onRay(origin: FloatArray, direction: FloatArray) { vm.placeConnector(origin, direction) }
         }
     }
 
@@ -188,6 +189,8 @@ fun PlateScreen(vm: AppViewModel) {
                 factory = { ctx -> PlateView(ctx, listener).also { viewRef = it } },
                 update = { view ->
                     view.pickFaces = layFlat
+                    view.rayTaps = vm.cut?.placing == true
+                    view.lockDrag = vm.cut != null
                     view.state = ViewportState(
                         scene = vm.scene,
                         selection = vm.selection,
@@ -198,6 +201,8 @@ fun PlateScreen(vm: AppViewModel) {
                         toolpathPlate = done?.plate ?: 0,
                         selectedVolume = vm.selectedVolume,
                         filamentColours = vm.filamentSlots.map { it.colour },
+                        cutQuad = vm.cut?.quad(),
+                        cutPoints = vm.cut?.connectorPoints(),
                     )
                 },
             )
@@ -233,6 +238,7 @@ fun PlateScreen(vm: AppViewModel) {
                         onSave = { saveGcode.launch(done.gcode.name) },
                     )
                     vm.slice is SliceState.Running -> SlicingPanel(vm.slice as SliceState.Running, vm::cancelSlice)
+                    vm.cut != null -> CutPanel(vm, vm.cut!!)
                     else -> {
                         if (sel != null && vm.transformOf(sel) != null) {
                             ObjectPanel(vm, sel, layFlat = layFlat, onLayFlat = { layFlat = !layFlat }, onEdit = { objectSheet = sel })

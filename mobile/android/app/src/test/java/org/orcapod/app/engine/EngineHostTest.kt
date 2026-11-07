@@ -5,7 +5,10 @@ import org.orcapod.app.settings.OptionDef
 import org.orcapod.app.settings.SettingsLayout
 import org.orcapod.app.settings.parseKeys
 import org.orcapod.app.settings.parseValues
+import org.orcapod.app.ui.CutState
+import org.orcapod.app.ui.worldBounds
 import org.orcapod.app.ui.viewport.PreviewOption
+import org.orcapod.app.ui.viewport.Selection
 import org.orcapod.app.ui.viewport.PreviewRange
 import org.orcapod.app.ui.viewport.PreviewStyle
 import org.orcapod.app.ui.viewport.ToolpathColours
@@ -409,6 +412,42 @@ class EngineHostTest {
         assertTrue(e.customGcodes().isEmpty())
         e.setFilamentCount(1, null)
         e.resetEdits(PresetKind.PROCESS)
+    }
+
+    @Test
+    fun q_cutsWithConnectors() = runBlocking {
+        val obj = e.scene().snapshot.objects.single()
+        val inst = obj.instances.first()
+        val scene = e.scene()
+        val b = worldBounds(scene.meshes.getValue(obj.id).positions, inst.matrix)
+        val t = inst.transform
+        var cut = CutState(Selection(obj.id, inst.id), b, doubleArrayOf(t.offsetX, t.offsetY, t.offsetZ), height = (b[2] + b[5]) / 2)
+        // A ray straight down through the centre meets the plane at its origin.
+        val uv = cut.hit(floatArrayOf(cut.centerX.toFloat(), cut.centerY.toFloat(), 500f), floatArrayOf(0f, 0f, -1f))!!
+        assertEquals(0.0, uv.first, 1e-6)
+        assertEquals(0.0, uv.second, 1e-6)
+        cut = cut.copy(connectors = listOf(uv), size = 5f, depth = 4f)
+        val n = e.cut(obj.id, inst.id, cut.plane, CutKeep.OBJECTS, cut.engineConnectors())
+        assertEquals(2, n)
+        val parts = e.scene().snapshot.objects
+        assertEquals(2, parts.size)
+        e.undo()
+        assertEquals(1, e.scene().snapshot.objects.size)
+        // A tilted plane above the middle: the upper part is shorter than the cube, the lower one is not.
+        val tilted = cut.copy(height = 15f, tiltX = 30f, connectors = emptyList())
+        assertEquals(0.866, tilted.normal[2], 1e-3)
+        assertEquals(2, e.cut(obj.id, inst.id, tilted.plane, CutKeep.OBJECTS, emptyList()))
+        val heights = e.scene().let { sc ->
+            sc.snapshot.objects.map { o ->
+                val wb = worldBounds(sc.meshes.getValue(o.id).positions, o.instances.first().matrix)
+                wb[5] - wb[2]
+            }.sorted()
+        }
+        // 20 mm cube cut at z = 15 with a 30° tilt: 5 + 10·tan 30° above, all 20 mm below.
+        assertEquals(10.77f, heights[0], 0.05f)
+        assertEquals(20f, heights[1], 0.05f)
+        e.undo()
+        assertEquals(1, e.scene().snapshot.objects.size)
     }
 
     private suspend fun layerHeight() =

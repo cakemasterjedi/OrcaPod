@@ -103,6 +103,9 @@ internal object Native {
     external fun volumeDelete(plater: Long, objectId: Long, volumeId: Long)
     external fun volumeRename(plater: Long, objectId: Long, volumeId: Long, name: String)
     external fun splitObjects(plater: Long, objectId: Long): Int
+    external fun objectCut(plater: Long, objectId: Long, instanceId: Long, plane: DoubleArray, keep: Int): Int
+    external fun cutConnectorAdd(plater: Long, objectId: Long, geometry: DoubleArray, sizes: FloatArray, kinds: IntArray)
+    external fun cutConnectorsClear(plater: Long, objectId: Long)
     external fun splitParts(plater: Long, objectId: Long, volumeId: Long): Int
     external fun instanceMirror(plater: Long, objectId: Long, instanceId: Long, axis: Int)
     external fun setPrintable(plater: Long, objectId: Long, instanceId: Long, printable: Boolean)

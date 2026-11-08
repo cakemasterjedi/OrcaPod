@@ -39,11 +39,20 @@ slicing engine runs on the phone itself, and your models never leave it.
 
 ## Download
 
-Every build of `main` produces a debug APK. Open the latest successful run of
-the [Android workflow](https://github.com/cakemasterjedi/OrcaPod/actions/workflows/android.yml),
-download the `orcapod-apk` artifact, unzip it and install the APK on an
-arm64 device running Android 8.0 or newer. You'll need to allow installs from
-unknown sources.
+**[Download the latest OrcaPod APK](https://github.com/cakemasterjedi/OrcaPod/releases/latest/download/OrcaPod.apk)**
+for an arm64 device running Android 8.0 or newer. Android asks you to allow
+installs from your browser the first time.
+
+Every build of `main` is published on the
+[releases page](https://github.com/cakemasterjedi/OrcaPod/releases). All builds
+are signed with the same key and numbered in order, so a newer one installs
+over the app without uninstalling, keeping your projects, printers and
+settings. The app checks for a newer build when it starts, and on
+**Menu → Check for updates**, and installs it for you.
+
+Builds from before shared signing (the `orcapod-debug-apk` workflow artifacts)
+were each signed with a different key: uninstall one of those once before
+installing a release.
 
 ## Build from source
 

@@ -53,4 +53,6 @@ layer's tests on the JVM.
 
 The `Android` workflow (`.github/workflows/android.yml`) runs both builds and
 all of these tests on every pull request that touches the app, the engine or
-the profiles, and attaches the APK to the run as `orcapod-apk`.
+the profiles, and attaches the APK to the run as `orcapod-apk`. On `main` it
+also publishes the APK as the latest GitHub release, which the app's update
+check reads (see the Updates section of the design doc).

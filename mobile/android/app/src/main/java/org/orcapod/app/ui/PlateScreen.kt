@@ -229,6 +229,9 @@ fun PlateScreen(vm: AppViewModel) {
                 MenuEntry("Print settings", AppIcons.Tune) { settingsFor = PresetKind.PROCESS },
                 MenuEntry("Calibration", Icons.Filled.Build) { calibrating = true },
                 MenuEntry("Reset view", AppIcons.ViewInAr) { viewRef?.resetView() },
+                MenuEntry("Check for updates", AppIcons.CloudDownload) {
+                    UpdateController.check(context.applicationContext, scope, manual = true)
+                },
             ),
         ),
     )

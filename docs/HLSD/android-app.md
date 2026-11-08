@@ -458,6 +458,30 @@ straight to the plate, several open a picker. Credentials (the API token,
 site cookies) are not forwarded when a download redirects to another host.
 A web link shared to the app from a browser opens the library on that page.
 
+## Updates
+
+The app is distributed outside an app store, as GitHub releases. Android
+installs an APK over an existing app only when both are signed with the same
+key and the new version code is not lower. CI signs every build with one
+release key, kept in the repository secrets `ORCAPOD_KEYSTORE_BASE64` (the
+PKCS12 keystore, base64) and `ORCAPOD_KEYSTORE_PASSWORD`, with key alias
+`orcapod`; Gradle picks it up from `ORCAPOD_KEYSTORE` and its companion
+variables (see `app/build.gradle.kts`), and without them a build gets the
+machine's debug key. CI passes the workflow run number as the version code. Each successful build of
+`main` signed with the release key becomes a release tagged `android-build-<version code>` with the APK
+attached as `OrcaPod.apk`, so `releases/latest/download/OrcaPod.apk` always
+names the newest build; the workflow keeps the newest ten.
+
+On launch (at most every 12 hours) and from the side menu, the app reads the
+latest release from the GitHub API and offers it when its tag's number is
+higher than its own version code. It downloads the APK to its cache and hands
+it to the system installer through its file provider, which needs the user's
+per-app "Install unknown apps" permission. A build dismissed with "Later" is
+not offered again by the automatic check.
+
+Losing the key, or replacing it, means one more uninstall for every user, so
+it lives only in the secrets and the owner's own backup.
+
 ## Limits
 
 - Bambu printers are reached in LAN mode only; Bambu's cloud needs its

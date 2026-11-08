@@ -82,6 +82,7 @@ fun PlateScreen(vm: AppViewModel) {
     var queueOpen by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     var picker by remember { mutableStateOf<PresetKind?>(null) }
+    var profilesOpen by remember { mutableStateOf(false) }
     var settingsFor by remember { mutableStateOf<PresetKind?>(null) }
     var objectList by remember { mutableStateOf(false) }
     var objectSheet by remember { mutableStateOf<Selection?>(null) }
@@ -235,6 +236,7 @@ fun PlateScreen(vm: AppViewModel) {
                             DropdownMenuItem(text = { Text("Print queue") }, onClick = { menuOpen = false; queueOpen = true })
                             DropdownMenuItem(text = { Text("Reset view") }, onClick = { menuOpen = false; viewRef?.resetView() })
                             DropdownMenuItem(text = { Text("Printer brands") }, onClick = { menuOpen = false; vm.manageVendors() })
+                            DropdownMenuItem(text = { Text("Back up and sync profiles") }, onClick = { menuOpen = false; profilesOpen = true })
                             DropdownMenuItem(
                                 text = { Text("Ask for STEP import options") },
                                 trailingIcon = { Checkbox(checked = vm.askStepOptions, onCheckedChange = null) },
@@ -417,6 +419,7 @@ fun PlateScreen(vm: AppViewModel) {
             onChoose = { vm.choosePresets(kind, entries, it) },
         )
     }
+    if (profilesOpen) ProfilesSheet(vm) { profilesOpen = false }
     settingsFor?.let { kind -> SettingsScreen(vm, kind) { settingsFor = null } }
     // The side pane already shows the object list.
     if (objectList && !twoPane) ObjectListSheet(vm, onOpen = { objectList = false; vm.selection = it; objectSheet = it }) { objectList = false }

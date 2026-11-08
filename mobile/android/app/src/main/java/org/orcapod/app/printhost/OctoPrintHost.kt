@@ -49,6 +49,16 @@ class OctoPrintHost(c: PrinterConnection) : PrintHost {
         return if (urls.stream == null && urls.snapshot == null) null else CameraSource.Frames(HttpCameraFeed(urls, allowSelfSigned))
     }
 
+    // OctoPrint streams the file line by line, so the firmware skips the object: Klipper with
+    // [exclude_object], Marlin built with CANCEL_OBJECTS. Only the app's own G-code says what is in it.
+    override fun printObjects(labels: GcodeLabels?): List<PrintObject> = labels?.objects.orEmpty()
+
+    override fun skipObjects(objects: List<PrintObject>, labels: GcodeLabels?) {
+        labels ?: throw PrintHostException("Only prints sent from this app can skip objects")
+        val commands = org.json.JSONArray(objects.map(labels::skipCommand))
+        http.post("api/printer/command", Body.Json(JSONObject().put("commands", commands)))
+    }
+
     private fun command(json: JSONObject) {
         http.post("api/job", Body.Json(json))
     }

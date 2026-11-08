@@ -163,7 +163,7 @@ CFLAGS=(
     -I"$DEPS/glu-libtess/include"
     -I"$DEPS/libigl" -I"$BRIDGE/cache/Orca-deps-libnoise/src"
     -I"$DEPS/libnest2d/include"
-    -I"$DEPS/clipper2/Clipper2Lib/include" -I"$DEPS/expat"
+    -I"$DEPS/clipper2/Clipper2Lib/include" -I"$EXPAT_INC"
     -I"$DEPS/miniz"
     -I"$BRIDGE/cache/cereal/include"
     -isystem "$PREFIX/include"
@@ -178,7 +178,7 @@ CONLY_FLAGS=(
     -I"$DEPS" -I"$DEPS/qhull/src" -I"$DEPS/glu-libtess/include"
     -I"$DEPS/libigl" -I"$BRIDGE/cache/Orca-deps-libnoise/src"
     -I"$DEPS/libnest2d/include"
-    -I"$DEPS/clipper2/Clipper2Lib/include" -I"$DEPS/expat"
+    -I"$DEPS/clipper2/Clipper2Lib/include" -I"$EXPAT_INC"
     -I"$DEPS/miniz"
 )
 

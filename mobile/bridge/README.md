@@ -26,6 +26,9 @@ STEP import). Outputs land in `mobile/bridge/build-host/`. Set
 `ORCAPOD_JOBS` to change the number of parallel compile jobs (default 6).
 `ORCAPOD_TBB=serial` builds the engine single-threaded, without oneTBB, and
 `ORCAPOD_HOST_BUILD_DIR` puts the outputs in another directory.
+`ORCAPOD_CCACHE=1` compiles through [ccache](https://ccache.dev), for this and
+the Android build, so a build from an empty build directory reuses every
+object that has not changed (CI carries the cache from run to run this way).
 
 ## Slice from the command line
 

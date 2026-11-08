@@ -53,6 +53,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -214,6 +215,15 @@ fun PlateScreen(vm: AppViewModel) {
             ),
         ),
         MenuGroup(
+            "Preferences",
+            listOf(
+                MenuEntry("Ask for STEP import options", checked = vm.askStepOptions) { vm.askStepOptions = !vm.askStepOptions },
+                MenuEntry("Ask about unsupported characters in names", checked = vm.askNameCleanup) {
+                    vm.askNameCleanup = !vm.askNameCleanup
+                },
+            ),
+        ),
+        MenuGroup(
             "Tools",
             listOf(
                 MenuEntry("Print settings", AppIcons.Tune) { settingsFor = PresetKind.PROCESS },
@@ -305,8 +315,20 @@ fun PlateScreen(vm: AppViewModel) {
             if (!previewing) PlateStrip(vm)
             vm.busy?.let { label ->
                 Spacer(Modifier.height(6.dp))
-                LinearProgressIndicator(Modifier.fillMaxWidth())
-                Text(label, style = MaterialTheme.typography.labelMedium)
+                val percent = vm.busyProgress
+                if (percent != null) {
+                    LinearProgressIndicator(progress = { percent / 100f }, modifier = Modifier.fillMaxWidth())
+                } else {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (percent != null) "$label $percent%" else label,
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    vm.busyCancel?.let { cancel -> TextButton(onClick = cancel) { Text("Cancel") } }
+                }
             }
             if (layFlat) {
                 Spacer(Modifier.height(6.dp))
@@ -455,6 +477,8 @@ fun PlateScreen(vm: AppViewModel) {
     }
     if (queueOpen) PrintQueueSheet(printerVm) { queueOpen = false }
     if (printersOpen) PrintersSheet(printerVm, vm.printer) { printersOpen = false }
+    vm.stepImport?.let { StepImportDialog(it, vm::stepTriangleCountAsync, vm::stopTriangleCount, vm::answerStepImport) }
+    vm.nameCleanup?.let { NameCleanupDialog(it, vm::previewNameChanges, vm::answerNameCleanup) }
 }
 
 @Composable

@@ -1,12 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- A cube resting on a build plate, centred in the 108dp adaptive-icon canvas. -->
+<!-- OrcaPod mark: a nozzle laying the last layer of a pod-shaped print on the build plate. Kept inside the 66dp adaptive-icon safe zone. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path android:fillColor="#FFFFFFFF" android:pathData="M30,72 L54,84 L78,72 L54,60 Z" android:fillAlpha="0.45" />
-    <path android:fillColor="#FFFFFFFF" android:pathData="M54,30 L72,39 L54,48 L36,39 Z" />
-    <path android:fillColor="#FFE8F5EC" android:pathData="M36,39 L54,48 L54,70 L36,61 Z" />
-    <path android:fillColor="#FFC8E6D2" android:pathData="M54,48 L72,39 L72,61 L54,70 Z" />
+    <group android:pivotX="54" android:pivotY="54" android:scaleX="0.9" android:scaleY="0.9">
+        <path android:fillColor="#FFE9EEF0" android:pathData="M43,22 h22 a2,2 0 0 1 2,2 v7 a2,2 0 0 1 -2,2 h-22 a2,2 0 0 1 -2,-2 v-7 a2,2 0 0 1 2,-2 Z" />
+        <path android:fillColor="#FFC9D2D6" android:pathData="M46,33 L62,33 L57,40 L51,40 Z" />
+        <path android:fillColor="#FFC6FF6B" android:pathData="M52.6,40 h2.8 v6 h-2.8 Z" />
+        <path android:fillColor="#FFC6FF6B" android:pathData="M44.6,45.5 h18.8 a2.6,2.6 0 0 1 2.6,2.6 v0.0 a2.6,2.6 0 0 1 -2.6,2.6 h-18.8 a2.6,2.6 0 0 1 -2.6,-2.6 v-0.0 a2.6,2.6 0 0 1 2.6,-2.6 Z" />
+        <path android:fillColor="#FFFFFFFF" android:pathData="M38.6,52.5 h30.8 a2.6,2.6 0 0 1 2.6,2.6 v0.0 a2.6,2.6 0 0 1 -2.6,2.6 h-30.8 a2.6,2.6 0 0 1 -2.6,-2.6 v-0.0 a2.6,2.6 0 0 1 2.6,-2.6 Z" />
+        <path android:fillColor="#FFFFFFFF" android:pathData="M35.6,59.5 h36.8 a2.6,2.6 0 0 1 2.6,2.6 v0.0 a2.6,2.6 0 0 1 -2.6,2.6 h-36.8 a2.6,2.6 0 0 1 -2.6,-2.6 v-0.0 a2.6,2.6 0 0 1 2.6,-2.6 Z" />
+        <path android:fillColor="#FFFFFFFF" android:pathData="M36.6,66.5 h34.8 a2.6,2.6 0 0 1 2.6,2.6 v0.0 a2.6,2.6 0 0 1 -2.6,2.6 h-34.8 a2.6,2.6 0 0 1 -2.6,-2.6 v-0.0 a2.6,2.6 0 0 1 2.6,-2.6 Z" />
+        <path android:fillColor="#FFFFFFFF" android:pathData="M41.6,73.5 h24.8 a2.6,2.6 0 0 1 2.6,2.6 v0.0 a2.6,2.6 0 0 1 -2.6,2.6 h-24.8 a2.6,2.6 0 0 1 -2.6,-2.6 v-0.0 a2.6,2.6 0 0 1 2.6,-2.6 Z" />
+        <path android:fillColor="#FFFFFFFF" android:pathData="M29.5,82 h49.0 a1.5,1.5 0 0 1 1.5,1.5 v0.0 a1.5,1.5 0 0 1 -1.5,1.5 h-49.0 a1.5,1.5 0 0 1 -1.5,-1.5 v-0.0 a1.5,1.5 0 0 1 1.5,-1.5 Z" android:fillAlpha="0.45" />
+    </group>
 </vector>

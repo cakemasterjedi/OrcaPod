@@ -1,8 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108" role="img" aria-label="OrcaPod icon">
-  <!-- The app's launcher icon: a cube resting on a build plate. -->
-  <rect width="108" height="108" rx="24" fill="#00AE42"/>
-  <path fill="#FFFFFF" fill-opacity="0.45" d="M30,72 L54,84 L78,72 L54,60 Z"/>
-  <path fill="#FFFFFF" d="M54,30 L72,39 L54,48 L36,39 Z"/>
-  <path fill="#E8F5EC" d="M36,39 L54,48 L54,70 L36,61 Z"/>
-  <path fill="#C8E6D2" d="M54,48 L72,39 L72,61 L54,70 Z"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="18 18 72 72" role="img" aria-label="OrcaPod icon">
+  <!-- The app's launcher icon: a nozzle laying the last layer of a pod-shaped print. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0E5C3A"/>
+      <stop offset="1" stop-color="#00AE42"/>
+    </linearGradient>
+  </defs>
+  <rect x="18" y="18" width="72" height="72" rx="18" fill="url(#bg)"/>
+  <g transform="translate(54 54) scale(0.9) translate(-54 -54)">
+    <path fill="#E9EEF0" d="M43,22 h22 a2,2 0 0 1 2,2 v7 a2,2 0 0 1 -2,2 h-22 a2,2 0 0 1 -2,-2 v-7 a2,2 0 0 1 2,-2 Z"/>
+    <path fill="#C9D2D6" d="M46,33 L62,33 L57,40 L51,40 Z"/>
+    <path fill="#C6FF6B" d="M52.6,40 h2.8 v6 h-2.8 Z"/>
+    <path fill="#C6FF6B" d="M44.6,45.5 h18.8 a2.6,2.6 0 0 1 2.6,2.6 v0.0 a2.6,2.6 0 0 1 -2.6,2.6 h-18.8 a2.6,2.6 0 0 1 -2.6,-2.6 v-0.0 a2.6,2.6 0 0 1 2.6,-2.6 Z"/>
+    <path fill="#FFFFFF" d="M38.6,52.5 h30.8 a2.6,2.6 0 0 1 2.6,2.6 v0.0 a2.6,2.6 0 0 1 -2.6,2.6 h-30.8 a2.6,2.6 0 0 1 -2.6,-2.6 v-0.0 a2.6,2.6 0 0 1 2.6,-2.6 Z"/>
+    <path fill="#FFFFFF" d="M35.6,59.5 h36.8 a2.6,2.6 0 0 1 2.6,2.6 v0.0 a2.6,2.6 0 0 1 -2.6,2.6 h-36.8 a2.6,2.6 0 0 1 -2.6,-2.6 v-0.0 a2.6,2.6 0 0 1 2.6,-2.6 Z"/>
+    <path fill="#FFFFFF" d="M36.6,66.5 h34.8 a2.6,2.6 0 0 1 2.6,2.6 v0.0 a2.6,2.6 0 0 1 -2.6,2.6 h-34.8 a2.6,2.6 0 0 1 -2.6,-2.6 v-0.0 a2.6,2.6 0 0 1 2.6,-2.6 Z"/>
+    <path fill="#FFFFFF" d="M41.6,73.5 h24.8 a2.6,2.6 0 0 1 2.6,2.6 v0.0 a2.6,2.6 0 0 1 -2.6,2.6 h-24.8 a2.6,2.6 0 0 1 -2.6,-2.6 v-0.0 a2.6,2.6 0 0 1 2.6,-2.6 Z"/>
+    <path fill="#FFFFFF" fill-opacity="0.45" d="M29.5,82 h49.0 a1.5,1.5 0 0 1 1.5,1.5 v0.0 a1.5,1.5 0 0 1 -1.5,1.5 h-49.0 a1.5,1.5 0 0 1 -1.5,-1.5 v-0.0 a1.5,1.5 0 0 1 1.5,-1.5 Z"/>
+  </g>
 </svg>

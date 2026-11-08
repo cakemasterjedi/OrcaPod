@@ -2,8 +2,12 @@
 
 The Android app: import STL, 3MF, OBJ or AMF models onto a 3D build plate,
 move, rotate and scale them, pick printer, filament and process profiles,
-slice with OrcaSlicer's engine, preview the layers and send or save the
-G-code. See [docs/HLSD/android-app.md](../../docs/HLSD/android-app.md) for
+slice with OrcaSlicer's engine, preview the layers and send the G-code to
+an OctoPrint, Klipper (Moonraker), PrusaLink, Duet or Bambu Lab (LAN mode)
+printer (or several at once, through a print queue with a dashboard of all
+your printers), share it or save it. The online model library searches Thingiverse
+(with your own app token) and browses Printables, MakerWorld and other sites,
+adding their downloads to the plate. See [docs/HLSD/android-app.md](../../docs/HLSD/android-app.md) for
 the design.
 
 ## Build
@@ -36,6 +40,9 @@ build with `-Porcapod.abis=arm64-v8a,x86_64`.
 
 ## Test
 
+`./gradlew :app:testDebugUnitTest` runs the JVM tests, including the
+printer connections against mock printers.
+
 ```bash
 mobile/android/tools/host-jni-test.sh
 ```
@@ -43,3 +50,7 @@ mobile/android/tools/host-jni-test.sh
 builds the engine for the Linux host (the `build-host.sh` prerequisites
 apply), links the app's JNI code into a host library and runs the engine
 layer's tests on the JVM.
+
+The `Android` workflow (`.github/workflows/android.yml`) runs both builds and
+all of these tests on every pull request that touches the app, the engine or
+the profiles, and attaches the debug APK to the run as `orcapod-debug-apk`.

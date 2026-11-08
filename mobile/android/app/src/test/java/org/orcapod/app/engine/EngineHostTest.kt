@@ -5,7 +5,9 @@ import org.orcapod.app.settings.OptionDef
 import org.orcapod.app.settings.SettingsLayout
 import org.orcapod.app.settings.parseKeys
 import org.orcapod.app.settings.parseValues
+import org.orcapod.app.data.ProjectStore
 import org.orcapod.app.ui.CutState
+import org.orcapod.app.ui.PlateThumbnail
 import org.orcapod.app.ui.paintOverlay
 import org.orcapod.app.ui.worldBounds
 import org.orcapod.app.ui.viewport.PreviewOption
@@ -31,6 +33,7 @@ import org.junit.Test
 import org.junit.runners.MethodSorters
 import java.io.File
 import java.nio.file.Files
+import java.util.zip.ZipFile
 import kotlin.math.abs
 
 /**
@@ -570,7 +573,76 @@ class EngineHostTest {
     }
 
     @Test
-    fun v_repairsAndRunsBooleans() = runBlocking {
+    fun v_roundTripsProjects() = runBlocking {
+        e.clear()
+        e.import(File(work, "cube.stl").path)
+        val obj = e.scene().snapshot.objects.single()
+        val inst = obj.instances.single()
+        val placed = inst.transform.copy(offsetX = inst.transform.offsetX + 12, rotationZ = 0.5, scaleX = 1.5, scaleY = 1.5, scaleZ = 1.5)
+        e.setTransform(obj.id, inst.id, placed, "Move")
+        e.renameObject(obj.id, "Bracket")
+        e.setOverride(obj.id, 0, "sparse_infill_density", "35%")
+        val modifier = e.addVolumeShape(obj.id, inst.id, VolumeType.MODIFIER, Shape.CUBE)
+        e.setOverride(obj.id, modifier, "wall_loops", "5")
+        e.setHeightRanges(obj.id, listOf(HeightRange(0.0, 4.0, 0.12)))
+        val part = e.scene().snapshot.objects.single().parts.single()
+        val sc = e.scene()
+        val b = worldBounds(sc.meshes.getValue(obj.id).positions, sc.snapshot.objects.single().instances.first().matrix)
+        e.paintSphere(obj.id, part.id, PaintLayer.SUPPORT, floatArrayOf((b[0] + b[3]) / 2, (b[1] + b[4]) / 2, b[5]), floatArrayOf(0f, 0f, -1f), 3.0, 1)
+        val painted = e.paint(obj.id, part.id, PaintLayer.SUPPORT).count
+        assertTrue(painted > 0)
+        e.addPlate()
+        val spare = e.scene().snapshot.plates[1]
+        e.renamePlate(spare.id, "Spare")
+        e.setPlateSettings(spare.id, PlateSettings(printByObject = true))
+        e.setFilamentCount(2, "#2850E0")
+        e.setValue(PresetKind.PROCESS, "wall_loops", "3")
+
+        val scene = e.scene()
+        val thumb = PlateThumbnail.render(scene, e.filamentSlots().map { it.colour }, 64)
+        assertNotNull("thumbnail", thumb)
+        val project = File(work, "roundtrip.3mf")
+        e.saveProject(project.path, thumb!!.size, thumb.rgba())
+        ZipFile(project).use { zip ->
+            assertNotNull(zip.getEntry("Metadata/plate_1.png"))
+            assertNotNull(zip.getEntry("Metadata/project_settings.config"))
+            assertNotNull(zip.getEntry("Metadata/model_settings.config"))
+        }
+        assertTrue(ProjectStore.isProject(project))
+        assertTrue(!ProjectStore.isProject(File(work, "cube.stl")))
+
+        // Wipe everything the project carries, then open it again.
+        e.clear()
+        e.resetEdits(PresetKind.PROCESS)
+        e.setFilamentCount(1, null)
+        e.openProject(project.path)
+
+        val snap = e.scene().snapshot
+        val o = snap.objects.single()
+        assertEquals("Bracket", o.name)
+        val t = o.instances.single().transform
+        assertEquals(placed.offsetX, t.offsetX, 1e-3)
+        assertEquals(placed.offsetY, t.offsetY, 1e-3)
+        assertEquals(0.5, t.rotationZ, 1e-4)
+        assertEquals(1.5, t.scaleX, 1e-4)
+        assertEquals("35%", parseValues(e.overrides(o.id, 0))["sparse_infill_density"])
+        val mod = o.volumes.single { it.type == VolumeType.MODIFIER }
+        assertEquals("5", parseValues(e.overrides(o.id, mod.id))["wall_loops"])
+        assertEquals(listOf(HeightRange(0.0, 4.0, 0.12)), e.heightRanges(o.id))
+        assertEquals(painted, e.paint(o.id, o.parts.single().id, PaintLayer.SUPPORT).count)
+        assertEquals(listOf("Plate 1", "Spare"), snap.plates.map { it.name })
+        assertEquals(true, e.plateSettings(snap.plates[1].id).printByObject)
+        val slots = e.filamentSlots()
+        assertEquals(2, slots.size)
+        assertEquals("#2850E0", slots[1].colour.uppercase())
+        assertEquals("3", parseValues(e.presetConfig(PresetKind.PROCESS, edited = true))["wall_loops"])
+        assertEquals(PRINTER, e.current(PresetKind.PRINTER))
+        // A new document: the history starts over.
+        assertEquals(0, snap.undoCount)
+    }
+
+    @Test
+    fun w_repairsAndRunsBooleans() = runBlocking {
         if (e.scene().snapshot.objects.isNotEmpty()) e.clear()
         // A cube missing its top face: errors reported, "Fix model" closes it, undo reopens it.
         val open = File(work, "open.stl").apply {

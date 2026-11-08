@@ -8,9 +8,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import org.orcapod.app.data.PrinterFleet
 import org.orcapod.app.ui.AppViewModel
 import org.orcapod.app.ui.OrcaPodApp
 import org.orcapod.app.ui.Phase
+import org.orcapod.app.ui.firstWebLink
 
 class MainActivity : ComponentActivity() {
     private val viewModel: AppViewModel by viewModels()
@@ -19,7 +21,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        if (savedInstanceState == null) collectShared(intent)
+        if (savedInstanceState == null) {
+            collectShared(intent)
+            PrinterFleet.handleIntent(this, intent)
+        }
         setContent {
             OrcaPodApp(viewModel, pendingImports = pending) { pending.clear() }
         }
@@ -28,10 +33,17 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         collectShared(intent)
+        PrinterFleet.handleIntent(this, intent)
         if (viewModel.phase == Phase.Ready && pending.isNotEmpty()) {
             viewModel.importUris(pending.toList())
             pending.clear()
         }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // The system may kill a background app: keep a copy of unsaved changes.
+        viewModel.saveRecovery()
     }
 
     // Models opened from a file manager ("Open with") or shared from another app.
@@ -39,6 +51,8 @@ class MainActivity : ComponentActivity() {
         when (intent?.action) {
             Intent.ACTION_VIEW -> intent.data?.let { pending += it }
             Intent.ACTION_SEND -> stream(intent)?.let { pending += it }
+                // A model page shared from a browser opens in the model library.
+                ?: firstWebLink(intent.getStringExtra(Intent.EXTRA_TEXT))?.let { viewModel.openLibrary(it) }
             Intent.ACTION_SEND_MULTIPLE -> streams(intent)?.let { pending += it }
         }
     }

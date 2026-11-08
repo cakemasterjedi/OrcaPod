@@ -1437,9 +1437,18 @@ JNI_FN(void, exportStlAll)(JNIEnv *env, jobject, jlong pl, jstring path)
     check(env, orca_plater_export_stl_all(plater_of(pl), utf8(env, path).c_str(), 1));
 }
 
-JNI_FN(void, projectSave)(JNIEnv *env, jobject, jlong pl, jlong p, jstring path)
+/** [thumbnail] is a top-down RGBA8 square of [thumbnailSize] pixels, or null for none. */
+JNI_FN(void, projectSave)(JNIEnv *env, jobject, jlong pl, jlong p, jstring path, jint thumbnailSize,
+                          jbyteArray thumbnail)
 {
-    check(env, orca_project_save(plater_of(pl), presets_of(p), utf8(env, path).c_str(), 0, nullptr));
+    std::vector<uint8_t> rgba;
+    // A thumbnail of the wrong size is dropped rather than failing the save.
+    if (thumbnail && thumbnailSize > 0 && env->GetArrayLength(thumbnail) == jsize(thumbnailSize) * thumbnailSize * 4) {
+        rgba.resize(size_t(thumbnailSize) * size_t(thumbnailSize) * 4);
+        env->GetByteArrayRegion(thumbnail, 0, jsize(rgba.size()), reinterpret_cast<jbyte *>(rgba.data()));
+    }
+    check(env, orca_project_save(plater_of(pl), presets_of(p), utf8(env, path).c_str(),
+                                 uint32_t(rgba.empty() ? 0 : thumbnailSize), rgba.empty() ? nullptr : rgba.data()));
 }
 
 // --- height range modifiers -------------------------------------------------

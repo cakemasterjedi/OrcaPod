@@ -3,26 +3,25 @@ package org.orcapod.app.ui
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.ui.graphics.Color
-import org.orcapod.app.engine.Shape
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
@@ -43,20 +42,26 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
+import androidx.lifecycle.viewmodel.compose.viewModel
 import org.orcapod.app.engine.PresetKind
+import org.orcapod.app.engine.Shape
 import org.orcapod.app.ui.viewport.PlateView
 import org.orcapod.app.ui.viewport.Selection
 import org.orcapod.app.ui.viewport.ViewportListener
@@ -68,6 +73,10 @@ private val MODEL_TYPES = arrayOf("*/*")
 @Composable
 fun PlateScreen(vm: AppViewModel) {
     val context = LocalContext.current
+    val printerVm: PrinterViewModel = viewModel()
+    var sendOpen by remember { mutableStateOf(false) }
+    var printersOpen by remember { mutableStateOf(false) }
+    var queueOpen by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     var picker by remember { mutableStateOf<PresetKind?>(null) }
     var settingsFor by remember { mutableStateOf<PresetKind?>(null) }
@@ -79,17 +88,41 @@ fun PlateScreen(vm: AppViewModel) {
     var calibrating by remember { mutableStateOf(false) }
     var layFlat by remember { mutableStateOf(false) }
     var viewRef by remember { mutableStateOf<PlateView?>(null) }
+    val config = LocalConfiguration.current
+    val twoPane = usesTwoPane(config.screenWidthDp, config.screenHeightDp)
+    var paneTab by rememberSaveable { mutableStateOf(PaneTab.OBJECTS) }
+    // Picking an object in the viewport brings its controls into view.
+    LaunchedEffect(vm.selection) { if (vm.selection != null) paneTab = PaneTab.OBJECTS }
 
     LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
+    LaunchedEffect(Unit) { printerVm.messages.collect { snackbar.showSnackbar(it) } }
+    // A queue notification was tapped.
+    LaunchedEffect(Unit) {
+        printerVm.fleet.dashboardRequested.collect { if (it) { queueOpen = true; printerVm.fleet.dashboardRequested.value = false } }
+    }
 
     val importModels = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) vm.importUris(uris)
     }
+    var recentSheet by remember { mutableStateOf(false) }
+    // A step that replaces the plate, held while the user decides about unsaved changes.
+    var unsavedGuard by remember { mutableStateOf<(() -> Unit)?>(null) }
+    // Runs after a "Save as" that the unsaved-changes prompt started.
+    var afterSaveAs by remember { mutableStateOf<(() -> Unit)?>(null) }
+    fun guarded(action: () -> Unit) { if (vm.projectDirty) unsavedGuard = action else action() }
+
     val openProject = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) vm.importUris(listOf(uri), asProject = true)
+        if (uri != null) vm.openProject(uri)
     }
-    val saveProject = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/3mf")) { uri ->
-        if (uri != null) vm.saveProject(uri)
+    val saveProjectAs = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/3mf")) { uri ->
+        val then = afterSaveAs
+        afterSaveAs = null
+        if (uri != null) vm.saveProject(uri, then)
+    }
+    val projectFileName = (vm.projectName ?: vm.scene.snapshot.objects.firstOrNull()?.name?.substringBeforeLast('.') ?: "project") + ".3mf"
+    fun save(then: (() -> Unit)? = null) {
+        if (vm.projectUri != null) vm.saveProject(null, then)
+        else { afterSaveAs = then; saveProjectAs.launch(projectFileName) }
     }
     val export3mf = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/3mf")) { uri ->
         if (uri != null) vm.exportGeneric3mf(uri)
@@ -129,7 +162,14 @@ fun PlateScreen(vm: AppViewModel) {
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
-                title = { Text(if (previewing) "Preview" else "OrcaPod") },
+                title = {
+                    val name = vm.projectName ?: "OrcaPod"
+                    Text(
+                        if (previewing) "Preview" else if (vm.projectDirty) "$name*" else name,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
                 actions = {
                     if (!previewing) {
                         IconButton(onClick = vm::undo, enabled = vm.scene.snapshot.undoCount > 0) { Icon(AppIcons.Undo, "Undo") }
@@ -141,11 +181,23 @@ fun PlateScreen(vm: AppViewModel) {
                             val hasObjects = vm.scene.snapshot.objects.isNotEmpty()
                             DropdownMenuItem(text = { Text("Import models") }, onClick = { menuOpen = false; importModels.launch(MODEL_TYPES) })
                             DropdownMenuItem(text = { Text("Add shape…") }, onClick = { menuOpen = false; shapeMenu = true })
-                            DropdownMenuItem(text = { Text("Open 3MF project") }, onClick = { menuOpen = false; openProject.launch(MODEL_TYPES) })
+                            DropdownMenuItem(text = { Text("Online model library") }, onClick = { menuOpen = false; vm.openLibrary() })
+                            HorizontalDivider()
+                            DropdownMenuItem(text = { Text("New project") }, onClick = { menuOpen = false; guarded { vm.newProject() } })
+                            DropdownMenuItem(
+                                text = { Text("Open project…") },
+                                onClick = { menuOpen = false; guarded { openProject.launch(MODEL_TYPES) } },
+                            )
+                            DropdownMenuItem(text = { Text("Recent projects") }, onClick = { menuOpen = false; recentSheet = true })
                             DropdownMenuItem(
                                 text = { Text("Save project") },
                                 enabled = hasObjects,
-                                onClick = { menuOpen = false; saveProject.launch("project.3mf") },
+                                onClick = { menuOpen = false; save() },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Save project as…") },
+                                enabled = hasObjects,
+                                onClick = { menuOpen = false; saveProjectAs.launch(projectFileName) },
                             )
                             HorizontalDivider()
                             DropdownMenuItem(
@@ -176,6 +228,8 @@ fun PlateScreen(vm: AppViewModel) {
                                 onClick = { menuOpen = false; vm.clearPlate() },
                             )
                             HorizontalDivider()
+                            DropdownMenuItem(text = { Text("Printers") }, onClick = { menuOpen = false; printersOpen = true })
+                            DropdownMenuItem(text = { Text("Print queue") }, onClick = { menuOpen = false; queueOpen = true })
                             DropdownMenuItem(text = { Text("Reset view") }, onClick = { menuOpen = false; viewRef?.resetView() })
                             DropdownMenuItem(text = { Text("Printer brands") }, onClick = { menuOpen = false; vm.manageVendors() })
                         }
@@ -189,50 +243,51 @@ fun PlateScreen(vm: AppViewModel) {
             )
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx -> PlateView(ctx, listener).also { viewRef = it } },
-                update = { view ->
-                    view.pickFaces = layFlat
-                    view.rayTaps = vm.cut?.placing == true
-                    view.lockDrag = vm.cut != null || vm.paint != null || vm.measure != null || vm.layerHeights != null
-                    view.paintObject = vm.paint?.objectId
-                    view.measureObject = vm.measure?.objectId
-                    view.state = ViewportState(
-                        scene = vm.scene,
-                        selection = vm.selection,
-                        toolpath = done?.toolpath,
-                        range = vm.previewRange,
-                        previewStyle = vm.previewStyle,
-                        showToolpath = previewing && done?.toolpath != null,
-                        toolpathPlate = done?.plate ?: 0,
-                        selectedVolume = vm.selectedVolume,
-                        filamentColours = vm.filamentSlots.map { it.colour },
-                        cutQuad = vm.cut?.quad(),
-                        cutPoints = vm.cut?.connectorPoints(),
-                        paintOverlay = if (vm.paint != null) vm.paintOverlay else null,
-                        measureLines = vm.measure?.lines(),
-                        measurePoints = vm.measure?.points(),
-                    )
-                },
-            )
-
-            Column(Modifier.fillMaxWidth().padding(8.dp)) {
-                PresetBar(vm, onFilaments = { filamentSlots = true }) { picker = it }
-                if (!previewing) PlateStrip(vm)
-                vm.busy?.let { label ->
-                    Spacer(Modifier.height(6.dp))
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                    Text(label, style = MaterialTheme.typography.labelMedium)
-                }
-                if (layFlat) {
-                    Spacer(Modifier.height(6.dp))
-                    Hint("Tap the face the object should rest on")
-                }
+        val viewport: @Composable () -> Unit = {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx -> PlateView(ctx, listener).also { viewRef = it } },
+            update = { view ->
+                view.pickFaces = layFlat
+                view.rayTaps = vm.cut?.placing == true
+                view.lockDrag = vm.cut != null || vm.paint != null || vm.measure != null || vm.layerHeights != null
+                view.paintObject = vm.paint?.objectId
+                view.measureObject = vm.measure?.objectId
+                view.state = ViewportState(
+                    scene = vm.scene,
+                    selection = vm.selection,
+                    toolpath = done?.toolpath,
+                    range = vm.previewRange,
+                    previewStyle = vm.previewStyle,
+                    showToolpath = previewing && done?.toolpath != null,
+                    toolpathPlate = done?.plate ?: 0,
+                    selectedVolume = vm.selectedVolume,
+                    filamentColours = vm.filamentSlots.map { it.colour },
+                    cutQuad = vm.cut?.quad(),
+                    cutPoints = vm.cut?.connectorPoints(),
+                    paintOverlay = if (vm.paint != null) vm.paintOverlay else null,
+                    measureLines = vm.measure?.lines(),
+                    measurePoints = vm.measure?.points(),
+                )
+            },
+        )
+        }
+        val status: @Composable () -> Unit = {
+            if (!previewing) PlateStrip(vm)
+            vm.busy?.let { label ->
+                Spacer(Modifier.height(6.dp))
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Text(label, style = MaterialTheme.typography.labelMedium)
             }
-
-            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(8.dp)) {
+            if (layFlat) {
+                Spacer(Modifier.height(6.dp))
+                Hint("Tap the face the object should rest on")
+            }
+        }
+        // The preview, slicing progress, tool panels or the plate actions; the phone also shows
+        // the selected object's controls here, a wide screen shows them in its side pane.
+        val controls: @Composable (withObject: Boolean, onObjects: () -> Unit, onSettings: () -> Unit) -> Unit =
+            { withObject, onObjects, onSettings ->
                 val sel = vm.selection
                 when {
                     previewing -> PreviewPanel(
@@ -247,14 +302,15 @@ fun PlateScreen(vm: AppViewModel) {
                             context.startActivity(Intent.createChooser(send, "Send G-code"))
                         },
                         onSave = { saveGcode.launch(done.gcode.name) },
+                        onPrint = { sendOpen = true },
                     )
                     vm.slice is SliceState.Running -> SlicingPanel(vm.slice as SliceState.Running, vm::cancelSlice)
                     vm.cut != null -> CutPanel(vm, vm.cut!!)
                     vm.paint != null -> PaintPanel(vm, vm.paint!!)
                     vm.layerHeights != null -> LayerHeightPanel(vm, vm.layerHeights!!)
                     vm.measure != null -> MeasurePanel(vm, vm.measure!!)
-                    else -> {
-                        if (sel != null && vm.transformOf(sel) != null) {
+                    else -> Column {
+                        if (withObject && sel != null && vm.transformOf(sel) != null) {
                             ObjectPanel(vm, sel, layFlat = layFlat, onLayFlat = { layFlat = !layFlat }, onEdit = { objectSheet = sel })
                             Spacer(Modifier.height(8.dp))
                         }
@@ -267,13 +323,43 @@ fun PlateScreen(vm: AppViewModel) {
                             hasResult = done != null,
                             plates = vm.scene.snapshot.plates.size,
                             onImport = { importModels.launch(MODEL_TYPES) },
-                            onObjects = { objectList = true },
+                            onObjects = onObjects,
+                            onLibrary = { vm.openLibrary() },
                             onArrange = vm::arrange,
-                            onSettings = { settingsFor = PresetKind.PROCESS },
+                            onSettings = onSettings,
                             onSlice = { vm.startSlice(allPlates = it) },
                             onShowResult = { vm.showPreview = true },
                         )
                     }
+                }
+            }
+
+        if (twoPane) {
+            Row(Modifier.fillMaxSize().padding(padding)) {
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    viewport()
+                    Column(Modifier.fillMaxWidth().padding(8.dp)) { status() }
+                }
+                VerticalDivider()
+                SidePane(
+                    tab = paneTab,
+                    onTab = { paneTab = it },
+                    modifier = Modifier.width(sidePaneWidth(config.screenWidthDp)).fillMaxHeight().navigationBarsPadding(),
+                    header = { PresetBar(vm, onFilaments = { filamentSlots = true }) { picker = it } },
+                    objects = { ObjectsTab(vm, layFlat = layFlat, onLayFlat = { layFlat = !layFlat }, onEdit = { objectSheet = it }) },
+                    settings = { SettingsContent(vm, PresetKind.PROCESS, Modifier.fillMaxSize()) },
+                    footer = { controls(false, { paneTab = PaneTab.OBJECTS }, { paneTab = PaneTab.SETTINGS }) },
+                )
+            }
+        } else {
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                viewport()
+                Column(Modifier.fillMaxWidth().padding(8.dp)) {
+                    PresetBar(vm, onFilaments = { filamentSlots = true }) { picker = it }
+                    status()
+                }
+                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(8.dp)) {
+                    controls(true, { objectList = true }, { settingsFor = PresetKind.PROCESS })
                 }
             }
         }
@@ -298,15 +384,44 @@ fun PlateScreen(vm: AppViewModel) {
             },
             onDelete = if (kind == PresetKind.PRINTER) null else { name -> vm.deleteUserPreset(kind, name) },
             onDismiss = { picker = null },
+            brands = if (kind == PresetKind.PRINTER) vm.installedVendors.sortedWith(String.CASE_INSENSITIVE_ORDER) else emptyList(),
+            brand = vm.activeVendor,
+            loading = vm.busy != null,
+            onBrand = vm::switchBrand,
         )
     }
     settingsFor?.let { kind -> SettingsScreen(vm, kind) { settingsFor = null } }
-    if (objectList) ObjectListSheet(vm, onOpen = { objectList = false; vm.selection = it; objectSheet = it }) { objectList = false }
+    // The side pane already shows the object list.
+    if (objectList && !twoPane) ObjectListSheet(vm, onOpen = { objectList = false; vm.selection = it; objectSheet = it }) { objectList = false }
     objectSheet?.let { sel -> ObjectSheet(vm, sel) { objectSheet = null } }
     if (calibrating) CalibrationDialog(vm) { calibrating = false }
+    if (recentSheet) {
+        RecentProjectsSheet(vm, onOpen = { p -> recentSheet = false; guarded { vm.openRecent(p) } }) { recentSheet = false }
+    }
+    unsavedGuard?.let { action ->
+        UnsavedChangesDialog(
+            name = vm.projectName,
+            onSave = { unsavedGuard = null; save(action) },
+            onDiscard = { unsavedGuard = null; action() },
+            onCancel = { unsavedGuard = null },
+        )
+    }
+    vm.projectChoice?.let { uri ->
+        ProjectChoiceDialog(
+            onOpen = { vm.projectChoice = null; guarded { vm.openProject(uri) } },
+            onGeometry = { vm.projectChoice = null; vm.importUris(listOf(uri), askProject = false) },
+            onCancel = { vm.projectChoice = null },
+        )
+    }
+    RecoveryDialog(vm)
     if (filamentSlots) {
         FilamentSlotsSheet(vm, onEdit = { filamentSlots = false; settingsFor = PresetKind.FILAMENT }) { filamentSlots = false }
     }
+    if (sendOpen && done != null) {
+        SendToPrinterSheet(printerVm, done.gcode, vm.printer, onOpenQueue = { sendOpen = false; queueOpen = true }) { sendOpen = false }
+    }
+    if (queueOpen) PrintQueueSheet(printerVm) { queueOpen = false }
+    if (printersOpen) PrintersSheet(printerVm, vm.printer) { printersOpen = false }
 }
 
 @Composable
@@ -373,6 +488,7 @@ private fun ActionBar(
     plates: Int,
     onImport: () -> Unit,
     onObjects: () -> Unit,
+    onLibrary: () -> Unit,
     onArrange: () -> Unit,
     onSettings: () -> Unit,
     onSlice: (allPlates: Boolean) -> Unit,
@@ -387,6 +503,7 @@ private fun ActionBar(
         ) {
             IconButton(onClick = onImport) { Icon(Icons.Filled.Add, "Import models") }
             IconButton(onClick = onObjects, enabled = hasObjects) { Icon(Icons.AutoMirrored.Filled.List, "Objects") }
+            IconButton(onClick = onLibrary) { Icon(AppIcons.CloudDownload, "Online model library") }
             IconButton(onClick = onArrange, enabled = hasObjects) { Icon(AppIcons.GridView, "Arrange") }
             IconButton(onClick = onSettings) { Icon(AppIcons.Tune, "Print settings") }
             if (hasResult) IconButton(onClick = onShowResult) { Icon(AppIcons.Layers, "Show preview") }

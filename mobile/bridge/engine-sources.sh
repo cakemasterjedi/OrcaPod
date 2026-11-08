@@ -47,6 +47,17 @@ case "$ORCAPOD_STEP" in
     *) echo "FATAL: ORCAPOD_STEP must be real or stub" >&2; exit 1 ;;
 esac
 
+# ORCAPOD_CCACHE=1 runs every compile (the engine, oneTBB, OpenCASCADE, GMP and
+# MPFR) through ccache, so a build that starts from an empty build directory,
+# as every CI run does, only recompiles what changed since the cached build.
+CCACHE=()
+CCACHE_CMAKE=()
+if [ "${ORCAPOD_CCACHE:-0}" = 1 ]; then
+    command -v ccache > /dev/null || { echo "FATAL: ORCAPOD_CCACHE=1 needs ccache" >&2; exit 1; }
+    CCACHE=(ccache)
+    CCACHE_CMAKE=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+fi
+
 engine_sources() {
     local SRC DEPS f
     SRC="$REPO/src"
@@ -388,7 +399,7 @@ engine_build_tbb() { # engine_build_tbb <build dir> [cmake args...]
                    -DCMAKE_INSTALL_LIBDIR=lib \
                    -DTBB_BUILD_SHARED=OFF -DBUILD_SHARED_LIBS=OFF -DTBB_TEST=OFF -DTBB_STRICT=OFF \
                    -DTBB_DISABLE_HWLOC_AUTOMATIC_SEARCH=ON -DTBB_ENABLE_IPO=OFF \
-                   -DCMAKE_POSITION_INDEPENDENT_CODE=ON "$@" >&2 &&
+                   -DCMAKE_POSITION_INDEPENDENT_CODE=ON "${CCACHE_CMAKE[@]}" "$@" >&2 &&
                cmake --build "$build/tbb-build" >&2 &&
                cmake --install "$build/tbb-build" >&2; }; then
             echo "FATAL: oneTBB build failed" >&2
@@ -428,7 +439,7 @@ engine_build_occt() { # engine_build_occt <build dir> [cmake args...]
                    -DBUILD_MODULE_ModelingAlgorithms=OFF -DBUILD_MODULE_Visualization=OFF \
                    -DBUILD_MODULE_ApplicationFramework=OFF -DBUILD_MODULE_DataExchange=OFF \
                    -DBUILD_MODULE_Draw=OFF \
-                   -DBUILD_ADDITIONAL_TOOLKITS="TKDESTEP TKXCAF TKMesh" "$@" >&2 &&
+                   -DBUILD_ADDITIONAL_TOOLKITS="TKDESTEP TKXCAF TKMesh" "${CCACHE_CMAKE[@]}" "$@" >&2 &&
                cmake --build "$build/occt-build" -j"${ORCAPOD_JOBS:-6}" >&2 &&
                cmake --install "$build/occt-build" >&2; }; then
             echo "FATAL: OpenCASCADE build failed" >&2

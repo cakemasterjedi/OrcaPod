@@ -92,7 +92,7 @@ build_autotools_dep() { # <name> <url> <sha256|-> <sentinel lib> [configure args
     echo "==> building $name for $ABI" >&2
     (cd "$work" &&
         ./configure --host="$TRIPLE" --prefix="$PREFIX" --enable-static --disable-shared \
-            --with-pic CC="$CC" AR="$AR" RANLIB="$TC/bin/llvm-ranlib" "$@" > configure.log 2>&1 &&
+            --with-pic CC="${CCACHE[*]:+${CCACHE[*]} }$CC" AR="$AR" RANLIB="$TC/bin/llvm-ranlib" "$@" > configure.log 2>&1 &&
         make -j"${ORCAPOD_JOBS:-6}" > make.log 2>&1 &&
         make install > install.log 2>&1) ||
         { echo "FATAL: $name build failed, see $work/*.log" >&2; return 1; }

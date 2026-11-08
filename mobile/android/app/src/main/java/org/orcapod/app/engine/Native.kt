@@ -139,7 +139,7 @@ internal object Native {
     external fun fillBed(plater: Long, presets: Long, objectId: Long): Int
     external fun objectExportStl(plater: Long, objectId: Long, path: String)
     external fun exportStlAll(plater: Long, path: String)
-    external fun projectSave(plater: Long, presets: Long, path: String)
+    external fun projectSave(plater: Long, presets: Long, path: String, thumbnailSize: Int, thumbnail: ByteArray?)
 
     // --- height range modifiers: flat (min z, max z, layer height) triples ---
     external fun heightRanges(plater: Long, objectId: Long): DoubleArray

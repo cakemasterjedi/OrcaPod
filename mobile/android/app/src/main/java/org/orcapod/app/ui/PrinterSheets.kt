@@ -1,5 +1,9 @@
 package org.orcapod.app.ui
 
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -23,6 +27,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -52,42 +57,67 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import org.orcapod.app.data.PrinterFleet
 import org.orcapod.app.printhost.DiscoveredPrinter
 import org.orcapod.app.printhost.HostType
 import org.orcapod.app.printhost.PrintOptions
 import org.orcapod.app.printhost.PrintState
 import org.orcapod.app.printhost.PrinterConnection
 import org.orcapod.app.printhost.PrinterStatus
+import org.orcapod.app.printhost.QueueState
 import java.io.File
 import java.util.Locale
 import kotlin.math.roundToInt
 
-/** Desktop's "Send to printer" / "Upload to print host" dialog for the sliced plate. */
+/**
+ * Desktop's "Send to printer" / "Upload to print host" dialog for the sliced
+ * plate, for one printer or several at once. Every send goes through the
+ * print queue, so a busy printer gets the plate when it is free.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SendToPrinterSheet(vm: PrinterViewModel, gcode: File, printerPreset: String, onDismiss: () -> Unit) {
-    var target by remember { mutableStateOf(vm.preferredFor(printerPreset)) }
+fun SendToPrinterSheet(vm: PrinterViewModel, gcode: File, printerPreset: String, onOpenQueue: () -> Unit, onDismiss: () -> Unit) {
+    var selected by remember { mutableStateOf(setOfNotNull(vm.preferredFor(printerPreset)?.id)) }
     var name by remember { mutableStateOf(gcode.name) }
     var options by remember { mutableStateOf(PrintOptions()) }
     var editing by remember { mutableStateOf<PrinterConnection?>(null) }
-    var watching by remember { mutableStateOf(false) }
+    var sent by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var queueing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val askNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    val context = LocalContext.current
 
-    // Watching stops with the sheet, so a forgotten monitor doesn't poll the printer all day.
-    fun close() { vm.clearUpload(); vm.stopMonitor(); onDismiss() }
-    ModalBottomSheet(onDismissRequest = ::close, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+    fun send(start: Boolean) {
+        val targets = vm.connections.filter { it.id in selected }
+        if (targets.isEmpty() || queueing) return
+        // The queue tells the user when a print ends or a bed needs clearing.
+        if (Build.VERSION.SDK_INT >= 33 && !PrinterFleet.canNotify(context)) askNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
+        queueing = true
+        scope.launch {
+            sent = vm.enqueue(targets, gcode, name, start, options, printerPreset)
+            queueing = false
+        }
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp).verticalScroll(rememberScrollState())) {
             Text("Send to printer", style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(8.dp))
-            if (watching && vm.monitored != null) {
-                PrinterMonitor(vm)
+            if (sent.isNotEmpty()) {
+                SentProgress(vm, sent)
+                Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDismiss) { Text("Close") }
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = onOpenQueue) { Icon(AppIcons.Queue, null); Spacer(Modifier.width(6.dp)); Text("Print queue") }
+                }
                 return@Column
             }
-            val c = target?.let { t -> vm.connections.firstOrNull { it.id == t.id } }
             if (vm.connections.isEmpty()) {
                 Text("No printers yet. Add one with its network address to upload and start prints from here.")
                 Spacer(Modifier.height(12.dp))
@@ -96,63 +126,94 @@ fun SendToPrinterSheet(vm: PrinterViewModel, gcode: File, printerPreset: String,
                 }
             } else {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    ConnectionPicker(vm.connections, c, Modifier.weight(1f)) { target = it }
+                    Text(
+                        if (vm.connections.size > 1) "Printers (pick one or more)" else "Printer",
+                        style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f),
+                    )
                     IconButton(onClick = { editing = blankConnection(vm.newId(), printerPreset) }) { Icon(Icons.Filled.Add, "Add printer") }
+                }
+                for (c in vm.connections.sortedBy { it.name.lowercase() }) {
+                    val on = c.id in selected
+                    Row(
+                        Modifier.fillMaxWidth().clickable { selected = if (on) selected - c.id else selected + c.id }.padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(checked = on, onCheckedChange = { selected = if (it) selected + c.id else selected - c.id })
+                        Column(Modifier.weight(1f)) {
+                            Text(c.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                listOfNotNull(c.type.label, printerLine(vm, c.id)).joinToString(" · "),
+                                style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
                 }
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = name, onValueChange = { name = it }, singleLine = true,
                     label = { Text("File name") }, modifier = Modifier.fillMaxWidth(),
                 )
-                if (c != null) PrintOptionsEditor(c.type, options) { options = it }
+                val targets = vm.connections.filter { it.id in selected }
+                for (type in targets.map { it.type }.distinct()) PrintOptionsEditor(type, options, label = type.label.takeIf { targets.size > 1 }) { options = it }
+                val busy = targets.filter { t -> vm.fleetStatus[t.id]?.status?.isActive == true || vm.queue.any { it.connectionId == t.id && it.state.isOpen } }
+                if (busy.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "${busy.joinToString { it.name }}: busy, so the plate waits in the print queue. " +
+                            "It starts when the printer is free and you confirm the bed is clear.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
                 Spacer(Modifier.height(12.dp))
-                when (val u = vm.upload) {
-                    is UploadState.Running -> {
-                        Text("Uploading to ${u.printer}… ${(u.fraction * 100).roundToInt()}%", style = MaterialTheme.typography.bodyMedium)
-                        Spacer(Modifier.height(6.dp))
-                        LinearProgressIndicator(progress = { u.fraction }, modifier = Modifier.fillMaxWidth())
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                            TextButton(onClick = vm::cancelUpload) { Text("Cancel") }
-                        }
-                    }
-                    is UploadState.Done -> {
-                        Text(
-                            if (u.started) "Sent ${u.fileName} to ${u.printer} and started the print."
-                            else "Uploaded ${u.fileName} to ${u.printer}.",
-                        )
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                            TextButton(onClick = ::close) { Text("Close") }
-                            if (c != null) {
-                                Spacer(Modifier.width(8.dp))
-                                Button(onClick = { vm.watch(c.id); watching = true }) { Text("Watch printer") }
-                            }
-                        }
-                    }
-                    else -> {
-                        if (u is UploadState.Failed) {
-                            Text(u.message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
-                            Spacer(Modifier.height(8.dp))
-                        }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                            OutlinedButton(
-                                onClick = { if (c != null) vm.send(c, gcode, name, start = false, options, printerPreset) },
-                                enabled = c != null && name.isNotBlank(),
-                            ) { Text("Upload") }
-                            Spacer(Modifier.width(8.dp))
-                            Button(
-                                onClick = { if (c != null) vm.send(c, gcode, name, start = true, options, printerPreset) },
-                                enabled = c != null && name.isNotBlank(),
-                            ) {
-                                Icon(AppIcons.Print, null); Spacer(Modifier.width(6.dp)); Text("Upload and print")
-                            }
-                        }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                    if (queueing) CircularProgressIndicator(Modifier.width(18.dp).height(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(onClick = { send(start = false) }, enabled = targets.isNotEmpty() && name.isNotBlank() && !queueing) { Text("Upload") }
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = { send(start = true) }, enabled = targets.isNotEmpty() && name.isNotBlank() && !queueing) {
+                        Icon(AppIcons.Print, null); Spacer(Modifier.width(6.dp))
+                        Text(if (targets.size > 1) "Print on ${targets.size}" else "Upload and print")
                     }
                 }
             }
         }
     }
     editing?.let { initial ->
-        ConnectionEditor(vm, initial, onDismiss = { editing = null }) { saved -> target = saved; editing = null }
+        ConnectionEditor(vm, initial, onDismiss = { editing = null }) { saved -> selected = selected + saved.id; editing = null }
+    }
+}
+
+/** What a printer is doing, in a few words, for the printer pickers: "Printing 42%", "2 queued". */
+internal fun printerLine(vm: PrinterViewModel, id: String): String? {
+    val p = vm.fleetStatus[id]
+    val s = p?.status
+    val queued = vm.queue.count { it.connectionId == id && it.state == QueueState.WAITING }
+    return listOfNotNull(
+        when {
+            p?.needsBedClear == true -> "clear the bed"
+            s == null -> null
+            s.isActive -> listOfNotNull(stateLabel(s), s.progress?.let { "${(it * 100).roundToInt()}%" }).joinToString(" ")
+            else -> stateLabel(s)
+        },
+        queued.takeIf { it > 0 }?.let { "$it queued" },
+    ).joinToString(" · ").ifEmpty { null }
+}
+
+internal fun stateLabel(s: PrinterStatus) = s.stateText.ifEmpty { s.state.name.lowercase().replaceFirstChar { it.uppercase() } }
+
+/** The items just queued: each printer's upload progress, then whether it started. */
+@Composable
+private fun SentProgress(vm: PrinterViewModel, ids: Set<String>) {
+    for (item in vm.queue.filter { it.id in ids }) {
+        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+            Text(item.printerName, style = MaterialTheme.typography.titleSmall)
+            Text(queueStateText(item), style = MaterialTheme.typography.bodySmall,
+                color = if (item.state == QueueState.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+            if (item.state == QueueState.UPLOADING) {
+                Spacer(Modifier.height(4.dp))
+                LinearProgressIndicator(progress = { item.progress }, modifier = Modifier.fillMaxWidth())
+            }
+        }
     }
 }
 
@@ -258,9 +319,9 @@ fun PrinterMonitor(vm: PrinterViewModel) {
             if (s != null && (s.state == PrintState.PRINTING || s.state == PrintState.PAUSED || s.state == PrintState.PREPARING)) {
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
                     if (s.state == PrintState.PAUSED) {
-                        FilledTonalButton(onClick = vm::resume) { Icon(Icons.Filled.PlayArrow, null); Spacer(Modifier.width(4.dp)); Text("Resume") }
+                        FilledTonalButton(onClick = { vm.resume() }) { Icon(Icons.Filled.PlayArrow, null); Spacer(Modifier.width(4.dp)); Text("Resume") }
                     } else {
-                        FilledTonalButton(onClick = vm::pause) { Icon(AppIcons.Pause, null); Spacer(Modifier.width(4.dp)); Text("Pause") }
+                        FilledTonalButton(onClick = { vm.pause() }) { Icon(AppIcons.Pause, null); Spacer(Modifier.width(4.dp)); Text("Pause") }
                     }
                     Spacer(Modifier.width(8.dp))
                     OutlinedButton(onClick = { confirmStop = true }) { Icon(AppIcons.Stop, null); Spacer(Modifier.width(4.dp)); Text("Stop") }
@@ -282,7 +343,7 @@ fun PrinterMonitor(vm: PrinterViewModel) {
 }
 
 @Composable
-private fun StatusDetails(s: PrinterStatus, error: String?) {
+internal fun StatusDetails(s: PrinterStatus, error: String?) {
     Text(
         listOfNotNull(s.stateText.ifEmpty { s.state.name.lowercase() }, s.fileName).joinToString(" · "),
         style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis,
@@ -314,14 +375,17 @@ private fun temp(actual: Double, target: Double?) =
     if (target != null && target > 0) String.format(Locale.US, "%.0f / %.0f °C", actual, target)
     else String.format(Locale.US, "%.0f °C", actual)
 
-private fun hm(seconds: Long): String {
+internal fun hm(seconds: Long): String {
     val h = seconds / 3600
     val m = (seconds % 3600) / 60
     return if (h > 0) "${h} h ${m} min" else "$m min"
 }
 
 @Composable
-private fun PrintOptionsEditor(type: HostType, o: PrintOptions, onChange: (PrintOptions) -> Unit) {
+private fun PrintOptionsEditor(type: HostType, o: PrintOptions, label: String? = null, onChange: (PrintOptions) -> Unit) {
+    if (label != null && (type == HostType.BAMBU_LAN || type == HostType.DUET)) {
+        Text(label, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 8.dp))
+    }
     when (type) {
         HostType.BAMBU_LAN -> Column(Modifier.padding(top = 8.dp)) {
             OptionSwitch("Bed leveling", o.bedLeveling) { onChange(o.copy(bedLeveling = it)) }
@@ -345,25 +409,6 @@ private fun OptionSwitch(label: String, checked: Boolean, onChange: (Boolean) ->
     Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(label, Modifier.weight(1f))
         Switch(checked = checked, onCheckedChange = onChange)
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ConnectionPicker(all: List<PrinterConnection>, current: PrinterConnection?, modifier: Modifier, onPick: (PrinterConnection) -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    ExposedDropdownMenuBox(expanded = open, onExpandedChange = { open = it }, modifier = modifier) {
-        OutlinedTextField(
-            value = current?.name ?: "Choose a printer",
-            onValueChange = {}, readOnly = true, singleLine = true,
-            label = { Text("Printer") },
-            supportingText = current?.let { { Text(it.type.label) } },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = open) },
-            modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable),
-        )
-        ExposedDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            for (c in all) DropdownMenuItem(text = { Text("${c.name} (${c.type.label})") }, onClick = { open = false; onPick(c) })
-        }
     }
 }
 

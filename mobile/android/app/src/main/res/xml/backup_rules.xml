@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Saved printer logins (API keys, access codes) stay on the device. -->
+<!-- Saved printer logins (API keys, access codes) stay on the device, and so
+     does the print queue: its G-code is large and only means something there. -->
 <full-backup-content>
     <exclude domain="sharedpref" path="printers.xml" />
+    <exclude domain="file" path="print-queue/" />
+    <exclude domain="file" path="print-queue.json" />
 </full-backup-content>

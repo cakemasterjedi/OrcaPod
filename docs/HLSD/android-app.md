@@ -12,8 +12,11 @@ logic is the engine's; the app is a client of the bridge's C API
 ```
 Compose UI (ui/)          screens, sheets, panels; state in AppViewModel
  ├─ PlateView (ui/viewport)  GLSurfaceView: OpenGL ES 3 plate, gestures, picking
- ├─ PrinterViewModel      saved printers, uploads, status polling
- │   └─ PrintHost (printhost/)  one class per printer network API, plain JVM
+ ├─ PrinterViewModel      printer screens over PrinterFleet
+ │   └─ PrinterFleet (data/)   process-wide: saved printers, one host each, the queue
+ │       ├─ PrintQueue (printhost/)  per-printer lines of plates, status of every printer
+ │       └─ PrintHost (printhost/)   one class per printer network API, plain JVM
+ ├─ QueueService          foreground service while the queue has work
  └─ Engine (engine/)      Kotlin session over one presets bundle + one plater
      └─ Native / orcapod_jni.cpp   JNI: one function per bridge call
          └─ liborcapod.so  the engine and bridge, from build-android.sh
@@ -50,6 +53,32 @@ printer list short, like the desktop setup wizard.
 After an app update the same brands are re-extracted, since the bundled
 profiles may have changed. User presets live beside them in `user/default`
 and survive both.
+
+### Backup and sync
+
+User presets can leave the phone two ways, both working on the files in
+`user/default/{machine,filament,process}` rather than through the engine, so
+the engine only has to reload its presets afterwards (unsaved edits are
+dropped then).
+
+- **Backup file** (`ProfileBackup`): a zip with `printer/`, `filament/` and
+  `process/` folders, the layout of desktop's preset bundle export. It has no
+  `bundle_structure.json` on purpose: with one, desktop imports the presets
+  as a read-only local bundle instead of editable user presets. Import takes
+  desktop's `.orca_printer`, `.orca_filament` and `.zip` exports or a single
+  preset JSON, classifies each file by its `*_settings_id` key, `type` or
+  folder, names it after its `name` key (the engine loads a user preset under
+  its file name), and replaces a preset of the same name.
+- **Sync folder** (`ProfileSync`, `SafProfileFolder`): a folder picked with
+  the Storage Access Framework, kept with a persistable permission, that a
+  cloud or sync app mirrors to other devices. Presets go in an
+  `OrcaPod profiles` subfolder, or straight into the picked folder when it
+  already looks like a `user/default`. Sync is a three-way merge against the
+  content hashes recorded at the last sync, so a deletion on one side is
+  carried to the other instead of being undone. A preset changed on both
+  sides keeps the newer file, and the older one is written to the folder's
+  `conflicts/` so nothing is lost. It runs when the engine opens, after the
+  user saves or deletes a preset, and on demand.
 
 ## Settings editors
 
@@ -92,8 +121,34 @@ Plates are desktop's plate tabs: add, rename, lock, duplicate, reorder,
 delete and per-plate settings (plate type, sequence, spiral vase, first-layer
 filament order). Slicing works on the selected plate or every plate into one
 file; the preview shows a single plate, offset to where it sits beside the
-bed. Projects save as OrcaSlicer 3MF with plates and settings, and sliced
-3MF files (G-code inside a 3MF) export per plate or for all plates.
+bed. Sliced 3MF files (G-code inside a 3MF) export per plate or for all
+plates.
+
+## Projects
+
+A project is an OrcaSlicer 3MF written by the engine's own project writer
+(`store_bbs_3mf`): objects, parts and modifiers with their transforms,
+per-object and per-part settings, height ranges, painting, plates with their
+settings, and the selected printer, filament and process with their unsaved
+edits. Desktop OrcaSlicer opens the same file, and opening one replaces the
+plate and adopts its settings (`load_config_model`).
+
+The app keeps desktop's project workflow around that: the title shows the
+project name with a `*` while the plate or settings differ from the last
+save; "Save" writes back to the same document and "Save as" picks a new one;
+replacing an unsaved plate asks first; and a recent list remembers each
+project with its picture. The picture is the first plate drawn by a small
+software renderer (`PlateThumbnail`, no GL context needed) and is stored in
+the 3MF as desktop's `Metadata/plate_1.png`. Documents come from the Storage
+Access Framework, so the app keeps a persistable permission on each one; a
+document it can only read (one shared from another app) opens, but saving it
+asks where to write.
+
+Android may kill a backgrounded app, so when the activity stops with unsaved
+changes the app writes a recovery copy of the project to its private storage
+(desktop's project backup). The next start offers to restore it; it comes
+back still marked unsaved. Importing a 3MF that carries project settings asks,
+like desktop, whether to open it as a project or import only its objects.
 
 Filament slots (preset and colour per slot) follow desktop's sidebar list;
 objects and parts take a slot through the "extruder" option, which slicing
@@ -212,31 +267,21 @@ top of the selected presets through the engine's edited-preset mechanism, so
 slicing picks them up exactly as desktop does; they can be saved as user
 presets.
 
-### Backup and sync
+## Screen layout
 
-User presets can leave the phone two ways, both working on the files in
-`user/default/{machine,filament,process}` rather than through the engine, so
-the engine only has to reload its presets afterwards (unsaved edits are
-dropped then).
-
-- **Backup file** (`ProfileBackup`): a zip with `printer/`, `filament/` and
-  `process/` folders, the layout of desktop's preset bundle export. It has no
-  `bundle_structure.json` on purpose: with one, desktop imports the presets
-  as a read-only local bundle instead of editable user presets. Import takes
-  desktop's `.orca_printer`, `.orca_filament` and `.zip` exports or a single
-  preset JSON, classifies each file by its `*_settings_id` key, `type` or
-  folder, names it after its `name` key (the engine loads a user preset under
-  its file name), and replaces a preset of the same name.
-- **Sync folder** (`ProfileSync`, `SafProfileFolder`): a folder picked with
-  the Storage Access Framework, kept with a persistable permission, that a
-  cloud or sync app mirrors to other devices. Presets go in an
-  `OrcaPod profiles` subfolder, or straight into the picked folder when it
-  already looks like a `user/default`. Sync is a three-way merge against the
-  content hashes recorded at the last sync, so a deletion on one side is
-  carried to the other instead of being undone. A preset changed on both
-  sides keeps the newer file, and the older one is written to the folder's
-  `conflicts/` so nothing is lost. It runs when the engine opens, after the
-  user saves or deletes a preset, and on demand.
+On a phone the viewport fills the screen and everything else floats over it:
+the preset bar and plate strip at the top, the selected object's controls
+and the plate actions at the bottom, and the object list and settings in a
+sheet and a full-screen dialog. A window that is at least 840 dp wide, or at
+least 600 dp wide in landscape, and at least 480 dp tall (tablets, unfolded
+foldables, desktop-mode windows) puts the viewport next to a fixed side pane
+instead, so the controls don't cover the model: presets on top, an Objects
+tab (the selected object's controls above the object list, tap an object to
+select it) or a Settings tab (the same settings as the dialog), and the
+slice, preview and tool panels at the bottom. The choice follows the
+window's current size, so it switches on rotation, fold and split screen. A
+phone in landscape keeps the phone layout because a
+pane under 480 dp tall cannot hold its tabs and controls.
 
 ## Viewport
 
@@ -323,6 +368,50 @@ Printers are found by Bambu's UDP announcements on port 2021 and by the
 address. Status is polled every few seconds while a printer sheet is open
 (Bambu's MQTT connection stays open and pushes reports instead).
 
+`PrinterFleet` holds the saved connections and one open `PrintHost` per
+printer for the whole process, so the queue and the printer screens share a
+connection (Bambu printers accept only a few MQTT clients). A changed name or
+remembered preset keeps the connection; any other change reconnects.
+
+### Print queue
+
+Every send goes through `PrintQueue`, whether to one printer or several. The
+sliced G-code is copied once into `files/print-queue/` and each chosen
+printer gets its own item pointing at it, so slicing the next plate does not
+change what is queued. Items are kept in `print-queue.json`; an upload cut
+off by the app's death goes again from the start on the next launch.
+
+Each printer works through its items in order, one at a time, and printers
+run in parallel. An upload-only item goes as soon as the printer's earlier
+items are sent. An item that starts a print goes only when the printer last
+reported idle, finished or cancelled within the last 30 seconds, and not
+while it waits for its bed: whenever a print on it ends, the queue's own or
+one started elsewhere, and a print is queued next, the finished part is still
+on the bed, so the printer is marked as needing its bed cleared and nothing
+starts until the user confirms. Sending a plate to a printer with nothing else
+queued counts as that confirmation.
+
+A started item follows the print: once the printer has reported it running,
+a later finished or idle report ends it as finished, cancelled as cancelled
+and an error as failed. Printers can report the previous job's end, or idle,
+for a while after a start, so those reports count only after the print was
+seen running; one never seen running within ten minutes ends as finished
+with a note. Outcomes go into `PrintLog` like any other send.
+
+The queue polls the printers that have open items every 10 seconds, and every
+saved printer every 3 seconds while the dashboard is open. The dashboard is
+a grid of printer cards, one column on a phone and more on a tablet, each
+with the printer's status, pause, resume, stop, camera and its line of plates
+(reorder, cancel, retry, remove). Printers that need someone come first.
+
+While items are open, `QueueService` runs as a foreground service of type
+`connectedDevice` (printers on the local network; no daily time limit) with a
+partial wake lock, renewed as items change, so uploads and polling go on with
+the screen off. It shows a summary notification and stops when nothing is
+left. Prints that end or fail and beds to clear raise an alert that opens the
+dashboard. Android 13 and later ask for the notification permission on the
+first send.
+
 ### Camera and history
 
 `PrintHost.camera()` describes the printer's camera as either JPEG frames
@@ -380,6 +469,9 @@ A web link shared to the app from a browser opens the library on that page.
 - Bambu printers are reached in LAN mode only; Bambu's cloud needs its
   closed network plugin. The AMS maps the single filament to one tray.
 - Prints the app did not send appear in its history only for Klipper.
+- The queue sends one plate per item; it cannot split a plate across
+  printers or pick a free printer by itself, and it never starts a print on
+  a bed it saw a print end on without the user's confirmation.
 
 ## Verification
 
@@ -390,7 +482,11 @@ and arranges, settings edit, and a plate slices, previews and cancels. It
 also checks that every option of the shipped settings layout is known to the
 engine, and exercises parts and modifiers, per-object and per-part settings,
 height ranges, plates, filament slots, slicing all plates and the project,
-sliced-3MF and STL exports. The preview checks cover travels, markers,
+sliced-3MF and STL exports. The project check saves a plate with a moved,
+rotated and scaled object, object and modifier settings, a height range, a
+second plate with its own settings, two filaments and an edited process
+value, then clears all of it and checks that opening the 3MF brings each
+back. The preview checks cover travels, markers,
 attributes and layer heights, hidden roles, ranges and slider draw ranges, and
 a pause and filament change that reach the sliced G-code. Cut, paint and
 layer height checks cover straight and tilted cuts with connectors, brush and

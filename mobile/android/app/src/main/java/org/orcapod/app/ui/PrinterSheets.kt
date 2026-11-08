@@ -299,6 +299,7 @@ fun PrinterMonitor(vm: PrinterViewModel) {
     var confirmStop by remember { mutableStateOf(false) }
     var cameraOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
+    var skipOpen by remember { mutableStateOf(false) }
     val id = vm.monitored
     val name = vm.connections.firstOrNull { it.id == id }?.name.orEmpty()
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
@@ -315,6 +316,9 @@ fun PrinterMonitor(vm: PrinterViewModel) {
             Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
                 TextButton(onClick = { cameraOpen = true }) { Icon(AppIcons.Camera, null); Spacer(Modifier.width(4.dp)); Text("Camera") }
                 TextButton(onClick = { historyOpen = true }) { Icon(AppIcons.History, null); Spacer(Modifier.width(4.dp)); Text("History") }
+                if (s?.isActive == true && vm.connections.firstOrNull { it.id == id }?.type?.canSkipObjects == true) {
+                    TextButton(onClick = { skipOpen = true }) { Text("Skip objects") }
+                }
             }
             if (s != null && (s.state == PrintState.PRINTING || s.state == PrintState.PAUSED || s.state == PrintState.PREPARING)) {
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
@@ -331,6 +335,7 @@ fun PrinterMonitor(vm: PrinterViewModel) {
     }
     if (cameraOpen && id != null) CameraDialog(vm, id, name) { cameraOpen = false }
     if (historyOpen && id != null) HistorySheet(vm, id, name) { historyOpen = false }
+    if (skipOpen && id != null) SkipObjectsSheet(vm, id) { skipOpen = false }
     if (confirmStop) {
         AlertDialog(
             onDismissRequest = { confirmStop = false },

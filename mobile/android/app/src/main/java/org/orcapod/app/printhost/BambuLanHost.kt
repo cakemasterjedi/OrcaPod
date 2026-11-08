@@ -71,6 +71,29 @@ class BambuLanHost(
         return synchronized(lock) { parse(JSONObject(report.toString())) }
     }
 
+    /** The labels of the app's G-code, marked with the ids the printer reports skipped ("s_obj"). */
+    override fun printObjects(labels: GcodeLabels?): List<PrintObject> {
+        labels ?: return emptyList()
+        val skipped = skippedIds()
+        return labels.objects.map { it.copy(skipped = it.id in skipped) }
+    }
+
+    override fun skipObjects(objects: List<PrintObject>, labels: GcodeLabels?) {
+        // The printer takes the whole list of objects to leave out, so keep the ones skipped before.
+        val ids = (skippedIds() + objects.map { it.id }).mapNotNull { it.toLongOrNull() }.distinct()
+        val json = JSONObject().put("print", JSONObject().put("sequence_id", seq()).put("command", "skip_objects").put("obj_list", JSONArray(ids)))
+        send("skip_objects", json, 3000)
+    }
+
+    private fun skippedIds(): Set<String> {
+        connect()
+        awaitReport(5000)
+        return synchronized(lock) {
+            val a = report.optJSONArray("s_obj") ?: return emptySet()
+            (0 until a.length()).map { a.opt(it).toString() }.toSet()
+        }
+    }
+
     override fun pause() = command("pause")
     override fun resume() = command("resume")
     override fun cancel() = command("stop")

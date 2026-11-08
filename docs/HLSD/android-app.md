@@ -429,6 +429,26 @@ each job the app sends, and while a printer is watched, the entry of the job
 it is printing follows the print to finished, cancelled or failed, matched by
 file name stem (printers report "cube", "cube.gcode" or "cube.gcode.3mf").
 
+### Skipping objects
+
+Like desktop's "Skip objects", a running print can leave out some of its
+objects while the rest carry on. The objects must be labeled in the G-code,
+which the engine does when the process's "Exclude objects" is on, and always
+for Bambu printers: `EXCLUDE_OBJECT_DEFINE` for Klipper, `M486` for Marlin and
+RepRapFirmware, label ids with `M624` for Bambu.
+
+Moonraker (`exclude_object` status, skipped with `EXCLUDE_OBJECT`) and Duet
+(`job.build`, skipped with `M486 P`) list the objects of any print, with
+outlines and which are already skipped. OctoPrint and Bambu cannot, so
+`GcodeLabels` reads them from the G-code the app queued for that print: names,
+Klipper's polygons or the bounding box of each object's extrusions, and the
+command that skips it. OctoPrint sends that command to the firmware through
+`/api/printer/command`; Bambu takes `skip_objects` with the whole list of
+label ids to leave out over MQTT and reports them back in `s_obj`. OctoPrint
+reports nothing back, so the view model remembers what it skipped for each
+print. PrusaLink has no API for it, so Prusa printers skip from their own
+screen.
+
 The hosts are plain JVM code over `HttpURLConnection` and sockets, with no
 Android or third-party network library, so `HttpHostsTest` and
 `BambuLanHostTest` run each against a mock of its printer's API, including a

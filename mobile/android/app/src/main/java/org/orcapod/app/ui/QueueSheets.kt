@@ -135,6 +135,7 @@ private fun QueueHeader(vm: PrinterViewModel) {
 private fun PrinterCard(vm: PrinterViewModel, c: PrinterConnection, p: FleetPrinter?, items: List<QueueItem>) {
     var cameraOpen by remember { mutableStateOf(false) }
     var confirmStop by remember { mutableStateOf(false) }
+    var skipOpen by remember { mutableStateOf(false) }
     val s = p?.status
     val nextStart = items.firstOrNull { it.state == QueueState.WAITING }
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
@@ -180,6 +181,11 @@ private fun PrinterCard(vm: PrinterViewModel, c: PrinterConnection, p: FleetPrin
                     Spacer(Modifier.width(8.dp))
                     OutlinedButton(onClick = { confirmStop = true }) { Icon(AppIcons.Stop, null); Spacer(Modifier.width(4.dp)); Text("Stop") }
                 }
+                if (c.type.canSkipObjects) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = { skipOpen = true }) { Text("Skip objects…") }
+                    }
+                }
             }
             // Open items, then the last few that ended.
             val shown = items.filter { it.state.isOpen } + items.filter { !it.state.isOpen }.sortedByDescending { it.endedAt ?: 0 }.take(3)
@@ -191,6 +197,7 @@ private fun PrinterCard(vm: PrinterViewModel, c: PrinterConnection, p: FleetPrin
         }
     }
     if (cameraOpen) CameraDialog(vm, c.id, c.name) { cameraOpen = false }
+    if (skipOpen) SkipObjectsSheet(vm, c.id) { skipOpen = false }
     if (confirmStop) {
         AlertDialog(
             onDismissRequest = { confirmStop = false },

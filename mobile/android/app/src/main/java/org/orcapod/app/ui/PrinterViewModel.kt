@@ -19,10 +19,13 @@ import org.orcapod.app.data.PrinterFleet
 import org.orcapod.app.printhost.BambuLanHost
 import org.orcapod.app.printhost.CameraSource
 import org.orcapod.app.printhost.DiscoveredPrinter
+import org.orcapod.app.printhost.GcodeLabels
 import org.orcapod.app.printhost.JobOutcome
 import org.orcapod.app.printhost.JobRecord
 import org.orcapod.app.printhost.PrintState
 import org.orcapod.app.printhost.PrintHost
+import org.orcapod.app.printhost.PrintObject
+import org.orcapod.app.printhost.QueueState
 import org.orcapod.app.printhost.PrintOptions
 import org.orcapod.app.printhost.PrinterConnection
 import org.orcapod.app.printhost.PrinterStatus
@@ -153,6 +156,58 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: IOException) {
                 _messages.tryEmit(e.message ?: "The printer did not accept the command")
             }
+        }
+    }
+
+    /** Object labels read from queued G-code, by spool path; null when a file has none. */
+    private val labelCache = HashMap<String, GcodeLabels?>()
+    /** Ids this app skipped, by printer and G-code, for printers that do not report skipped objects. */
+    private val skippedHere = HashMap<Pair<String, String>, Set<String>>()
+
+    /** The G-code this app sent for what [id] is printing now: its open queue item, else the last one sent. */
+    private fun printedGcode(id: String, reportedFile: String?): String? {
+        val sent = queue.filter { it.connectionId == id && it.start && it.startedAt != null }
+        val stem = reportedFile?.let(org.orcapod.app.data.PrintLog::stem)
+        return (sent.filter { it.state == QueueState.PRINTING } + sent.sortedByDescending { it.startedAt })
+            .firstOrNull { stem == null || org.orcapod.app.data.PrintLog.stem(it.fileName) == stem }
+            ?.gcodePath?.takeIf { File(it).exists() }
+    }
+
+    private fun labelsFor(id: String, path: String?): GcodeLabels? {
+        path ?: return null
+        return synchronized(labelCache) { labelCache.getOrPut(path) { runCatching { GcodeLabels.read(File(path)) }.getOrNull() } }
+    }
+
+    /**
+     * What the user can skip on [id]: the running print's objects, or why
+     * there are none. [SkipList.objects] is empty when the print carries no
+     * object labels or the app does not know its G-code.
+     */
+    data class SkipList(val objects: List<PrintObject>, val sentHere: Boolean)
+
+    suspend fun printObjects(id: String): SkipList = withContext(Dispatchers.IO) {
+        val c = connections.firstOrNull { it.id == id } ?: throw IOException("Unknown printer")
+        val reported = (if (monitored == id) status else fleetStatus[id]?.status)?.fileName
+        val path = printedGcode(id, reported)
+        val labels = labelsFor(id, path)
+        val local = path?.let { skippedHere[id to it] }.orEmpty()
+        val objects = host(c).printObjects(labels).orEmpty().map { if (it.id in local) it.copy(skipped = true) else it }
+        SkipList(objects, path != null)
+    }
+
+    /** Stops printing [objects] on [id] for the rest of the print (desktop's "Skip objects"). */
+    suspend fun skipObjects(id: String, objects: List<PrintObject>): Boolean {
+        val reported = (if (monitored == id) status else fleetStatus[id]?.status)?.fileName
+        return try {
+            val path = withContext(Dispatchers.IO) { printedGcode(id, reported) }
+            val labels = withContext(Dispatchers.IO) { labelsFor(id, path) }
+            fleet.queue.control(id) { it.skipObjects(objects, labels) }
+            if (path != null) skippedHere[id to path] = skippedHere[id to path].orEmpty() + objects.map { it.id }
+            _messages.tryEmit(if (objects.size == 1) "Skipping ${objects[0].name}" else "Skipping ${objects.size} objects")
+            true
+        } catch (e: IOException) {
+            _messages.tryEmit(e.message ?: "The printer did not accept the command")
+            false
         }
     }
 

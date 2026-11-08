@@ -145,6 +145,56 @@ class HttpHostsTest {
         }
     }
 
+    @Test
+    fun moonrakerListsAndExcludesObjects() {
+        MockHttpServer { r ->
+            when (r.path) {
+                "/printer/objects/query" -> Response(
+                    body = """{"result":{"status":{"exclude_object":{"objects":[
+                        {"name":"CUBE_ID_0_COPY_0","center":[100,100],"polygon":[[90,90],[110,90],[110,110],[90,110]]},
+                        {"name":"CUBE_ID_0_COPY_1","center":[150,100],"polygon":[[140,90],[160,90],[160,110],[140,110]]},
+                        {"name":"CUBE_ID_0_COPY_2"}],
+                        "excluded_objects":["CUBE_ID_0_COPY_2"],"current_object":"CUBE_ID_0_COPY_1"}}}}""",
+                )
+                "/printer/gcode/script" -> Response(body = """{"result":"ok"}""")
+                else -> Response(404, "")
+            }
+        }.use { server ->
+            val host = MoonrakerHost(conn(HostType.MOONRAKER, server.host))
+            val objects = host.printObjects(null)
+            assertEquals(3, objects.size)
+            assertEquals(listOf(false, false, true), objects.map { it.skipped })
+            assertEquals(listOf(false, true, false), objects.map { it.current })
+            assertEquals(4, objects[0].outline.size)
+            assertTrue(objects[2].outline.isEmpty())
+
+            host.skipObjects(objects.take(1), null)
+            val script = JSONObject(server.find("POST", "/printer/gcode/script")!!.text).getString("script")
+            assertEquals("EXCLUDE_OBJECT NAME=CUBE_ID_0_COPY_0", script)
+        }
+    }
+
+    @Test
+    fun moonrakerWithoutExcludeObjectListsNothing() {
+        assertTrue(MoonrakerHost.parseObjects(JSONObject("""{"result":{"status":{}}}""")).isEmpty())
+    }
+
+    // --- OctoPrint object skipping ---
+
+    @Test
+    fun octoPrintSkipsWithTheGcodesOwnCommand() {
+        MockHttpServer { r -> if (r.path == "/api/printer/command") Response(204, "") else Response(404, "") }.use { server ->
+            val host = OctoPrintHost(conn(HostType.OCTOPRINT, server.host))
+            assertTrue(host.printObjects(null).isEmpty())
+            val labels = GcodeLabels.parse("M486 S0\nM486 A Cube\nM486 S1\nM486 A Ring\nM486 S-1\n".lineSequence())!!
+            assertEquals(listOf("Cube", "Ring"), host.printObjects(labels).map { it.name })
+            host.skipObjects(labels.objects, labels)
+            val commands = JSONObject(server.find("POST", "/api/printer/command")!!.text).getJSONArray("commands")
+            assertEquals("M486 P0", commands.getString(0))
+            assertEquals("M486 P1", commands.getString(1))
+        }
+    }
+
     // --- PrusaLink ---
 
     @Test
@@ -263,6 +313,33 @@ class HttpHostsTest {
             assertEquals(209.9, s.nozzleTemp!!, 1e-9)
             assertEquals(60.0, s.bedTarget!!, 1e-9)
             assertEquals(50, s.totalLayers)
+        }
+    }
+
+    @Test
+    fun duetListsAndCancelsM486Objects() {
+        MockHttpServer { r ->
+            when (r.path) {
+                "/rr_connect" -> Response(body = """{"err":0}""")
+                "/rr_model" -> Response(
+                    body = """{"key":"job.build","result":{"currentObject":1,"m486Names":true,"m486Numbers":true,"objects":[
+                        {"cancelled":false,"name":"Cube","x":[10,30],"y":[20,40]},
+                        {"cancelled":true,"name":"Ring","x":[60,80],"y":[20,45]}]}}""",
+                )
+                "/rr_gcode" -> Response(body = """{"buff":255}""")
+                else -> Response(body = """{"err":0}""")
+            }
+        }.use { server ->
+            val host = DuetHost(conn(HostType.DUET, server.host))
+            val objects = host.printObjects(null)
+            assertEquals(listOf("0", "1"), objects.map { it.id })
+            assertEquals(listOf(false, true), objects.map { it.skipped })
+            assertEquals(listOf(false, true), objects.map { it.current })
+            assertEquals(listOf(10.0 to 20.0, 30.0 to 20.0, 30.0 to 40.0, 10.0 to 40.0), objects[0].outline)
+            assertTrue(server.find("GET", "/rr_model")!!.query.startsWith("key=job.build"))
+
+            host.skipObjects(objects.take(1), null)
+            assertEquals("gcode=M486%20P0", server.find("GET", "/rr_gcode")!!.query)
         }
     }
 

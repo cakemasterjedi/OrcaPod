@@ -20,6 +20,7 @@ import org.orcapod.app.ui.viewport.ViewMode
 import org.orcapod.app.ui.viewport.roleTimes
 import org.junit.AfterClass
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -482,6 +483,47 @@ class EngineHostTest {
     }
 
     @Test
+    fun ra_paintsStrokesAndKeepsThemInProjects() = runBlocking {
+        val sc = e.scene()
+        val obj = sc.snapshot.objects.single()
+        val part = obj.parts.single()
+        val b = worldBounds(sc.meshes.getValue(obj.id).positions, obj.instances.first().matrix)
+        val cx = ((b[0] + b[3]) / 2).toDouble()
+        val cy = ((b[1] + b[4]) / 2).toDouble()
+        val top = b[5].toDouble()
+        val down = doubleArrayOf(0.0, 0.0, -1.0, 0.0, 0.0, -1.0)
+        val undoBefore = e.scene().snapshot.undoCount
+        // A stroke across the top in two calls, as the app sends a finger's dabs.
+        val r1 = e.paintStroke(obj.id, part.id, PaintLayer.SEAM, doubleArrayOf(cx - 5, cy, top, cx - 2, cy, top), down, 1.5, 1, false)
+        val r2 = e.paintStroke(obj.id, part.id, PaintLayer.SEAM, doubleArrayOf(cx + 2, cy, top, cx + 5, cy, top), down, 1.5, 1, true)
+        assertTrue(r2 > r1)
+        // Brushing the same spot again is not an error and changes nothing.
+        assertEquals(r2, e.paintStroke(obj.id, part.id, PaintLayer.SEAM, doubleArrayOf(cx + 5, cy, top), down.copyOf(3), 1.5, 1, true))
+        assertEquals(undoBefore + 1, e.scene().snapshot.undoCount)
+        e.paintStroke(obj.id, part.id, PaintLayer.SUPPORT, doubleArrayOf(cx, cy, top), down.copyOf(3), 3.0, 2, false)
+        e.paintFill(obj.id, part.id, PaintLayer.FUZZY, floatArrayOf(b[3], cy.toFloat(), (b[2] + b[5]) / 2), floatArrayOf(-1f, 0f, 0f), 30.0, 1)
+        val counts = PaintLayer.entries.associateWith { e.paint(obj.id, part.id, it).count }
+        assertTrue(counts.toString(), counts.getValue(PaintLayer.SEAM) > 0 && counts.getValue(PaintLayer.SUPPORT) > 0 && counts.getValue(PaintLayer.FUZZY) > 0)
+
+        // Saving and reopening the project keeps every painted layer.
+        val project = File(work, "painted.3mf")
+        e.saveProject(project.path)
+        e.clear()
+        assertEquals(0, e.scene().snapshot.objects.size)
+        e.openProject(project.path)
+        val reopened = e.scene().snapshot.objects.single()
+        val reopenedPart = reopened.parts.single()
+        for (layer in listOf(PaintLayer.SEAM, PaintLayer.SUPPORT, PaintLayer.FUZZY)) {
+            val m = e.paint(reopened.id, reopenedPart.id, layer)
+            assertEquals("$layer after reopening", counts.getValue(layer), m.count)
+        }
+        assertTrue(e.paint(reopened.id, reopenedPart.id, PaintLayer.SUPPORT).states.all { it.toInt() == 2 })
+        for (layer in PaintLayer.entries) {
+            if (e.paint(reopened.id, reopenedPart.id, layer).count > 0) e.paintReset(reopened.id, reopenedPart.id, layer)
+        }
+    }
+
+    @Test
     fun s_editsLayerHeights() = runBlocking {
         val obj = e.scene().snapshot.objects.single()
         assertEquals(0, e.heightProfile(obj.id).size)
@@ -681,6 +723,48 @@ class EngineHostTest {
             listOf("Part<10>" to "Part_10_", "a\"b\u0001" to "Тело (2)"),
             parseNamePairs("""[["Part<10>","Part_10_"],["a\"b\u0001","Тело (2)"]]"""),
         )
+    }
+
+    @Test
+    fun z_repairsAndRunsBooleans() = runBlocking {
+        if (e.scene().snapshot.objects.isNotEmpty()) e.clear()
+        // A cube missing its top face: errors reported, "Fix model" closes it, undo reopens it.
+        val open = File(work, "open.stl").apply {
+            writeText(cubeStl(20.0).replace(Regex(" facet normal 0 0 0\n  outer loop\n   vertex 0.0 0.0 20.0[\\s\\S]*?endfacet\n"), ""))
+        }
+        e.import(open.path)
+        val broken = e.scene().snapshot.objects.single()
+        assertFalse(e.meshErrors(broken.id).manifold)
+        val report = e.repair(broken.id)
+        assertTrue(report.modified)
+        assertEquals(0, report.failedVolumes)
+        assertTrue(e.meshErrors(broken.id).manifold)
+        assertFalse("a closed mesh needs no repair", e.repair(broken.id).modified)
+        e.undo()
+        assertFalse(e.meshErrors(broken.id).manifold)
+        e.clear()
+
+        // Difference of a 20 mm cube and a bar through its side keeps both parts' places.
+        e.import(File(work, "cube.stl").path)
+        val cube = e.scene().snapshot.objects.single()
+        val bar = File(work, "bar.stl").apply {
+            writeText(cubeStl(1.0).replace(Regex("vertex (\\S+) (\\S+) (\\S+)")) { m ->
+                val (x, y, z) = m.destructured
+                "vertex ${10 + 20 * x.toDouble()} ${5 + 10 * y.toDouble()} ${5 + 10 * z.toDouble()}"
+            })
+        }
+        val tool = e.addVolumeFile(cube.id, VolumeType.PART, bar.path)
+        val source = cube.volumes.single().id
+        val result = e.meshBoolean(cube.id, source, tool, BooleanOperation.DIFFERENCE, deleteTool = true)
+        val o = e.scene().snapshot.objects.single()
+        val v = o.volumes.single()
+        assertEquals(result, v.id)
+        assertTrue(v.name.endsWith(" - difference"))
+        assertEquals(20f, v.bboxMax[0] - v.bboxMin[0], 1e-3f)
+        assertTrue(e.meshErrors(o.id).manifold)
+        e.undo()
+        assertEquals(2, e.scene().snapshot.objects.single().volumes.size)
+        e.clear()
     }
 
     private suspend fun layerHeight() =

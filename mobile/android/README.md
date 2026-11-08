@@ -5,7 +5,8 @@ move, rotate and scale them, pick printer, filament and process profiles,
 slice with OrcaSlicer's engine, preview the layers and send the G-code to
 an OctoPrint, Klipper (Moonraker), PrusaLink, Duet or Bambu Lab (LAN mode)
 printer (or several at once, through a print queue with a dashboard of all
-your printers), share it or save it. The online model library searches Thingiverse
+your printers, where a running print can be paused, stopped or told to skip
+some of its objects), share it or save it. The online model library searches Thingiverse
 (with your own app token) and browses Printables, MakerWorld and other sites,
 adding their downloads to the plate. See [docs/HLSD/android-app.md](../../docs/HLSD/android-app.md) for
 the design.

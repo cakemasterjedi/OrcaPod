@@ -165,6 +165,7 @@ fun PlateScreen(vm: AppViewModel) {
             override fun onPaint(objectId: Long, volumeId: Long, hit: FloatArray, view: FloatArray, first: Boolean) {
                 vm.paintAt(objectId, volumeId, hit, view, first)
             }
+            override fun onPaintEnd() { vm.paintStrokeEnd() }
         }
     }
 

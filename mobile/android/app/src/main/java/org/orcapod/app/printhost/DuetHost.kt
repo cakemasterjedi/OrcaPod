@@ -102,6 +102,17 @@ class DuetHost(private val c: PrinterConnection) : PrintHost {
         gcode(s, "M0")
     }
 
+    // RepRapFirmware lists the M486 objects of any print in job.build.
+    override fun printObjects(labels: GcodeLabels?): List<PrintObject> = session { s ->
+        val build = if (s.dsf) http.get("machine/status").json().optJSONObject("job")?.optJSONObject("build")
+        else model(s, "job.build").optJSONObject("result")
+        parseBuild(build)
+    }
+
+    override fun skipObjects(objects: List<PrintObject>, labels: GcodeLabels?) = session { s ->
+        for (o in objects) gcode(s, "M486 P${o.id}")
+    }
+
     private fun model(s: Session, key: String): JSONObject =
         http.get("rr_model?key=$key&flags=d99fn", s.headers).json()
 
@@ -113,6 +124,22 @@ class DuetHost(private val c: PrinterConnection) : PrintHost {
     private fun timestamp() = "time=" + SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date())
 
     companion object {
+        /** job.build: the objects in M486 order, so an object's index is its number. */
+        fun parseBuild(build: JSONObject?): List<PrintObject> {
+            val list = build?.optJSONArray("objects") ?: return emptyList()
+            val current = build.optInt("currentObject", -1)
+            return (0 until list.length()).mapNotNull { i ->
+                val o = list.optJSONObject(i) ?: return@mapNotNull null
+                val x = o.optJSONArray("x")
+                val y = o.optJSONArray("y")
+                val outline = if (x != null && y != null && x.length() == 2 && y.length() == 2) {
+                    val (x0, x1, y0, y1) = listOf(x.optDouble(0), x.optDouble(1), y.optDouble(0), y.optDouble(1))
+                    listOf(x0 to y0, x1 to y0, x1 to y1, x0 to y1)
+                } else emptyList()
+                PrintObject(i.toString(), o.optStringOrNull("name") ?: "Object $i", outline, o.optBoolean("cancelled"), i == current)
+            }
+        }
+
         /** Reads the object model subset {state, job, heat}, whichever API it came from. */
         fun parse(m: JSONObject): PrinterStatus {
             val text = m.optJSONObject("state")?.optString("status").orEmpty().ifEmpty { "unknown" }

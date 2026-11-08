@@ -62,7 +62,31 @@ class MoonrakerHost(c: PrinterConnection) : PrintHost {
     override fun history(limit: Int): List<JobRecord> =
         parseHistory(http.get("server/history/list?limit=$limit&order=desc").json())
 
+    // Klipper lists the objects of any print itself, with [exclude_object] in printer.cfg.
+    override fun printObjects(labels: GcodeLabels?): List<PrintObject> =
+        parseObjects(http.get("printer/objects/query?exclude_object").json())
+
+    override fun skipObjects(objects: List<PrintObject>, labels: GcodeLabels?) {
+        for (o in objects) http.post("printer/gcode/script", Body.Json(JSONObject().put("script", "EXCLUDE_OBJECT NAME=${o.id}")))
+    }
+
     companion object {
+        fun parseObjects(query: JSONObject): List<PrintObject> {
+            val e = query.optJSONObject("result")?.optJSONObject("status")?.optJSONObject("exclude_object") ?: return emptyList()
+            val list = e.optJSONArray("objects") ?: return emptyList()
+            val excluded = e.optJSONArray("excluded_objects")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }.orEmpty()
+            val current = e.optStringOrNull("current_object")
+            return (0 until list.length()).mapNotNull { i ->
+                val o = list.optJSONObject(i) ?: return@mapNotNull null
+                val name = o.optStringOrNull("name") ?: return@mapNotNull null
+                val polygon = o.optJSONArray("polygon")
+                val outline = (0 until (polygon?.length() ?: 0)).mapNotNull { j ->
+                    polygon?.optJSONArray(j)?.takeIf { it.length() >= 2 }?.let { it.optDouble(0) to it.optDouble(1) }
+                }
+                PrintObject(name, name, outline, skipped = name in excluded, current = name == current)
+            }
+        }
+
         fun parseHistory(json: JSONObject): List<JobRecord> {
             val jobs = json.optJSONObject("result")?.optJSONArray("jobs") ?: return emptyList()
             return (0 until jobs.length()).mapNotNull { i ->

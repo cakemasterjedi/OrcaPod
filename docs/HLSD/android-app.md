@@ -168,6 +168,28 @@ On "Perform cut" they become the engine's cut connectors, stored as desktop
 stores them (the world point minus the instance offset). The cut
 (`orca_plater_object_cut`) then drills them into both faces in one undo step.
 
+## Repair and booleans
+
+Each object's mesh statistics (`orca_plater_mesh_errors`, desktop's object
+list warning icon) are read with every scene refresh: the object list marks
+objects with non-manifold edges or errors fixed on import, and offers to
+repair the ticked objects or every object with errors left. The object
+sheet, each part's menu and the selected object's toolbar repair too.
+Repair is desktop's "Fix model" (`ModelVolume::repair`, see
+[mesh-repair.md](mesh-repair.md)) over every volume of the object or one
+part; a mesh that needs nothing leaves no undo step, and the notice lists
+what was repaired, what failed and what needed no repair.
+
+Booleans are desktop's Mesh Boolean gizmo between two volumes of one
+object: union, difference or intersection through MCUT. The result replaces
+the first volume with its role, settings and filament, named like desktop's
+("<part> - union"); a union removes the tool, the other operations remove it
+when "Delete input" is on. Desktop gives the result the source volume's
+offset; the bridge keeps the offset `add_volume` computes from the result's
+centre instead, so the result stays exactly where the operands were.
+Booleans between separate objects work the same way after assembling them
+into one object.
+
 ## Painting
 
 The painter is desktop's painter gizmos on one object. Each layer is a
@@ -181,11 +203,37 @@ Its tools are a sphere brush, smart fill by angle and bucket fill.
 
 While painting, a finger on the object paints and a finger elsewhere turns
 the view. The viewport finds the part under the finger from the hit
-triangle's range in the merged mesh. It sends one engine stroke
-(`orca_plater_volume_paint_sphere` / `_fill`) per finger step, and each
-stroke is one undo step. After each stroke the app reads the painted
-triangles back (`orca_plater_volume_paint`) and draws them as an overlay with
-desktop's enforcer and blocker colours, or the filament's colour.
+triangle's range in the merged mesh. A fill is one engine call
+(`orca_plater_volume_paint_fill`) and one undo step.
+
+A brush stroke is one undo step too, like desktop's one snapshot per mouse
+drag. The finger's dabs queue up in the view model while the engine is busy
+and go to `orca_plater_volume_paint_stroke` together, one call per run of
+dabs on the same part. Every call after the stroke's first passes
+`continue_stroke`, which adds the dabs to the step the first call made, as
+long as nothing else has changed the document in between. This keeps a
+stroke to one copy of the model for undo, which matters on a phone where
+copying a large model for every dab would stall the brush. The view model
+adds dabs between finger samples further apart than half the brush radius,
+so a fast finger draws a solid line; the engine casts each dab along its
+view ray onto the surface and skips dabs that miss the part. Brushing over
+paint already in the brush's state changes nothing and is not an error.
+
+After each batch the app reads the painted triangles back
+(`orca_plater_volume_paint`) and draws them as an overlay with desktop's
+enforcer and blocker colours, or the filament's colour. The rest of the
+scene is read again once the finger lifts.
+
+Painted support enforcers do nothing while the object's supports are off,
+which the engine reports as a slicing warning. The painter shows the same
+warning while support enforcers are painted on an object with supports
+off, with a button that turns supports on for that object only, as a
+per-object setting, so the process preset stays as it is.
+
+The painted layers live on the model's volumes, so a saved project
+(`orca_project_save`, desktop's `store_bbs_3mf`) carries them in the 3MF
+the same way desktop does, and opening a desktop project brings its paint
+along.
 
 ## Variable layer height
 
@@ -455,6 +503,26 @@ each job the app sends, and while a printer is watched, the entry of the job
 it is printing follows the print to finished, cancelled or failed, matched by
 file name stem (printers report "cube", "cube.gcode" or "cube.gcode.3mf").
 
+### Skipping objects
+
+Like desktop's "Skip objects", a running print can leave out some of its
+objects while the rest carry on. The objects must be labeled in the G-code,
+which the engine does when the process's "Exclude objects" is on, and always
+for Bambu printers: `EXCLUDE_OBJECT_DEFINE` for Klipper, `M486` for Marlin and
+RepRapFirmware, label ids with `M624` for Bambu.
+
+Moonraker (`exclude_object` status, skipped with `EXCLUDE_OBJECT`) and Duet
+(`job.build`, skipped with `M486 P`) list the objects of any print, with
+outlines and which are already skipped. OctoPrint and Bambu cannot, so
+`GcodeLabels` reads them from the G-code the app queued for that print: names,
+Klipper's polygons or the bounding box of each object's extrusions, and the
+command that skips it. OctoPrint sends that command to the firmware through
+`/api/printer/command`; Bambu takes `skip_objects` with the whole list of
+label ids to leave out over MQTT and reports them back in `s_obj`. OctoPrint
+reports nothing back, so the view model remembers what it skipped for each
+print. PrusaLink has no API for it, so Prusa printers skip from their own
+screen.
+
 The hosts are plain JVM code over `HttpURLConnection` and sockets, with no
 Android or third-party network library, so `HttpHostsTest` and
 `BambuLanHostTest` run each against a mock of its printer's API, including a
@@ -517,4 +585,6 @@ flow rate pass, a PA pattern and a cornering test and ends the test; the
 bridge contract tests also check each tower's height, that PA tower and
 pattern G-code steps PA, the input shaping and cornering printer settings,
 and the dialogs' range checks. A STEP file loads, counts its
-triangles, meshes and imports.
+triangles, meshes and imports. The repair check fills an open cube's hole
+and undoes it, and the boolean check subtracts a bar from a cube; the
+contract tests also run all three boolean operations and their failures.

@@ -70,6 +70,29 @@ class BambuLanHostTest {
     }
 
     @Test
+    fun skipsObjectsByLabelId() {
+        MockBambu().use { printer ->
+            val host = BambuLanHost(conn(), printer.mqttPort, printer.ftpPort)
+            val labels = GcodeLabels.parse(
+                "; model label id: 74,91\n; printing object Benchy id:1 copy 0\n; start printing object, unique label id: 74\n".lineSequence(),
+            )!!
+            assertTrue(host.printObjects(null).isEmpty())
+            assertEquals(listOf(false, false), host.printObjects(labels).map { it.skipped })
+
+            host.skipObjects(labels.objects.take(1), labels)
+            val cmd = printer.requests.map { it.optJSONObject("print") }.first { it?.optString("command") == "skip_objects" }!!
+            assertEquals(74, cmd.getJSONArray("obj_list").getInt(0))
+            assertEquals(listOf(true, false), host.printObjects(labels).map { it.skipped })
+
+            // Skipping another keeps the first in the list the printer is given.
+            host.skipObjects(labels.objects.drop(1), labels)
+            val last = printer.requests.map { it.optJSONObject("print") }.last { it?.optString("command") == "skip_objects" }!!
+            assertEquals(2, last.getJSONArray("obj_list").length())
+            host.close()
+        }
+    }
+
+    @Test
     fun wrongAccessCodeIsRefused() {
         MockBambu().use { printer ->
             try {
@@ -268,6 +291,8 @@ class BambuLanHostTest {
                             json.optJSONObject("pushing")?.optString("command") == "pushall" -> JSONObject().put("print", REPORT)
                             json.optJSONObject("print")?.optString("command") == "project_file" && rejectJobs ->
                                 JSONObject("""{"print":{"command":"project_file","result":"FAIL","reason":"sdcard is busy"}}""")
+                            json.optJSONObject("print")?.optString("command") == "skip_objects" ->
+                                JSONObject().put("print", JSONObject().put("command", "skip_objects").put("result", "success").put("s_obj", json.getJSONObject("print").getJSONArray("obj_list")))
                             json.optJSONObject("print")?.optString("command") == "pause" && rejectJobs ->
                                 JSONObject("""{"print":{"command":"pause","result":"failed","err_code":84033545}}""")
                             else -> null

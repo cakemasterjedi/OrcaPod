@@ -22,6 +22,8 @@ enum class HostType(val label: String) {
     val usesLogin get() = this == PRUSALINK
     val usesPassword get() = this == DUET
     val usesSerial get() = this == BAMBU_LAN
+    /** PrusaLink has no API for it; Prusa printers skip objects from their own screen. */
+    val canSkipObjects get() = this != PRUSALINK
 }
 
 /** A printer the user saved: where it is and how to log in. */
@@ -129,6 +131,19 @@ interface PrintHost : Closeable {
 
     /** Past jobs as the printer records them, newest first; null when it keeps no history. */
     fun history(limit: Int = 50): List<JobRecord>? = null
+
+    /**
+     * The running print's objects, for skipping some of them (desktop's
+     * "Skip objects"); null when this printer cannot skip objects. [labels]
+     * are read from the G-code this app sent, for printers that do not list
+     * the objects themselves; null when the app did not send this print.
+     */
+    fun printObjects(labels: GcodeLabels?): List<PrintObject>? = null
+
+    /** Stops printing [objects] for the rest of the print. */
+    fun skipObjects(objects: List<PrintObject>, labels: GcodeLabels?) {
+        throw PrintHostException("This printer cannot skip objects")
+    }
 
     override fun close() {}
 

@@ -25,10 +25,15 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import org.orcapod.app.data.LocalProfileFolder
+import org.orcapod.app.data.ProfileBackup
 import org.orcapod.app.data.ProfileStore
+import org.orcapod.app.data.ProfileSync
 import org.orcapod.app.data.ProjectStore
 import org.orcapod.app.data.RecentProject
 import org.orcapod.app.data.Recovery
+import org.orcapod.app.data.SafProfileFolder
 import org.orcapod.app.engine.BedTypeState
 import org.orcapod.app.engine.PaintLayer
 import org.orcapod.app.engine.CustomGcode
@@ -197,6 +202,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var selectedVolume by mutableStateOf<Long?>(null)
     var installedVendors by mutableStateOf<Set<String>>(emptySet())
         private set
+    /** Number of the user's own printer, filament and process presets. */
+    var userPresetCount by mutableStateOf(0)
+        private set
+    /** Display name of the profile sync folder; null when sync is off. */
+    var syncFolder by mutableStateOf<String?>(null)
+        private set
+    /** When the profiles last synced, in epoch milliseconds; 0 when never. */
+    var lastSync by mutableStateOf(0L)
+        private set
 
     /** The installed brand whose profiles are loaded; the others load when picked. */
     var activeVendor by mutableStateOf<String?>(null)
@@ -333,6 +347,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         recentProjects = projects.recent()
         recovery = projects.recovery()
         phase = Phase.Ready
+        syncFolder = syncTree()?.let { SafProfileFolder.displayName(getApplication(), it) }
+        lastSync = prefs.getLong(KEY_SYNC_LAST, 0L)
+        syncProfiles(quiet = true)
     }
 
     /** Re-selects the last session's presets, or the first printer's defaults. */
@@ -367,6 +384,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             .putString(sessionKey("filament"), filament)
             .putString(sessionKey("process"), process)
             .apply()
+        userPresetCount = withContext(Dispatchers.IO) { ProfileBackup.userFiles(userDir).size }
         readSettings()
     }
 
@@ -448,11 +466,132 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         e.saveUserPreset(kind, name, detach)
         refreshPresets()
         _messages.tryEmit("Saved preset \"$name\"")
+        syncProfiles(quiet = true)
     }
 
     fun deleteUserPreset(kind: PresetKind, name: String) = engineAction { e ->
         e.deleteUserPreset(kind, name)
         refreshPresets()
+        syncProfiles(quiet = true)
+    }
+
+    // --- profile backup and sync ---
+
+    private val userDir get() = File(store.dataDir, "user/default")
+
+    /** Writes the user's presets to [uri] as an OrcaSlicer preset zip. */
+    fun exportProfiles(uri: Uri) = engineAction("Exporting profiles…") {
+        val ctx = getApplication<Application>()
+        val count = withContext(Dispatchers.IO) {
+            ctx.contentResolver.openOutputStream(uri, "wt")?.use { ProfileBackup.export(userDir, it) }
+                ?: throw java.io.IOException("Cannot write the file")
+        }
+        _messages.tryEmit(if (count == 1) "Exported 1 profile" else "Exported $count profiles")
+    }
+
+    /** Adds the presets in [uri] (a preset zip or JSON file) to the user's presets. */
+    fun importProfiles(uri: Uri) = engineAction("Importing profiles…") { e ->
+        val ctx = getApplication<Application>()
+        val result = withContext(Dispatchers.IO) {
+            ctx.contentResolver.openInputStream(uri)?.use { ProfileBackup.import(it, userDir) }
+                ?: throw java.io.IOException("Cannot read the file")
+        }
+        if (result.imported > 0) reloadUserPresets(e)
+        _messages.tryEmit(
+            when {
+                result.imported == 0 -> "No printer, filament or process profiles found in that file"
+                result.skipped.isEmpty() -> if (result.imported == 1) "Imported 1 profile" else "Imported ${result.imported} profiles"
+                else -> "Imported ${result.imported} of ${result.imported + result.skipped.size} files; the rest are not profiles"
+            },
+        )
+        if (result.imported > 0) syncProfiles(quiet = true)
+    }
+
+    /** Starts syncing profiles with the folder at [treeUri], picked with ACTION_OPEN_DOCUMENT_TREE. */
+    fun chooseSyncFolder(treeUri: Uri) {
+        val resolver = getApplication<Application>().contentResolver
+        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        try {
+            resolver.takePersistableUriPermission(treeUri, flags)
+        } catch (ex: SecurityException) {
+            _messages.tryEmit("That folder cannot be kept; pick another one")
+            return
+        }
+        syncTree()?.takeIf { it != treeUri }?.let { old -> releaseTree(old) }
+        // A new folder starts from scratch: its files are merged with the phone's, nothing is deleted.
+        prefs.edit().putString(KEY_SYNC_TREE, treeUri.toString()).remove(KEY_SYNC_STATE).remove(KEY_SYNC_LAST).apply()
+        syncFolder = SafProfileFolder.displayName(getApplication(), treeUri)
+        lastSync = 0L
+        engineAction("Syncing profiles…") { syncProfiles(quiet = false) }
+    }
+
+    fun stopSync() {
+        syncTree()?.let(::releaseTree)
+        prefs.edit().remove(KEY_SYNC_TREE).remove(KEY_SYNC_STATE).remove(KEY_SYNC_LAST).apply()
+        syncFolder = null
+        lastSync = 0L
+    }
+
+    fun syncNow() = engineAction("Syncing profiles…") { syncProfiles(quiet = false) }
+
+    /** Syncs with the chosen folder, if any. [quiet] reports only changes and failures. */
+    private suspend fun syncProfiles(quiet: Boolean) {
+        val tree = syncTree() ?: return
+        val e = engine ?: return
+        val ctx = getApplication<Application>()
+        val result = try {
+            withContext(Dispatchers.IO) {
+                val state = HashMap<String, String>()
+                prefs.getString(KEY_SYNC_STATE, null)?.let { json ->
+                    val o = JSONObject(json)
+                    for (k in o.keys()) state[k] = o.getString(k)
+                }
+                val result = ProfileSync(LocalProfileFolder(userDir), SafProfileFolder(ctx, tree), state).run()
+                prefs.edit().putString(KEY_SYNC_STATE, JSONObject(state as Map<*, *>).toString())
+                    .putLong(KEY_SYNC_LAST, System.currentTimeMillis()).apply()
+                result
+            }
+        } catch (ex: Exception) {
+            if (ex is CancellationException) throw ex
+            Log.w(TAG, "profile sync failed", ex)
+            _messages.tryEmit(
+                if (ex is SecurityException) "Lost access to the sync folder; choose it again"
+                else "Profile sync failed: ${ex.message}",
+            )
+            return
+        }
+        lastSync = prefs.getLong(KEY_SYNC_LAST, 0L)
+        if (result.localChanged) reloadUserPresets(e)
+        when {
+            result.conflicts > 0 -> _messages.tryEmit(
+                "Synced profiles; ${result.conflicts} edited in both places kept the newer copy (the other is in the folder's conflicts)",
+            )
+            // Quiet syncs follow the user's own saves, so only changes from elsewhere are news.
+            result.changes > 0 && (!quiet || result.localChanged) -> _messages.tryEmit(
+                if (result.changes == 1) "Synced 1 profile change" else "Synced ${result.changes} profile changes",
+            )
+            !quiet -> _messages.tryEmit("Profiles are up to date")
+        }
+    }
+
+    /** Reloads presets after their files changed on disk; unsaved setting edits are dropped. */
+    private suspend fun reloadUserPresets(e: Engine) {
+        e.reloadPresets(store.dataDir.path)
+        restoreSelection(e)
+        refreshScene()
+        invalidateSlice()
+    }
+
+    private fun syncTree(): Uri? = prefs.getString(KEY_SYNC_TREE, null)?.let(Uri::parse)
+
+    private fun releaseTree(uri: Uri) {
+        try {
+            getApplication<Application>().contentResolver.releasePersistableUriPermission(
+                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+        } catch (_: SecurityException) {
+            // Already gone.
+        }
     }
 
     // --- document ---
@@ -1639,6 +1778,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private const val TAG = "OrcaPod"
         /** Most dabs [fillGaps] adds between two finger samples. */
         private const val MAX_GAP_DABS = 64
+        private const val KEY_SYNC_TREE = "sync_tree"
+        private const val KEY_SYNC_STATE = "sync_state"
+        private const val KEY_SYNC_LAST = "sync_last"
         val STEP_EXTENSIONS = setOf("step", "stp")
         val IMPORTABLE = setOf("stl", "3mf", "obj", "amf") + STEP_EXTENSIONS
         private const val KEY_STEP_LINEAR = "step_linear_deflection"

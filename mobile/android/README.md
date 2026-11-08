@@ -31,7 +31,7 @@ Needs JDK 17 or newer and the Android SDK with NDK 27.2.12479018 and CMake
    ./gradlew assembleDebug
    ```
 
-   The APK lands in `app/build/outputs/apk/debug/app-debug.apk`; install it
+   The APK lands in `app/build/outputs/apk/debug/OrcaPod-0.1.0.apk`; install it
    with `adb install -r` on an arm64 device running Android 8.0 or newer.
 
 `orcapod.abis` in `gradle.properties` lists the ABIs to package and
@@ -54,4 +54,6 @@ layer's tests on the JVM.
 
 The `Android` workflow (`.github/workflows/android.yml`) runs both builds and
 all of these tests on every pull request that touches the app, the engine or
-the profiles, and attaches the debug APK to the run as `orcapod-debug-apk`.
+the profiles, and attaches the APK to the run as `orcapod-apk`. On `main` it
+also publishes the APK as the latest GitHub release, which the app's update
+check reads (see the Updates section of the design doc).

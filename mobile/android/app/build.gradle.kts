@@ -10,6 +10,10 @@ plugins {
 val bridgeDir = rootProject.file(providers.gradleProperty("orcapod.bridgeDir").get())
 val abis = providers.gradleProperty("orcapod.abis").get().split(',').map { it.trim() }.filter { it.isNotEmpty() }
 val repoRoot = rootProject.file("../..")
+// CI passes its run number, so every build it publishes installs over the last.
+val appVersionCode = providers.gradleProperty("orcapod.versionCode").orNull?.toInt() ?: 1
+// The GitHub repository whose releases the in-app update check reads.
+val updateRepo = providers.gradleProperty("orcapod.updateRepo").getOrElse("cakemasterjedi/OrcaPod")
 
 android {
     namespace = "org.orcapod.app"
@@ -20,8 +24,9 @@ android {
         applicationId = "org.orcapod.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appVersionCode
+        versionName = if (appVersionCode > 1) "0.1.0-build.$appVersionCode" else "0.1.0"
+        buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
 
         ndk { abiFilters += abis }
         externalNativeBuild {
@@ -42,8 +47,27 @@ android {
         }
     }
 
+    // Android installs an update only when it is signed with the same key as
+    // the installed app, but debug builds get a key generated per machine, so
+    // each CI runner's APK needed an uninstall first. With ORCAPOD_KEYSTORE set
+    // (CI decodes it from the repository's secrets) every build is signed
+    // with that one key instead.
+    val sharedKeystore = System.getenv("ORCAPOD_KEYSTORE")?.takeIf { it.isNotBlank() }
+    val shared = sharedKeystore?.let {
+        signingConfigs.create("shared") {
+            storeFile = file(it)
+            storePassword = System.getenv("ORCAPOD_KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("ORCAPOD_KEY_ALIAS") ?: "orcapod"
+            keyPassword = System.getenv("ORCAPOD_KEY_PASSWORD") ?: storePassword
+        }
+    }
+
     buildTypes {
+        debug {
+            if (shared != null) signingConfig = shared
+        }
         release {
+            if (shared != null) signingConfig = shared
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
@@ -64,6 +88,12 @@ android {
         jniLibs {
             // 16 KB page alignment (Android 15+) needs uncompressed, aligned .so files.
             useLegacyPackaging = false
+        }
+    }
+    // Ship the APK as OrcaPod-<version>.apk instead of app-debug.apk.
+    applicationVariants.all {
+        outputs.all {
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName = "OrcaPod-$versionName.apk"
         }
     }
     androidResources {

@@ -10,4 +10,4 @@
 
 <!-- How did you test it? Device and Android version, steps, and any automated tests you added. Say what you couldn't test. -->
 
-<!-- The Android workflow attaches a debug APK to every PR run as "orcapod-debug-apk". -->
+<!-- The Android workflow attaches the APK to every PR run as "orcapod-apk". -->

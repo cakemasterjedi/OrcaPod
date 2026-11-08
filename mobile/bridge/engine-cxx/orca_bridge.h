@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 /// Version of the C ABI contract in this header. Callers verify it at runtime.
-#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)45)
+#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)46)
 
 typedef int32_t orca_status_code;
 #define ORCA_STATUS_OK                     ((orca_status_code)0)
@@ -997,6 +997,26 @@ orca_result orca_plater_volume_paint_sphere(orca_plater *plater,
                                             double view_dx, double view_dy, double view_dz,
                                             double radius_mm,
                                             int32_t state,
+                                            orca_revision *out_revision);
+
+/// A brush stroke (ABI v46): sphere dabs at `count` world hit points, each
+/// with its world view direction (`hits` and `view_dirs` hold count * 3
+/// doubles), painted as one undo step. With `continue_stroke` set the dabs
+/// join the step the previous stroke call made, as long as nothing else has
+/// changed the document since (desktop takes one snapshot per mouse drag).
+/// Dabs that miss the volume are skipped, and a call that changes nothing
+/// succeeds without an undo step, leaving *out_revision at the current
+/// revision.
+orca_result orca_plater_volume_paint_stroke(orca_plater *plater,
+                                            orca_object_id object_id,
+                                            orca_volume_id volume_id,
+                                            uint8_t layer,
+                                            const double *hits,
+                                            const double *view_dirs,
+                                            uint32_t count,
+                                            double radius_mm,
+                                            int32_t state,
+                                            uint8_t continue_stroke,
                                             orca_revision *out_revision);
 
 /// Removes every stroke from one layer (one undo step).

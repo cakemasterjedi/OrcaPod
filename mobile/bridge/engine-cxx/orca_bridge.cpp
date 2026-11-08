@@ -1374,6 +1374,10 @@ struct orca_plater {
     /// The PA pattern test's generator (desktop Model::calib_pa_pattern):
     /// it draws each handle's pattern into every slice of the plate.
     std::unique_ptr<Slic3r::CalibPressureAdvancePattern> pa_pattern;
+    /// The revision the last brush stroke call left: a continued stroke
+    /// merges into that undo step only while nothing else has changed the
+    /// document since (undo, redo and every other mutation bump revision).
+    orca_revision paint_stroke_revision = 0;
 };
 
 /// Desktop keeps a memory-bounded undo stack; OrcaPad bounds it by steps.
@@ -6166,6 +6170,27 @@ static int orcapad_volume_facet_under(
     return best_facet;
 }
 
+/// One sphere-brush dab on `facet` (desktop painter conventions): trafo is
+/// mesh -> world for the volume, the cursor is built from the mesh-space hit
+/// and a camera behind it along the view ray, and the radius is world scale.
+static void orcapad_paint_dab(Slic3r::TriangleSelector &selector,
+                              const Slic3r::Transform3d &trafo, int facet,
+                              const Slic3r::Vec3d &hit_local,
+                              const Slic3r::Vec3d &view_local, double radius_mm,
+                              int32_t state) {
+    const Slic3r::Vec3f camera_local =
+        (hit_local - view_local.normalized() * 10.0).cast<float>();
+    auto cursor = Slic3r::TriangleSelector::SinglePointCursor::cursor_factory(
+        hit_local.cast<float>(), camera_local, float(radius_mm),
+        Slic3r::TriangleSelector::CursorType::SPHERE, trafo,
+        Slic3r::TriangleSelector::ClippingPlane{});
+    Slic3r::Transform3d trafo_no_translate = Slic3r::Transform3d::Identity();
+    trafo_no_translate.linear() = trafo.linear();
+    selector.select_patch(facet, std::move(cursor),
+                          static_cast<Slic3r::EnforcerBlockerType>(state),
+                          trafo_no_translate, true, 0.0f);
+}
+
 orca_result orca_plater_volume_paint(orca_plater *plater,
                                      orca_object_id object_id,
                                      orca_volume_id volume_id,
@@ -6306,26 +6331,108 @@ orca_result orca_plater_volume_paint_sphere(orca_plater *plater,
         OrcapadMutation mutation(*plater, "Paint");
         Slic3r::TriangleSelector selector(volume->mesh());
         selector.deserialize(annotation->get_data(), false);
-        // Camera sits behind the hit along the view ray (mesh coords).
-        const Slic3r::Vec3f camera_local =
-            (hit_local - view_local.normalized() * 10.0).cast<float>();
-        const Slic3r::Vec3f center_local = hit_local.cast<float>();
-        auto cursor = Slic3r::TriangleSelector::SinglePointCursor::cursor_factory(
-            center_local, camera_local, float(radius_mm),
-            Slic3r::TriangleSelector::CursorType::SPHERE, trafo,
-            Slic3r::TriangleSelector::ClippingPlane{});
-        Slic3r::Transform3d trafo_no_translate = Slic3r::Transform3d::Identity();
-        trafo_no_translate.linear() = trafo.linear();
-        selector.select_patch(
-            facet, std::move(cursor),
-            static_cast<Slic3r::EnforcerBlockerType>(state),
-            trafo_no_translate, true, 0.0f);
+        orcapad_paint_dab(selector, trafo, facet, hit_local, view_local, radius_mm, state);
         if (!annotation->set(selector))
             // set() reports "unchanged": the brush sphere touched no facet.
             return orcapad_fail(ORCA_STATUS_NOT_FOUND, operation,
                                 "the stroke painted nothing at that position");
         orcapad_touch_object(*plater, object_id);
         *out_revision = mutation.commit();
+        return orcapad_ok();
+    });
+}
+
+orca_result orca_plater_volume_paint_stroke(orca_plater *plater,
+                                            orca_object_id object_id,
+                                            orca_volume_id volume_id,
+                                            uint8_t layer,
+                                            const double *hits,
+                                            const double *view_dirs,
+                                            uint32_t count,
+                                            double radius_mm,
+                                            int32_t state,
+                                            uint8_t continue_stroke,
+                                            orca_revision *out_revision) {
+    constexpr const char *operation = "orca_plater_volume_paint_stroke";
+    if (out_revision) *out_revision = 0;
+    if (!plater)
+        return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, operation,
+                            "plater handle is null");
+    if (!out_revision || (count > 0 && (!hits || !view_dirs)))
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "output or point pointer is null");
+    if (!std::isfinite(radius_mm) || radius_mm <= 0.0)
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "radius is invalid");
+    for (size_t k = 0; k < size_t(count) * 3; ++k)
+        if (!std::isfinite(hits[k]) || !std::isfinite(view_dirs[k]))
+            return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                                "a hit or view direction is invalid");
+    if (state < int32_t(Slic3r::EnforcerBlockerType::NONE) ||
+        state > int32_t(Slic3r::EnforcerBlockerType::ExtruderMax))
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "paint state is out of range");
+    return orcapad_guard(operation, [&]() -> orca_result {
+        Slic3r::ModelObject *object = plater_obj(plater, object_id);
+        if (!object)
+            return orcapad_fail(ORCA_STATUS_NOT_FOUND, operation,
+                                "object was not found");
+        Slic3r::ModelVolume *volume = plater_volume(object, volume_id);
+        if (!volume)
+            return orcapad_fail(ORCA_STATUS_NOT_FOUND, operation,
+                                "volume was not found");
+        orca_result failure = orcapad_ok();
+        Slic3r::FacetsAnnotation *annotation =
+            orcapad_paint_annotation(volume, layer, operation, &failure);
+        if (!annotation) return failure;
+        if (object->instances.empty())
+            return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
+                                "object has no instance");
+        if (!orcapad_revision_available(*plater))
+            return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
+                                "document revision is exhausted");
+
+        const Slic3r::Transform3d trafo =
+            object->instances.front()->get_matrix() * volume->get_matrix();
+        const Slic3r::Transform3d inverse = trafo.inverse();
+        Slic3r::TriangleSelector selector(volume->mesh());
+        selector.deserialize(annotation->get_data(), false);
+        for (uint32_t k = 0; k < count; ++k) {
+            const Slic3r::Vec3d hit_local =
+                inverse * Slic3r::Vec3d(hits[3 * k], hits[3 * k + 1], hits[3 * k + 2]);
+            const Slic3r::Vec3d view_local = inverse.linear() *
+                Slic3r::Vec3d(view_dirs[3 * k], view_dirs[3 * k + 1], view_dirs[3 * k + 2]);
+            if (view_local.squaredNorm() <= 0.0) continue;
+            // A finger sliding off the edge misses: skip that dab, as the
+            // desktop brush does for mouse moves off the object.
+            orca_result miss = orcapad_ok();
+            const int facet = orcapad_volume_facet_under(volume, hit_local, view_local, operation, &miss);
+            if (facet >= 0)
+                orcapad_paint_dab(selector, trafo, facet, hit_local, view_local, radius_mm, state);
+        }
+        // Brushing over paint already in this state changes nothing: not an
+        // error, and no undo step.
+        if (selector.serialize() == annotation->get_data()) {
+            *out_revision = plater->revision;
+            return orcapad_ok();
+        }
+
+        const bool merge = continue_stroke && plater->revision != 0 &&
+                           plater->paint_stroke_revision == plater->revision &&
+                           !plater->undo.empty();
+        if (merge) {
+            // The stroke's undo step already holds the document as it was
+            // before the stroke began.
+            annotation->set(selector);
+            orcapad_touch_object(*plater, object_id);
+            *out_revision = ++plater->revision;
+        } else {
+            OrcapadMutation mutation(*plater, "Paint");
+            annotation->set(selector);
+            orcapad_touch_object(*plater, object_id);
+            *out_revision = mutation.commit();
+        }
+        plater->paint_stroke_revision = *out_revision;
         return orcapad_ok();
     });
 }

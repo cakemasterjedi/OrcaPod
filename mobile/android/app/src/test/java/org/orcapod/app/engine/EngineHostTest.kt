@@ -483,6 +483,47 @@ class EngineHostTest {
     }
 
     @Test
+    fun ra_paintsStrokesAndKeepsThemInProjects() = runBlocking {
+        val sc = e.scene()
+        val obj = sc.snapshot.objects.single()
+        val part = obj.parts.single()
+        val b = worldBounds(sc.meshes.getValue(obj.id).positions, obj.instances.first().matrix)
+        val cx = ((b[0] + b[3]) / 2).toDouble()
+        val cy = ((b[1] + b[4]) / 2).toDouble()
+        val top = b[5].toDouble()
+        val down = doubleArrayOf(0.0, 0.0, -1.0, 0.0, 0.0, -1.0)
+        val undoBefore = e.scene().snapshot.undoCount
+        // A stroke across the top in two calls, as the app sends a finger's dabs.
+        val r1 = e.paintStroke(obj.id, part.id, PaintLayer.SEAM, doubleArrayOf(cx - 5, cy, top, cx - 2, cy, top), down, 1.5, 1, false)
+        val r2 = e.paintStroke(obj.id, part.id, PaintLayer.SEAM, doubleArrayOf(cx + 2, cy, top, cx + 5, cy, top), down, 1.5, 1, true)
+        assertTrue(r2 > r1)
+        // Brushing the same spot again is not an error and changes nothing.
+        assertEquals(r2, e.paintStroke(obj.id, part.id, PaintLayer.SEAM, doubleArrayOf(cx + 5, cy, top), down.copyOf(3), 1.5, 1, true))
+        assertEquals(undoBefore + 1, e.scene().snapshot.undoCount)
+        e.paintStroke(obj.id, part.id, PaintLayer.SUPPORT, doubleArrayOf(cx, cy, top), down.copyOf(3), 3.0, 2, false)
+        e.paintFill(obj.id, part.id, PaintLayer.FUZZY, floatArrayOf(b[3], cy.toFloat(), (b[2] + b[5]) / 2), floatArrayOf(-1f, 0f, 0f), 30.0, 1)
+        val counts = PaintLayer.entries.associateWith { e.paint(obj.id, part.id, it).count }
+        assertTrue(counts.toString(), counts.getValue(PaintLayer.SEAM) > 0 && counts.getValue(PaintLayer.SUPPORT) > 0 && counts.getValue(PaintLayer.FUZZY) > 0)
+
+        // Saving and reopening the project keeps every painted layer.
+        val project = File(work, "painted.3mf")
+        e.saveProject(project.path)
+        e.clear()
+        assertEquals(0, e.scene().snapshot.objects.size)
+        e.openProject(project.path)
+        val reopened = e.scene().snapshot.objects.single()
+        val reopenedPart = reopened.parts.single()
+        for (layer in listOf(PaintLayer.SEAM, PaintLayer.SUPPORT, PaintLayer.FUZZY)) {
+            val m = e.paint(reopened.id, reopenedPart.id, layer)
+            assertEquals("$layer after reopening", counts.getValue(layer), m.count)
+        }
+        assertTrue(e.paint(reopened.id, reopenedPart.id, PaintLayer.SUPPORT).states.all { it.toInt() == 2 })
+        for (layer in PaintLayer.entries) {
+            if (e.paint(reopened.id, reopenedPart.id, layer).count > 0) e.paintReset(reopened.id, reopenedPart.id, layer)
+        }
+    }
+
+    @Test
     fun s_editsLayerHeights() = runBlocking {
         val obj = e.scene().snapshot.objects.single()
         assertEquals(0, e.heightProfile(obj.id).size)

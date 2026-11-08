@@ -408,6 +408,17 @@ class Engine private constructor(private var presets: Long, private val plater: 
     suspend fun paintSphere(objectId: Long, volumeId: Long, layer: PaintLayer, hit: FloatArray, view: FloatArray, radius: Double, state: Int) =
         onEngine { Native.volumePaintSphere(plater, objectId, volumeId, layer.code, ray(hit, view), radius, state) }
 
+    /**
+     * Brush dabs at world [hits] (x, y, z per dab), each seen along its [views]
+     * direction, as one undo step; [continueStroke] adds them to the step the
+     * previous call started. Dabs off the part are skipped, and repainting
+     * changes nothing without an error. Returns the document revision.
+     */
+    suspend fun paintStroke(
+        objectId: Long, volumeId: Long, layer: PaintLayer, hits: DoubleArray, views: DoubleArray,
+        radius: Double, state: Int, continueStroke: Boolean,
+    ): Long = onEngine { Native.volumePaintStroke(plater, objectId, volumeId, layer.code, hits, views, radius, state, continueStroke) }
+
     /** Smart fill with [angle] > 0, else bucket fill of the hit facet's region. */
     suspend fun paintFill(objectId: Long, volumeId: Long, layer: PaintLayer, hit: FloatArray, view: FloatArray, angle: Double, state: Int) =
         onEngine { Native.volumePaintFill(plater, objectId, volumeId, layer.code, ray(hit, view), angle, angle <= 0.0, state) }

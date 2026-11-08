@@ -203,11 +203,37 @@ Its tools are a sphere brush, smart fill by angle and bucket fill.
 
 While painting, a finger on the object paints and a finger elsewhere turns
 the view. The viewport finds the part under the finger from the hit
-triangle's range in the merged mesh. It sends one engine stroke
-(`orca_plater_volume_paint_sphere` / `_fill`) per finger step, and each
-stroke is one undo step. After each stroke the app reads the painted
-triangles back (`orca_plater_volume_paint`) and draws them as an overlay with
-desktop's enforcer and blocker colours, or the filament's colour.
+triangle's range in the merged mesh. A fill is one engine call
+(`orca_plater_volume_paint_fill`) and one undo step.
+
+A brush stroke is one undo step too, like desktop's one snapshot per mouse
+drag. The finger's dabs queue up in the view model while the engine is busy
+and go to `orca_plater_volume_paint_stroke` together, one call per run of
+dabs on the same part. Every call after the stroke's first passes
+`continue_stroke`, which adds the dabs to the step the first call made, as
+long as nothing else has changed the document in between. This keeps a
+stroke to one copy of the model for undo, which matters on a phone where
+copying a large model for every dab would stall the brush. The view model
+adds dabs between finger samples further apart than half the brush radius,
+so a fast finger draws a solid line; the engine casts each dab along its
+view ray onto the surface and skips dabs that miss the part. Brushing over
+paint already in the brush's state changes nothing and is not an error.
+
+After each batch the app reads the painted triangles back
+(`orca_plater_volume_paint`) and draws them as an overlay with desktop's
+enforcer and blocker colours, or the filament's colour. The rest of the
+scene is read again once the finger lifts.
+
+Painted support enforcers do nothing while the object's supports are off,
+which the engine reports as a slicing warning. The painter shows the same
+warning while support enforcers are painted on an object with supports
+off, with a button that turns supports on for that object only, as a
+per-object setting, so the process preset stays as it is.
+
+The painted layers live on the model's volumes, so a saved project
+(`orca_project_save`, desktop's `store_bbs_3mf`) carries them in the 3MF
+the same way desktop does, and opening a desktop project brings its paint
+along.
 
 ## Variable layer height
 

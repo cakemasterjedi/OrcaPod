@@ -126,6 +126,10 @@ internal object Native {
     external fun cutConnectorAdd(plater: Long, objectId: Long, geometry: DoubleArray, sizes: FloatArray, kinds: IntArray)
     external fun cutConnectorsClear(plater: Long, objectId: Long)
     external fun splitParts(plater: Long, objectId: Long, volumeId: Long): Int
+    external fun meshErrors(plater: Long, objectId: Long, volumeId: Long): IntArray
+    external fun repair(plater: Long, objectId: Long, volumeId: Long, keepPainting: Boolean): RepairReport
+    external fun meshBoolean(plater: Long, objectId: Long, sourceVolumeId: Long, toolVolumeId: Long, operation: Int,
+                             deleteTool: Boolean, keepPainting: Boolean): Long
     external fun instanceMirror(plater: Long, objectId: Long, instanceId: Long, axis: Int)
     external fun setPrintable(plater: Long, objectId: Long, instanceId: Long, printable: Boolean)
     external fun setInstanceCount(plater: Long, objectId: Long, count: Int)

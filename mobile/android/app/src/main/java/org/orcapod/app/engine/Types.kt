@@ -504,3 +504,37 @@ data class CalibrationSetup(
 ) {
     val model: String? get() = test.models().getOrNull(testModel)?.second ?: test.model.ifEmpty { null }
 }
+
+/** orca_mesh_errors: what desktop's object list warning icon reports. */
+class MeshErrors(values: IntArray) {
+    /** Remaining non-manifold edges. */
+    val openEdges = values[0]
+    /** Errors fixed automatically when the mesh was loaded. */
+    val repairedErrors = values[1]
+    val shells = values[2]
+    val facets = values[3]
+    val manifold = values[4] != 0
+    val repaired = values[5] != 0
+    val hasWarning: Boolean get() = !manifold || repaired
+}
+
+/** orca_mesh_repair_report, built by the JNI layer from its counts and failure list. */
+class RepairReport(counts: IntArray, val failures: String) {
+    val weldedVertices = counts[0]
+    val removedTriangles = counts[1]
+    val reversedShells = counts[2]
+    val filledHoles = counts[3]
+    val removedShells = counts[4]
+    val selfIntersections = counts[5]
+    val repairedVolumes = counts[6]
+    val failedVolumes = counts[7]
+    val modified = counts[8] != 0
+    val paintingRemoved = counts[9] != 0
+}
+
+/** ORCA_BOOLEAN_*: desktop Mesh Boolean modes. */
+enum class BooleanOperation(val code: Int, val label: String) {
+    UNION(0, "Union"),
+    DIFFERENCE(1, "Difference"),
+    INTERSECTION(2, "Intersection"),
+}

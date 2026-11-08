@@ -87,6 +87,9 @@ fun ObjectPanel(vm: AppViewModel, sel: Selection, layFlat: Boolean, onLayFlat: (
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 AssistChip(onClick = onEdit, label = { Text("Parts and settings") }, leadingIcon = { Icon(AppIcons.Tune, null) })
                 AssistChip(onClick = { vm.startCut(sel) }, label = { Text("Cut") })
+                if (vm.meshErrors[sel.objectId]?.manifold == false) {
+                    AssistChip(onClick = { vm.repair(listOf(sel.objectId)) }, label = { Text("Repair") }, leadingIcon = { MeshWarning(vm.meshErrors[sel.objectId]) })
+                }
                 AssistChip(onClick = { vm.startPaint(sel.objectId) }, label = { Text("Paint") })
                 AssistChip(onClick = { vm.startLayerHeights(sel) }, label = { Text("Layer heights") })
                 AssistChip(onClick = { vm.startMeasure(sel.objectId) }, label = { Text("Measure") })

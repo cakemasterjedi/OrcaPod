@@ -113,6 +113,28 @@ On "Perform cut" they become the engine's cut connectors, stored as desktop
 stores them (the world point minus the instance offset). The cut
 (`orca_plater_object_cut`) then drills them into both faces in one undo step.
 
+## Repair and booleans
+
+Each object's mesh statistics (`orca_plater_mesh_errors`, desktop's object
+list warning icon) are read with every scene refresh: the object list marks
+objects with non-manifold edges or errors fixed on import, and offers to
+repair the ticked objects or every object with errors left. The object
+sheet, each part's menu and the selected object's toolbar repair too.
+Repair is desktop's "Fix model" (`ModelVolume::repair`, see
+[mesh-repair.md](mesh-repair.md)) over every volume of the object or one
+part; a mesh that needs nothing leaves no undo step, and the notice lists
+what was repaired, what failed and what needed no repair.
+
+Booleans are desktop's Mesh Boolean gizmo between two volumes of one
+object: union, difference or intersection through MCUT. The result replaces
+the first volume with its role, settings and filament, named like desktop's
+("<part> - union"); a union removes the tool, the other operations remove it
+when "Delete input" is on. Desktop gives the result the source volume's
+offset; the bridge keeps the offset `add_volume` computes from the result's
+centre instead, so the result stays exactly where the operands were.
+Booleans between separate objects work the same way after assembling them
+into one object.
+
 ## Painting
 
 The painter is desktop's painter gizmos on one object. Each layer is a
@@ -374,4 +396,6 @@ scaled instance. The calibration check sets up a temperature tower, a
 flow rate pass, a PA pattern and a cornering test and ends the test; the
 bridge contract tests also check each tower's height, that PA tower and
 pattern G-code steps PA, the input shaping and cornering printer settings,
-and the dialogs' range checks.
+and the dialogs' range checks. The repair check fills an open cube's hole
+and undoes it, and the boolean check subtracts a bar from a cube; the
+contract tests also run all three boolean operations and their failures.

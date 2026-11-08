@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 OrcaPad contributors
 
-// OrcaPad adapter: loud stubs for model formats whose engines (draco, OCCT)
-// are not yet cross-built for iOS (3MF is the real Format/3mf.cpp +
+// OrcaPad adapter: loud stubs for model formats whose engines (draco,
+// Assimp, ...) are not yet cross-built (STEP is in step_stubs.cpp) (3MF is the real Format/3mf.cpp +
 // Format/bbs_3mf.cpp). Each throws the moment
 // it is called — no silent fallbacks. Replace as real deps land.
 // NOTE: everything is inside namespace Slic3r to match the headers' linkage.
 #include "libslic3r/Config.hpp"
 #include "libslic3r/Exception.hpp"
 #include "libslic3r/Format/3mf.hpp"
-#include "libslic3r/Format/STEP.hpp"
 #include "libslic3r/Format/bbs_3mf.hpp"
 #include "libslic3r/GCode/Thumbnails.hpp"
 #include "libslic3r/Model.hpp"
@@ -33,22 +32,6 @@ static void orcapad_unsupported(const char *what) {
 
 void delete_temp_file(const std::string &) {
     orcapad_unsupported("3MF temp file cleanup");
-}
-
-// --- STEP (blocked on OCCT) ---
-bool load_step(const char *, Model *, bool &,
-               double, double, bool, ImportStepProgressFn,
-               StepIsUtf8Fn, long &) {
-    orcapad_unsupported("STEP import");
-}
-Step::Step(fs::path, ImportStepProgressFn, StepIsUtf8Fn) {}
-Step::Step(std::string, ImportStepProgressFn, StepIsUtf8Fn) {}
-Step::~Step() = default;
-Step::Step_Status Step::load(bool) {
-    orcapad_unsupported("STEP load");
-}
-Step::Step_Status Step::mesh(Model *, bool &, bool, double, double, bool) {
-    orcapad_unsupported("STEP mesh conversion");
 }
 
 // --- textured-model import (blocked on Assimp) ---

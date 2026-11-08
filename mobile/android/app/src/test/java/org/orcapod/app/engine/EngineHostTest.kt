@@ -642,7 +642,50 @@ class EngineHostTest {
     }
 
     @Test
-    fun w_repairsAndRunsBooleans() = runBlocking {
+    fun x_importsStep() = runBlocking {
+        // tests/data of this repository, next to the profiles directory.
+        val fixture = File(System.getProperty("orcapod.profilesDir"), "../../tests/data/named_compound_bodies.step")
+        e.clear()
+        val step = e.newStep(fixture.path)
+        try {
+            e.loadStep(step)
+            assertTrue(step.hasOriginalNames)
+            assertTrue(step.hasMultiBodyCompound)
+            assertEquals(0, step.progress())
+            assertEquals(12L, e.stepTriangleCount(step, StepImportOptions.LINEAR_DEFAULT, StepImportOptions.ANGLE_DEFAULT))
+            e.meshStep(step, StepImportOptions(sortNames = true))
+            assertEquals(emptyList<Pair<String, String>>(), e.stepNameChanges(step, null))
+            assertEquals(1, e.importStep(step, null))
+        } finally {
+            e.closeStep(step)
+        }
+        val scene = e.scene()
+        val obj = scene.snapshot.objects.single()
+        assertEquals("named_compound_bodies.step", obj.name)
+        // three tetrahedra, one part each
+        assertEquals(36, scene.meshes.getValue(obj.id).indices.size)
+        val stl = e.newStep(File(work, "cube.stl").path)
+        try {
+            e.loadStep(stl)
+            fail("STL opened as STEP")
+        } catch (ex: OrcaException) {
+            assertEquals(OrcaException.INVALID_MODEL, ex.code)
+        } finally {
+            e.closeStep(stl)
+        }
+    }
+
+    @Test
+    fun y_parsesNameChanges() {
+        assertEquals(emptyList<Pair<String, String>>(), parseNamePairs("[]"))
+        assertEquals(
+            listOf("Part<10>" to "Part_10_", "a\"b\u0001" to "Тело (2)"),
+            parseNamePairs("""[["Part<10>","Part_10_"],["a\"b\u0001","Тело (2)"]]"""),
+        )
+    }
+
+    @Test
+    fun z_repairsAndRunsBooleans() = runBlocking {
         if (e.scene().snapshot.objects.isNotEmpty()) e.clear()
         // A cube missing its top face: errors reported, "Fix model" closes it, undo reopens it.
         val open = File(work, "open.stl").apply {

@@ -6,7 +6,7 @@
 #
 # Builds the headless engine for the local Linux host from this repository's
 # own OrcaSlicer sources (src/, deps_src/) and the shared compile list in
-# engine-sources.sh, without wxWidgets, OpenGL or OCCT:
+# engine-sources.sh, without wxWidgets or OpenGL:
 #
 #   build-host/libengine-host.a   the engine closure + the C bridge
 #   build-host/contract_tests     the bridge contract test suite
@@ -58,6 +58,22 @@ case "${ORCAPOD_TBB:-real}" in
 esac
 
 # The ORCA version comes from version.inc, as the CMake build reads it.
+# STEP import: OpenCASCADE, built once for every host build (it is
+# position independent, so the PIC build of host-jni-test.sh shares it).
+case "$ORCAPOD_STEP" in
+    real)
+        OCCT_PREFIX="$(engine_build_occt "$BRIDGE/build-host")"
+        OCCT_FLAGS=(-isystem "$OCCT_PREFIX/include/occt")
+        OCCT_LIBS=("-Wl,--start-group")
+        for tk in "${OCCT_TOOLKITS[@]}"; do OCCT_LIBS+=("$OCCT_PREFIX/lib/lib$tk.a"); done
+        OCCT_LIBS+=("-Wl,--end-group")
+        ;;
+    stub)
+        OCCT_FLAGS=(-I"$BRIDGE/shim/occt-stub" -DORCAPOD_STEP_STUB)
+        OCCT_LIBS=()
+        ;;
+esac
+
 inc_var() { sed -n "s/^set($1 \"\(.*\)\")/\1/p" "$REPO/version.inc" | head -1; }
 SLIC3R_VERSION="$(inc_var SLIC3R_VERSION)"
 SOFTFEVER_VERSION="$(inc_var SoftFever_VERSION)"
@@ -68,7 +84,7 @@ CFLAGS=(
     # platform shims (boost/log, boost/nowide, occt stub) and TBB, and only then
     # the real Boost headers.
     -I"$BRIDGE/shim-host"
-    -I"$BRIDGE/shim" -I"$BRIDGE/shim/occt-stub"
+    -I"$BRIDGE/shim" "${OCCT_FLAGS[@]}"
     "${TBB_FLAGS[@]}"
     -I"$SRC" -I"$SRC/libslic3r" -I"$BUILD/gen"
     -I"$DEPS" -I"$DEPS/admesh"
@@ -220,7 +236,7 @@ mapfile -t OBJS < <(grep -v -e 'contract_tests\.o$' -e 'orcapod_slice\.o$' "$MAN
 HOST_ARCHIVE="$BUILD/libengine-host.a"
 rm -f "$HOST_ARCHIVE"
 ar rcs "$HOST_ARCHIVE" "${OBJS[@]}"
-LIBS=("${TBB_LIBS[@]}" -lpthread -lm -lgmp -lmpfr -latomic)
+LIBS=("${OCCT_LIBS[@]}" "${TBB_LIBS[@]}" -lpthread -lm -lgmp -lmpfr -latomic)
 "$CXX" -o "$BUILD/contract_tests" "$OBJ/contract_tests.o" "$HOST_ARCHIVE" "${LIBS[@]}"
 "$CXX" -o "$BUILD/orcapod-slice" "$OBJ/orcapod_slice.o" "$HOST_ARCHIVE" "${LIBS[@]}"
 echo "==> built $BUILD/contract_tests and $BUILD/orcapod-slice" >&2

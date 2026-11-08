@@ -29,6 +29,16 @@ BOOST_INC="$BRIDGE/cache/boost-include-$BOOST_VER"
 CGAL_INC="$BRIDGE/cache/CGAL-$CGAL_VER/include"
 EIGEN_INC="$BRIDGE/cache/eigen-$EIGEN_VER"
 TBB_SRC="$BRIDGE/cache/oneTBB-$TBB_VER"
+# OpenCASCADE for STEP import: OrcaSlicer's deps/OCCT pin and patch.
+OCCT_VER=8.0.1
+OCCT_SRC="$BRIDGE/cache/occt-$OCCT_VER"
+# ORCAPOD_STEP=real (default) links OpenCASCADE and the real Format/STEP.cpp;
+# stub keeps the loud STEP stubs and builds without OpenCASCADE.
+ORCAPOD_STEP="${ORCAPOD_STEP:-real}"
+case "$ORCAPOD_STEP" in
+    real|stub) ;;
+    *) echo "FATAL: ORCAPOD_STEP must be real or stub" >&2; exit 1 ;;
+esac
 
 engine_sources() {
     local SRC DEPS f
@@ -240,8 +250,19 @@ engine_sources() {
     printf 'cxx\t%s\n' "$SRC/libslic3r/MeshBoolean.cpp"
     printf 'cxx\t%s\n' "$SRC/libslic3r/TryCatchSignal.cpp"
 
-    # adapter stubs (STEP/DRC/SVG — loud throws, upstream untouched)
+    # adapter stubs (DRC/SVG — loud throws, upstream untouched)
     printf 'cxx\t%s\n' "$BRIDGE/engine-cxx/format_stubs.cpp"
+    # import name cleanup (desktop's name dialog; header-only Boost.Locale UTF)
+    printf 'cxx\t%s\n' "$SRC/libslic3r/Format/ImportNames.cpp"
+    # STEP: the real reader over OpenCASCADE, or loud stubs without it
+    if [ "$ORCAPOD_STEP" = real ]; then
+        printf 'cxx\t%s\n' "$SRC/libslic3r/Format/STEP.cpp"
+        # boost::chrono's clocks (STEP.cpp polls its reader thread with
+        # boost::this_thread::sleep_for)
+        printf 'cxx\t%s\t-DBOOST_CHRONO_STATIC_LINK\n' "$BOOST_DIR/libs/chrono/src/chrono.cpp"
+    else
+        printf 'cxx\t%s\n' "$BRIDGE/engine-cxx/step_stubs.cpp"
+    fi
     # the utils.cpp functions the closure needs (utils.cpp itself needs Boost.Log)
     printf 'cxx\t%s\n' "$BRIDGE/engine-cxx/utils_subset.cpp"
     # real thumbnail parse/encode (PNG via miniz, QOI vendored; JPEG hits the
@@ -307,6 +328,15 @@ engine_fetch_deps() {
     _fetch_git https://github.com/uxlfoundation/oneTBB "v$TBB_VER" "$TBB_SRC" include/oneapi/tbb.h || return 1
     _fetch_git https://github.com/USCiLab/cereal v1.3.0 "$BRIDGE/cache/cereal" include/cereal/access.hpp || return 1
     _fetch_git https://github.com/SoftFever/Orca-deps-libnoise 1.0 "$BRIDGE/cache/Orca-deps-libnoise" src/noisegen.cpp || return 1
+    if [ "$ORCAPOD_STEP" = real ]; then
+        _fetch_git https://github.com/Open-Cascade-SAS/OCCT "V${OCCT_VER//./_}" "$OCCT_SRC" CMakeLists.txt || return 1
+        if [ ! -f "$OCCT_SRC/.orcapod-patched" ]; then
+            git -C "$OCCT_SRC" apply --ignore-space-change --whitespace=fix \
+                "$REPO/deps/OCCT/0001-BRepMesh-seam-pcurve-at-edge-parameter.patch" ||
+                { echo "FATAL: OCCT patch failed" >&2; return 1; }
+            touch "$OCCT_SRC/.orcapod-patched"
+        fi
+    fi
     _fetch_git https://github.com/stevengj/nlopt v2.5.0 "$BRIDGE/cache/nlopt" src/api/nlopt-in.hpp || return 1
     # configure-time headers (NLopt's CMake would generate these)
     mkdir -p "$BRIDGE/cache/nlopt-gen"
@@ -334,6 +364,46 @@ engine_build_tbb() { # engine_build_tbb <build dir> [cmake args...]
                cmake --build "$build/tbb-build" >&2 &&
                cmake --install "$build/tbb-build" >&2; }; then
             echo "FATAL: oneTBB build failed" >&2
+            return 1
+        fi
+    fi
+    printf '%s\n' "$prefix"
+}
+
+# The OpenCASCADE toolkits Format/STEP.cpp uses, in link order (dependents
+# first). Every other toolkit they need is listed after them.
+OCCT_TOOLKITS=(TKDESTEP TKXCAF TKVCAF TKV3d TKService TKCAF TKLCAF TKCDF
+               TKHLR TKDE TKXSBase TKMesh TKShHealing TKBO TKPrim TKTopAlgo
+               TKGeomAlgo TKBRep TKGeomBase TKG3d TKG2d TKMath TKernel)
+
+# Builds the static OpenCASCADE toolkits STEP import needs into
+# <build>/occt-install, with OrcaSlicer's deps/OCCT options, except that only
+# the STEP toolkits (and what they depend on) are built rather than whole
+# modules. Extra arguments are passed to CMake. Prints the install prefix.
+engine_build_occt() { # engine_build_occt <build dir> [cmake args...]
+    local build="$1"; shift
+    local prefix="$build/occt-install"
+    if [ ! -f "$prefix/lib/libTKDESTEP.a" ]; then
+        echo "==> building OpenCASCADE $OCCT_VER (STEP toolkits; this takes a while)" >&2
+        if ! { cmake -S "$OCCT_SRC" -B "$build/occt-build" -G Ninja \
+                   -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 \
+                   -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+                   -DCMAKE_C_FLAGS="-ffunction-sections -fdata-sections" \
+                   -DCMAKE_CXX_FLAGS="-ffunction-sections -fdata-sections" \
+                   -DBUILD_LIBRARY_TYPE=Static -DINSTALL_DIR="$prefix" \
+                   -DINSTALL_DIR_LAYOUT=Unix -DINSTALL_DIR_LIB=lib \
+                   -DINSTALL_DIR_INCLUDE=include/occt -DINSTALL_DIR_CMAKE=lib/cmake/occt \
+                   -DUSE_TK=OFF -DUSE_TBB=OFF -DUSE_FREETYPE=OFF -DUSE_FFMPEG=OFF \
+                   -DUSE_VTK=OFF -DUSE_OPENGL=OFF -DUSE_GLES2=OFF -DUSE_XLIB=OFF \
+                   -DBUILD_DOC_Overview=OFF -DBUILD_GTEST=OFF \
+                   -DBUILD_MODULE_FoundationClasses=OFF -DBUILD_MODULE_ModelingData=OFF \
+                   -DBUILD_MODULE_ModelingAlgorithms=OFF -DBUILD_MODULE_Visualization=OFF \
+                   -DBUILD_MODULE_ApplicationFramework=OFF -DBUILD_MODULE_DataExchange=OFF \
+                   -DBUILD_MODULE_Draw=OFF \
+                   -DBUILD_ADDITIONAL_TOOLKITS="TKDESTEP TKXCAF TKMesh" "$@" >&2 &&
+               cmake --build "$build/occt-build" -j"${ORCAPOD_JOBS:-6}" >&2 &&
+               cmake --install "$build/occt-build" >&2; }; then
+            echo "FATAL: OpenCASCADE build failed" >&2
             return 1
         fi
     fi

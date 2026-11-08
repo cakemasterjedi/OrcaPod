@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -41,6 +42,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
@@ -232,6 +234,16 @@ fun PlateScreen(vm: AppViewModel) {
                             DropdownMenuItem(text = { Text("Print queue") }, onClick = { menuOpen = false; queueOpen = true })
                             DropdownMenuItem(text = { Text("Reset view") }, onClick = { menuOpen = false; viewRef?.resetView() })
                             DropdownMenuItem(text = { Text("Printer brands") }, onClick = { menuOpen = false; vm.manageVendors() })
+                            DropdownMenuItem(
+                                text = { Text("Ask for STEP import options") },
+                                trailingIcon = { Checkbox(checked = vm.askStepOptions, onCheckedChange = null) },
+                                onClick = { vm.askStepOptions = !vm.askStepOptions },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Ask about unsupported characters in names") },
+                                trailingIcon = { Checkbox(checked = vm.askNameCleanup, onCheckedChange = null) },
+                                onClick = { vm.askNameCleanup = !vm.askNameCleanup },
+                            )
                         }
                         DropdownMenu(expanded = shapeMenu, onDismissRequest = { shapeMenu = false }) {
                             for (shape in Shape.entries) if (shape != Shape.SLAB) {
@@ -276,8 +288,20 @@ fun PlateScreen(vm: AppViewModel) {
             if (!previewing) PlateStrip(vm)
             vm.busy?.let { label ->
                 Spacer(Modifier.height(6.dp))
-                LinearProgressIndicator(Modifier.fillMaxWidth())
-                Text(label, style = MaterialTheme.typography.labelMedium)
+                val percent = vm.busyProgress
+                if (percent != null) {
+                    LinearProgressIndicator(progress = { percent / 100f }, modifier = Modifier.fillMaxWidth())
+                } else {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (percent != null) "$label $percent%" else label,
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    vm.busyCancel?.let { cancel -> TextButton(onClick = cancel) { Text("Cancel") } }
+                }
             }
             if (layFlat) {
                 Spacer(Modifier.height(6.dp))
@@ -422,6 +446,8 @@ fun PlateScreen(vm: AppViewModel) {
     }
     if (queueOpen) PrintQueueSheet(printerVm) { queueOpen = false }
     if (printersOpen) PrintersSheet(printerVm, vm.printer) { printersOpen = false }
+    vm.stepImport?.let { StepImportDialog(it, vm::stepTriangleCountAsync, vm::stopTriangleCount, vm::answerStepImport) }
+    vm.nameCleanup?.let { NameCleanupDialog(it, vm::previewNameChanges, vm::answerNameCleanup) }
 }
 
 @Composable

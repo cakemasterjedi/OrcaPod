@@ -41,7 +41,7 @@ slicing engine runs on the phone itself, and your models never leave it.
 
 Every build of `main` produces a debug APK. Open the latest successful run of
 the [Android workflow](https://github.com/cakemasterjedi/OrcaPod/actions/workflows/android.yml),
-download the `orcapod-debug-apk` artifact, unzip it and install the APK on an
+download the `orcapod-apk` artifact, unzip it and install the APK on an
 arm64 device running Android 8.0 or newer. You'll need to allow installs from
 unknown sources.
 
@@ -58,7 +58,7 @@ mobile/bridge/build-android.sh
 cd mobile/android
 echo "sdk.dir=$HOME/Android/Sdk" > local.properties
 ./gradlew assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/debug/OrcaPod-0.1.0.apk
 ```
 
 See [mobile/android/README.md](mobile/android/README.md) for the app and its

@@ -66,6 +66,12 @@ android {
             useLegacyPackaging = false
         }
     }
+    // Ship the APK as OrcaPod-<version>.apk instead of app-debug.apk.
+    applicationVariants.all {
+        outputs.all {
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName = "OrcaPod-$versionName.apk"
+        }
+    }
     androidResources {
         // Already a zip; storing it avoids a second compression pass.
         noCompress += "zip"

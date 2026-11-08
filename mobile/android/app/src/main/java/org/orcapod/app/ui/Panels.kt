@@ -1,7 +1,7 @@
 package org.orcapod.app.ui
 
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -9,17 +9,17 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -84,20 +84,42 @@ fun ObjectPanel(vm: AppViewModel, sel: Selection, layFlat: Boolean, onLayFlat: (
                 }
             }
             Spacer(Modifier.height(6.dp))
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                AssistChip(onClick = onEdit, label = { Text("Parts and settings") }, leadingIcon = { Icon(AppIcons.Tune, null) })
-                AssistChip(onClick = { vm.startCut(sel) }, label = { Text("Cut") })
-                AssistChip(onClick = { vm.startPaint(sel.objectId) }, label = { Text("Paint") })
-                AssistChip(onClick = { vm.startLayerHeights(sel) }, label = { Text("Layer heights") })
-                AssistChip(onClick = { vm.startMeasure(sel.objectId) }, label = { Text("Measure") })
-                AssistChip(onClick = { vm.rotate(sel, 2, 90.0) }, label = { Text("Z 90°") }, leadingIcon = { Icon(AppIcons.Rotate, null) })
-                AssistChip(onClick = { vm.rotate(sel, 0, 90.0) }, label = { Text("X 90°") }, leadingIcon = { Icon(AppIcons.Rotate, null) })
-                AssistChip(onClick = { vm.rotate(sel, 1, 90.0) }, label = { Text("Y 90°") }, leadingIcon = { Icon(AppIcons.Rotate, null) })
-                FilterChip(selected = layFlat, onClick = onLayFlat, label = { Text("Lay on face") })
-                AssistChip(onClick = { vm.orient(sel) }, label = { Text("Auto orient") })
-                AssistChip(onClick = { vm.scaleToFit(sel) }, label = { Text("Scale to fit") })
-                AssistChip(onClick = { vm.duplicate(sel) }, label = { Text("Duplicate") }, leadingIcon = { Icon(AppIcons.ContentCopy, null) })
-                AssistChip(onClick = { vm.delete(sel) }, label = { Text("Delete") }, leadingIcon = { Icon(Icons.Filled.Delete, null) })
+            // The everyday actions as labelled buttons; the rarer tools sit under "More".
+            var rotateMenu by remember { mutableStateOf(false) }
+            var moreMenu by remember { mutableStateOf(false) }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Box {
+                    ToolButton("Rotate", AppIcons.Rotate) { rotateMenu = true }
+                    DropdownMenu(expanded = rotateMenu, onDismissRequest = { rotateMenu = false }) {
+                        DropdownMenuItem(text = { Text("Turn 90° around Z") }, onClick = { rotateMenu = false; vm.rotate(sel, 2, 90.0) })
+                        DropdownMenuItem(text = { Text("Tip 90° around X") }, onClick = { rotateMenu = false; vm.rotate(sel, 0, 90.0) })
+                        DropdownMenuItem(text = { Text("Tip 90° around Y") }, onClick = { rotateMenu = false; vm.rotate(sel, 1, 90.0) })
+                        DropdownMenuItem(text = { Text("Auto orient") }, onClick = { rotateMenu = false; vm.orient(sel) })
+                    }
+                }
+                ToolButton(if (layFlat) "Tap a face" else "Lay flat", AppIcons.LayFlat, onClick = onLayFlat)
+                ToolButton("Copy", AppIcons.ContentCopy) { vm.duplicate(sel) }
+                ToolButton("Settings", AppIcons.Tune, onClick = onEdit)
+                ToolButton("Delete", Icons.Filled.Delete) { vm.delete(sel) }
+                Box {
+                    ToolButton("More", Icons.Filled.MoreVert) { moreMenu = true }
+                    DropdownMenu(expanded = moreMenu, onDismissRequest = { moreMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Scale to fit") },
+                            leadingIcon = { Icon(AppIcons.ViewInAr, null) },
+                            onClick = { moreMenu = false; vm.scaleToFit(sel) },
+                        )
+                        DropdownMenuItem(text = { Text("Cut") }, leadingIcon = { Icon(AppIcons.Cut, null) }, onClick = { moreMenu = false; vm.startCut(sel) })
+                        DropdownMenuItem(text = { Text("Paint") }, leadingIcon = { Icon(AppIcons.Brush, null) }, onClick = { moreMenu = false; vm.startPaint(sel.objectId) })
+                        DropdownMenuItem(
+                            text = { Text("Layer heights") },
+                            leadingIcon = { Icon(AppIcons.Layers, null) },
+                            onClick = { moreMenu = false; vm.startLayerHeights(sel) },
+                        )
+                        DropdownMenuItem(text = { Text("Measure") }, leadingIcon = { Icon(AppIcons.Ruler, null) }, onClick = { moreMenu = false; vm.startMeasure(sel.objectId) })
+                        DropdownMenuItem(text = { Text("Parts and settings") }, leadingIcon = { Icon(AppIcons.Tune, null) }, onClick = { moreMenu = false; onEdit() })
+                    }
+                }
             }
         }
     }

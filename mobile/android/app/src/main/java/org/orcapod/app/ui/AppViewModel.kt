@@ -14,6 +14,11 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -44,6 +49,8 @@ import org.orcapod.app.engine.Scene
 import org.orcapod.app.engine.SceneObject
 import org.orcapod.app.engine.Shape
 import org.orcapod.app.engine.SliceReport
+import org.orcapod.app.engine.StepFile
+import org.orcapod.app.engine.StepImportOptions
 import org.orcapod.app.engine.SliceTarget
 import org.orcapod.app.engine.Toolpath
 import org.orcapod.app.engine.VolumeType
@@ -65,6 +72,29 @@ sealed interface Phase {
     data object Ready : Phase
     data class Failed(val message: String) : Phase
 }
+
+/** The STEP import dialog's question, open while [AppViewModel.stepImport] holds it. */
+class StepImportRequest(
+    val fileName: String,
+    val step: StepFile,
+    val initial: StepImportOptions,
+    internal val reply: CompletableDeferred<StepImportAnswer?>,
+)
+
+/** The dialog's answer: the options, and whether to keep them as defaults and stop asking. */
+data class StepImportAnswer(val options: StepImportOptions, val remember: Boolean, val dontAsk: Boolean)
+
+/** Desktop "Unsupported characters in names", open while [AppViewModel.nameCleanup] holds it. */
+class NameCleanupRequest(
+    val fileName: String,
+    val step: StepFile,
+    val initialRemove: Boolean,
+    val initialReplacement: String,
+    internal val reply: CompletableDeferred<NameCleanupAnswer?>,
+)
+
+/** Remove the characters, or replace each with [replacement]; and whether to keep the rule. */
+data class NameCleanupAnswer(val remove: Boolean, val replacement: String, val remember: Boolean, val dontAsk: Boolean)
 
 sealed interface SliceState {
     data object Idle : SliceState
@@ -97,9 +127,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var selection by mutableStateOf<Selection?>(null)
     var busy by mutableStateOf<String?>(null)
         private set
+    /** Percent done of the busy work, when it reports one. */
+    var busyProgress by mutableStateOf<Int?>(null)
+        private set
+    /** Stops the busy work, when it can be stopped. */
+    var busyCancel by mutableStateOf<(() -> Unit)?>(null)
+        private set
     var slice by mutableStateOf<SliceState>(SliceState.Idle)
         private set
     var showPreview by mutableStateOf(false)
+    /** The open STEP import dialog, if any. */
+    var stepImport by mutableStateOf<StepImportRequest?>(null)
+        private set
+    /** The open name-cleanup dialog, if any. */
+    var nameCleanup by mutableStateOf<NameCleanupRequest?>(null)
+        private set
     /** Layers and moves of the preview shown (desktop's vertical and horizontal sliders). */
     var previewRange by mutableStateOf(PreviewRange())
     var previewMode by mutableStateOf(ViewMode.LINE_TYPE)
@@ -464,14 +506,42 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun importFiles(e: Engine, files: List<File>) {
         var imported = 0
+        // Desktop asks once per import for all its STEP files.
+        var stepOptions: StepImportOptions? = null
+        // and once for the names of all of them ("" removes the characters)
+        var nameRule: String? = null
         for (file in files) {
             val ext = file.extension.lowercase()
-            if (ext == "step" || ext == "stp") {
-                _messages.tryEmit("STEP files are not supported yet; export the model as STL or 3MF")
+            if (ext !in IMPORTABLE) {
+                _messages.tryEmit("${file.name}: not a model file (STL, 3MF, OBJ, AMF or STEP)")
                 continue
             }
-            if (ext !in IMPORTABLE) {
-                _messages.tryEmit("${file.name}: not a model file (STL, 3MF, OBJ or AMF)")
+            if (ext in STEP_EXTENSIONS) {
+                val step = e.newStep(file.path)
+                try {
+                    stepStage(step, "Reading ${file.name}") { e.loadStep(step) }
+                    val options = stepOptions ?: askStepOptions(file.name, step) ?: break
+                    stepOptions = options
+                    stepStage(step, "Meshing ${file.name}") { e.meshStep(step, options) }
+                    val replacement = nameRule ?: when (val rule = cleanNames(e, file.name, step)) {
+                        NameRule.Cancelled -> break
+                        NameRule.Unneeded -> null
+                        is NameRule.Chosen -> rule.replacement.also { nameRule = it }
+                        // desktop refuses the file and goes on with the others
+                        NameRule.InvalidUnicode -> {
+                            _messages.tryEmit("${file.name}: a name in the file is not valid Unicode. The geometry was not imported.")
+                            continue
+                        }
+                    }
+                    imported += e.importStep(step, replacement)
+                } catch (ex: OrcaException) {
+                    if (ex.code != OrcaException.CANCELLED) throw ex
+                    _messages.tryEmit("Import of ${file.name} cancelled")
+                    break
+                } finally {
+                    e.closeStep(step)
+                    busy = "Importing…"
+                }
                 continue
             }
             imported += e.import(file.path)
@@ -483,6 +553,181 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         refreshScene()
         invalidateSlice()
     }
+
+    // --- STEP import dialog ---
+
+    /** The saved STEP choices (desktop's linear_deflection, angle_deflection, is_split_compound, ...). */
+    private fun savedStepOptions() = StepImportOptions(
+        linearDeflection = prefs.getFloat(KEY_STEP_LINEAR, StepImportOptions.LINEAR_DEFAULT.toFloat()).toDouble()
+            .takeIf { it in StepImportOptions.LINEAR_MIN..StepImportOptions.LINEAR_MAX } ?: StepImportOptions.LINEAR_DEFAULT,
+        angleDeflection = prefs.getFloat(KEY_STEP_ANGLE, StepImportOptions.ANGLE_DEFAULT.toFloat()).toDouble()
+            .takeIf { it in StepImportOptions.ANGLE_MIN..StepImportOptions.ANGLE_MAX } ?: StepImportOptions.ANGLE_DEFAULT,
+        splitCompound = prefs.getBoolean(KEY_STEP_SPLIT, true),
+        keepNames = prefs.getBoolean(KEY_STEP_KEEP_NAMES, true),
+        asAssembly = prefs.getBoolean(KEY_STEP_ASSEMBLY, true),
+        sortNames = prefs.getBoolean(KEY_STEP_SORT_NAMES, false),
+    )
+
+    /** Runs a slow STEP stage with its progress and a Cancel button in the busy row. */
+    private suspend fun <T> stepStage(step: StepFile, label: String, block: suspend () -> T): T = coroutineScope {
+        busy = "$label…"
+        busyProgress = 0
+        busyCancel = { step.cancel() }
+        val poll = launch {
+            while (true) {
+                busyProgress = step.progress()
+                delay(200)
+            }
+        }
+        try {
+            block()
+        } finally {
+            poll.cancel()
+            busyProgress = null
+            busyCancel = null
+        }
+    }
+
+    /** Desktop StepMeshDialog: null when the user cancelled the import. */
+    private suspend fun askStepOptions(fileName: String, step: StepFile): StepImportOptions? {
+        val saved = savedStepOptions()
+        if (!askStepOptions) return saved
+        val reply = CompletableDeferred<StepImportAnswer?>()
+        val label = busy
+        busy = null
+        stepImport = StepImportRequest(fileName, step, saved, reply)
+        val answer = try {
+            reply.await()
+        } finally {
+            stepImport = null
+            busy = label
+            // the mesh must not start while the dialog's count runs, nor be stopped by it
+            countJob?.let {
+                stopTriangleCount(step, it)
+                it.join()
+            }
+            countJob = null
+        }
+        if (answer == null) return null
+        if (answer.remember || answer.dontAsk) {
+            val o = answer.options
+            val edit = prefs.edit()
+                .putFloat(KEY_STEP_LINEAR, o.linearDeflection.toFloat())
+                .putFloat(KEY_STEP_ANGLE, o.angleDeflection.toFloat())
+                .putBoolean(KEY_STEP_SPLIT, o.splitCompound)
+                .putBoolean(KEY_STEP_KEEP_NAMES, o.keepNames)
+                .putBoolean(KEY_STEP_ASSEMBLY, o.asAssembly)
+            // a disabled sorting choice keeps the remembered one, as on desktop
+            if (o.keepNames) edit.putBoolean(KEY_STEP_SORT_NAMES, o.sortNames)
+            edit.apply()
+        }
+        if (answer.dontAsk) askStepOptions = false
+        return answer.options
+    }
+
+    /** Answers the open STEP dialog; null cancels the import. */
+    fun answerStepImport(answer: StepImportAnswer?) {
+        stepImport?.reply?.complete(answer)
+    }
+
+    private var countJob: Deferred<Long?>? = null
+
+    /**
+     * Counts the triangles the import would produce, for the dialog. Runs
+     * outside the caller's scope so the caller can stop waiting at once and
+     * stop the count with [stopTriangleCount]. Null when cancelled or failed.
+     */
+    fun stepTriangleCountAsync(step: StepFile, linear: Double, angle: Double): Deferred<Long?> = viewModelScope.async {
+        try {
+            engine?.stepTriangleCount(step, linear, angle)
+        } catch (ex: OrcaException) {
+            null
+        }
+    }.also { countJob = it }
+
+    /** Stops a count from [stepTriangleCountAsync] that has not finished; a finished one is left alone. */
+    fun stopTriangleCount(step: StepFile, count: Deferred<Long?>) {
+        if (count.isCompleted) return
+        count.cancel()
+        step.cancel()
+    }
+
+    private sealed interface NameRule {
+        data object Unneeded : NameRule
+        data object Cancelled : NameRule
+        data object InvalidUnicode : NameRule
+        /** "" removes the characters. */
+        data class Chosen(val replacement: String) : NameRule
+    }
+
+    /** Desktop prepare_geometry_import_names: picks how unsupported characters in names change. */
+    private suspend fun cleanNames(e: Engine, fileName: String, step: StepFile): NameRule {
+        var remove = prefs.getBoolean(KEY_NAMES_REMOVE, false)
+        var replacement = prefs.getString(KEY_NAMES_REPLACEMENT, null) ?: NAME_REPLACEMENT_DEFAULT
+        var ask = askNameCleanup
+        val changes = try {
+            e.stepNameChanges(step, if (remove) "" else replacement)
+        } catch (ex: OrcaException) {
+            when (ex.code) {
+                OrcaException.INVALID_MODEL -> return NameRule.InvalidUnicode
+                // a damaged saved replacement must not silently create more invalid names
+                OrcaException.INVALID_ARGUMENT -> {
+                    replacement = NAME_REPLACEMENT_DEFAULT
+                    ask = true
+                    e.stepNameChanges(step, replacement)
+                }
+                else -> throw ex
+            }
+        }
+        if (changes.isEmpty()) return NameRule.Unneeded
+        if (!ask) return NameRule.Chosen(if (remove) "" else replacement)
+        val reply = CompletableDeferred<NameCleanupAnswer?>()
+        val label = busy
+        busy = null
+        nameCleanup = NameCleanupRequest(fileName, step, remove, replacement, reply)
+        val answer = try {
+            reply.await()
+        } finally {
+            nameCleanup = null
+            busy = label
+        } ?: return NameRule.Cancelled
+        remove = answer.remove
+        replacement = answer.replacement
+        if (answer.remember || answer.dontAsk)
+            prefs.edit().putBoolean(KEY_NAMES_REMOVE, remove).putString(KEY_NAMES_REPLACEMENT, replacement).apply()
+        if (answer.dontAsk) askNameCleanup = false
+        return NameRule.Chosen(if (remove) "" else replacement)
+    }
+
+    /** The name changes [replacement] makes, for the dialog's preview; null when it is not usable. */
+    suspend fun previewNameChanges(step: StepFile, replacement: String): List<Pair<String, String>>? = try {
+        engine?.stepNameChanges(step, replacement)
+    } catch (ex: OrcaException) {
+        null
+    }
+
+    /** Answers the open name dialog; null cancels the import. */
+    fun answerNameCleanup(answer: NameCleanupAnswer?) {
+        nameCleanup?.reply?.complete(answer)
+    }
+
+    /** Desktop Preferences "Show the dialog for unsupported characters in names". */
+    var askNameCleanup: Boolean
+        get() = askNameCleanupState
+        set(ask) {
+            askNameCleanupState = ask
+            prefs.edit().putBoolean(KEY_NAMES_SHOW_DIALOG, ask).apply()
+        }
+    private var askNameCleanupState by mutableStateOf(prefs.getBoolean(KEY_NAMES_SHOW_DIALOG, true))
+
+    /** Desktop Preferences "Show the STEP mesh parameter setting dialog". */
+    var askStepOptions: Boolean
+        get() = askStepOptionsState
+        set(ask) {
+            askStepOptionsState = ask
+            prefs.edit().putBoolean(KEY_STEP_SHOW_DIALOG, ask).apply()
+        }
+    private var askStepOptionsState by mutableStateOf(prefs.getBoolean(KEY_STEP_SHOW_DIALOG, true))
 
     // --- project files ---
 
@@ -1319,7 +1564,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val TAG = "OrcaPod"
-        val IMPORTABLE = setOf("stl", "3mf", "obj", "amf")
+        val STEP_EXTENSIONS = setOf("step", "stp")
+        val IMPORTABLE = setOf("stl", "3mf", "obj", "amf") + STEP_EXTENSIONS
+        private const val KEY_STEP_LINEAR = "step_linear_deflection"
+        private const val KEY_STEP_ANGLE = "step_angle_deflection"
+        private const val KEY_STEP_SPLIT = "step_split_compound"
+        private const val KEY_STEP_KEEP_NAMES = "step_keep_names"
+        private const val KEY_STEP_ASSEMBLY = "step_load_as_assembly"
+        private const val KEY_STEP_SHOW_DIALOG = "step_show_dialog"
+        private const val KEY_STEP_SORT_NAMES = "step_sort_names"
+        private const val KEY_NAMES_REMOVE = "import_names_cleanup_remove"
+        private const val KEY_NAMES_REPLACEMENT = "import_names_cleanup_replacement"
+        private const val KEY_NAMES_SHOW_DIALOG = "import_names_cleanup_show_dialog"
+        const val NAME_REPLACEMENT_DEFAULT = "_"
 
         /** Preset kinds whose picker lists only the presets the user picked. */
         val CHOOSABLE = listOf(PresetKind.PRINTER, PresetKind.FILAMENT)

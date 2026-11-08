@@ -1,7 +1,7 @@
 # Android app
 
 OrcaPod's Android app (`mobile/android/`) prepares and slices prints on a
-phone or tablet: it imports models onto a 3D build plate, lets the user
+phone or tablet: it imports models (STL, 3MF, OBJ, AMF and STEP) onto a 3D build plate, lets the user
 position them, selects printer, filament and process profiles, slices with
 OrcaSlicer's own engine and previews and exports the G-code. All slicing
 logic is the engine's; the app is a client of the bridge's C API
@@ -279,6 +279,28 @@ orbits; two fingers pinch to zoom and pan. Taps are resolved by a CPU ray
 cast against the instance meshes, which also gives the tapped face's normal
 for "Lay on face".
 
+## STEP import
+
+STEP files go through the desktop's STEP import dialog. The file is read
+once (`Engine.loadStep`) and the dialog then shows the triangle count for the
+chosen linear and angular deflection, recounting as the values change and
+cancelling a count that a newer value supersedes. It also offers Split
+compound, assembly or single object, Keep original names and Sort parts by
+name, with the desktop's coupling: keeping the names of a part that holds
+several bodies needs Split compound, and sorting needs kept names. One answer
+covers every STEP file of an import, and "Remember my choice" and "Don't ask
+again" store the choices as the defaults, like the desktop's
+`linear_deflection`, `angle_deflection` and `is_split_compound` preferences.
+
+Reading and meshing a large file take a while, so both show their progress in
+the busy row with a Cancel button, which stops the engine work and ends the
+import. Once meshed, names that a 3MF project cannot hold open the desktop's
+"Unsupported characters in names" dialog: remove the characters or replace
+each with some text, with a live preview of every renamed part and object. Its
+rule is stored under the desktop's `import_names_cleanup_*` keys; a saved
+replacement that is no longer usable opens the dialog again, and a file whose
+names are not valid Unicode is not imported. The overflow menu turns either
+dialog back on.
 ## G-code preview
 
 After slicing, the engine's `GCodeProcessor` parses the G-code
@@ -451,8 +473,6 @@ A web link shared to the app from a browser opens the library on that page.
 
 ## Limits
 
-- STEP import needs OCCT, which the bridge does not build; the app says so
-  and asks for STL or 3MF instead.
 - Bambu printers are reached in LAN mode only; Bambu's cloud needs its
   closed network plugin. The AMS maps the single filament to one tray.
 - Prints the app did not send appear in its history only for Klipper.
@@ -483,4 +503,5 @@ scaled instance. The calibration check sets up a temperature tower, a
 flow rate pass, a PA pattern and a cornering test and ends the test; the
 bridge contract tests also check each tower's height, that PA tower and
 pattern G-code steps PA, the input shaping and cornering printer settings,
-and the dialogs' range checks.
+and the dialogs' range checks. A STEP file loads, counts its
+triangles, meshes and imports.

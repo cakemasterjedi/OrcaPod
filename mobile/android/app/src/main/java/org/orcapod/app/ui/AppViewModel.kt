@@ -35,6 +35,9 @@ import org.orcapod.app.data.RecentProject
 import org.orcapod.app.data.Recovery
 import org.orcapod.app.data.SafProfileFolder
 import org.orcapod.app.engine.BedTypeState
+import org.orcapod.app.engine.BooleanOperation
+import org.orcapod.app.engine.MeshErrors
+import org.orcapod.app.engine.RepairReport
 import org.orcapod.app.engine.PaintLayer
 import org.orcapod.app.engine.CustomGcode
 import org.orcapod.app.engine.CustomGcodeType
@@ -200,6 +203,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     /** The part highlighted in the object list, if any. */
     var selectedVolume by mutableStateOf<Long?>(null)
+    /** Mesh errors per object id, for desktop's object list warning icons; refreshed with the scene. */
+    var meshErrors by mutableStateOf<Map<Long, MeshErrors>>(emptyMap())
+        private set
     var installedVendors by mutableStateOf<Set<String>>(emptySet())
         private set
     /** Number of the user's own printer, filament and process presets. */
@@ -1107,6 +1113,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun refreshScene() {
         val e = engine ?: return
         scene = e.scene()
+        meshErrors = scene.snapshot.objects.associate { it.id to e.meshErrors(it.id) }
         customGcodes = e.customGcodes()
         refreshCalibration(e)
         if (paint != null) refreshPaint()
@@ -1176,19 +1183,113 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         engineAction { refreshPaint() }
     }
 
-    /** A dab or fill from the viewport; brush strokes send one per finger step, fills only the first touch. */
+    /** One brush dab from the viewport, waiting for the engine. */
+    private class Dab(val objectId: Long, val volumeId: Long, val hit: FloatArray, val view: FloatArray, val first: Boolean)
+
+    /** Dabs the finger has made that the engine has not painted yet (main thread only). */
+    private val pendingDabs = ArrayList<Dab>()
+    private var dabWorker: Job? = null
+    /** A finger is down painting: the scene refresh waits for it to lift. */
+    private var stroking = false
+
+    /** Painted support enforcers on an object whose supports are off: desktop's "enable support" warning. */
+    var paintSupportsOff by mutableStateOf(false)
+        private set
+
+    /**
+     * A dab or fill from the viewport; brush strokes send one per finger step,
+     * fills only the first touch. Brush dabs queue up while the engine is
+     * busy and go to it together, and a whole stroke is one undo step.
+     */
     fun paintAt(objectId: Long, volumeId: Long, hit: FloatArray, view: FloatArray, first: Boolean) {
         val p = paint ?: return
         if (p.objectId != objectId || (p.tool != PaintTool.BRUSH && !first)) return
+        if (p.tool == PaintTool.BRUSH) {
+            if (first) stroking = true
+            pendingDabs += Dab(objectId, volumeId, hit, view, first)
+            if (dabWorker?.isActive != true) dabWorker = viewModelScope.launch { paintDabs() }
+            return
+        }
         engineAction { e ->
-            when (p.tool) {
-                PaintTool.BRUSH -> e.paintSphere(objectId, volumeId, p.layer, hit, view, p.radius.toDouble(), p.state)
-                PaintTool.SMART_FILL -> e.paintFill(objectId, volumeId, p.layer, hit, view, p.angle.toDouble(), p.state)
-                PaintTool.BUCKET -> e.paintFill(objectId, volumeId, p.layer, hit, view, 0.0, p.state)
-            }
+            e.paintFill(objectId, volumeId, p.layer, hit, view, if (p.tool == PaintTool.SMART_FILL) p.angle.toDouble() else 0.0, p.state)
             refreshScene()
             invalidateSlice()
         }
+    }
+
+    /** The finger lifted: the stroke is over. */
+    fun paintStrokeEnd() {
+        stroking = false
+        if (dabWorker?.isActive != true) engineAction { refreshScene() }
+    }
+
+    private suspend fun paintDabs() {
+        val e = engine ?: return
+        var painted = false
+        try {
+            while (pendingDabs.isNotEmpty()) {
+                val p = paint ?: break
+                val batch = fillGaps(pendingDabs.toList(), p.radius)
+                pendingDabs.clear()
+                // One engine call per run of dabs on the same part; only a
+                // stroke's first dab starts a new undo step.
+                var i = 0
+                while (i < batch.size) {
+                    val first = batch[i]
+                    var j = i + 1
+                    while (j < batch.size && batch[j].volumeId == first.volumeId && !batch[j].first) j++
+                    val run = batch.subList(i, j)
+                    val hits = DoubleArray(run.size * 3)
+                    val views = DoubleArray(run.size * 3)
+                    run.forEachIndexed { k, d -> for (c in 0 until 3) { hits[k * 3 + c] = d.hit[c].toDouble(); views[k * 3 + c] = d.view[c].toDouble() } }
+                    e.paintStroke(first.objectId, first.volumeId, p.layer, hits, views, p.radius.toDouble(), p.state, continueStroke = !first.first)
+                    i = j
+                }
+                painted = true
+                refreshPaint()
+                invalidateSlice()
+            }
+        } catch (ex: OrcaException) {
+            pendingDabs.clear()
+            Log.w(TAG, "paint stroke failed", ex)
+            _messages.tryEmit(ex.message ?: "Engine error")
+        }
+        if (painted && !stroking) refreshScene()
+    }
+
+    /** The last dab of the stroke being painted, for [fillGaps]. */
+    private var lastDab: Dab? = null
+
+    /**
+     * Adds dabs between ones further apart than half the brush radius, so a
+     * fast finger draws a solid line like desktop's brush instead of a row of
+     * dots. The engine casts each dab along its view ray onto the surface.
+     */
+    private fun fillGaps(dabs: List<Dab>, radius: Float): List<Dab> {
+        val out = ArrayList<Dab>(dabs.size)
+        val step = maxOf(radius * 0.5f, 0.05f)
+        for (d in dabs) {
+            val prev = lastDab
+            if (!d.first && prev != null && prev.volumeId == d.volumeId) {
+                val dist = kotlin.math.sqrt((0 until 3).sumOf { ((d.hit[it] - prev.hit[it]) * (d.hit[it] - prev.hit[it])).toDouble() }).toFloat()
+                val n = minOf((dist / step).toInt(), MAX_GAP_DABS)
+                for (k in 1 until n) {
+                    val t = k.toFloat() / n
+                    val hit = FloatArray(3) { prev.hit[it] + (d.hit[it] - prev.hit[it]) * t }
+                    val view = FloatArray(3) { prev.view[it] + (d.view[it] - prev.view[it]) * t }
+                    out += Dab(d.objectId, d.volumeId, hit, view, false)
+                }
+            }
+            out += d
+            lastDab = d
+        }
+        return out
+    }
+
+    /** Desktop's fix for its warning: turn supports on for the painted object. */
+    fun enableSupportsForPaint() {
+        val p = paint ?: return
+        setOverride(OverrideTarget(p.objectId, 0), "enable_support", "1")
     }
 
     fun clearPaint() {
@@ -1208,6 +1309,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         val meshes = obj.parts.map { e.paint(p.objectId, it.id, p.layer) }
         paintOverlay = paintOverlay(meshes, p.layer, filamentSlots.map { it.colour })
+        paintSupportsOff = p.layer == PaintLayer.SUPPORT &&
+            meshes.any { m -> m.states.any { it.toInt() == 1 } } &&
+            (overrides(OverrideTarget(p.objectId, 0))["enable_support"] ?: valueOf(PresetKind.PROCESS, "enable_support")) != "1"
     }
 
     // --- cut (desktop cut gizmo) ---
@@ -1374,6 +1478,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val n = e.splitToParts(objectId, volumeId)
         _messages.tryEmit("Split into $n parts")
     }
+
+    /** Desktop "Fix model" on objects (every volume) or, with [volumeId], on one part. */
+    fun repair(objectIds: List<Long>, volumeId: Long = 0) = mutate("Repairing…") { e ->
+        val reports = objectIds.map { id -> (objectOf(id)?.name ?: "Object") to e.repair(id, volumeId) }
+        _messages.tryEmit(repairSummary(reports))
+    }
+
+    /** Desktop Mesh Boolean between two volumes of an object; selects the result. */
+    fun meshBoolean(objectId: Long, sourceVolumeId: Long, toolVolumeId: Long, operation: BooleanOperation, deleteTool: Boolean) =
+        mutate("Running ${operation.label.lowercase()}…") { e ->
+            selectedVolume = e.meshBoolean(objectId, sourceVolumeId, toolVolumeId, operation, deleteTool)
+        }
 
     fun mirror(sel: Selection, axis: Int) = mutate { it.mirror(sel.objectId, sel.instanceId, axis) }
     fun setPrintable(objectId: Long, instanceId: Long, printable: Boolean) = mutate { it.setPrintable(objectId, instanceId, printable) }
@@ -1679,6 +1795,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val TAG = "OrcaPod"
+        /** Most dabs [fillGaps] adds between two finger samples. */
+        private const val MAX_GAP_DABS = 64
         private const val KEY_SYNC_TREE = "sync_tree"
         private const val KEY_SYNC_STATE = "sync_state"
         private const val KEY_SYNC_LAST = "sync_last"
@@ -1713,4 +1831,17 @@ internal fun worldBounds(positions: FloatArray, matrix: FloatArray): FloatArray 
         }
     }
     return b
+}
+
+/** The notice desktop shows after "Fix model": what was repaired, what failed, what needed nothing. */
+internal fun repairSummary(reports: List<Pair<String, RepairReport>>): String {
+    val repaired = reports.filter { it.second.modified }.map { it.first }
+    val failed = reports.filter { it.second.failedVolumes > 0 }
+    val unchanged = reports.count { !it.second.modified && it.second.failedVolumes == 0 }
+    val lines = mutableListOf<String>()
+    if (repaired.isNotEmpty()) lines += "Repaired: " + repaired.joinToString()
+    for ((name, r) in failed) lines += "Could not repair $name: ${r.failures}"
+    if (unchanged > 0) lines += if (reports.size == 1) "The model needed no repair" else "$unchanged of ${reports.size} needed no repair"
+    if (reports.any { it.second.paintingRemoved }) lines += "Painting on the repaired parts was removed"
+    return lines.joinToString("\n")
 }

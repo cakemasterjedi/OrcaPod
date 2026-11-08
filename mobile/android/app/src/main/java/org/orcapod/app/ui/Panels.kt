@@ -104,6 +104,11 @@ fun ObjectPanel(vm: AppViewModel, sel: Selection, layFlat: Boolean, onLayFlat: (
                 Box {
                     ToolButton("More", Icons.Filled.MoreVert) { moreMenu = true }
                     DropdownMenu(expanded = moreMenu, onDismissRequest = { moreMenu = false }) {
+                        if (vm.meshErrors[sel.objectId]?.manifold == false) DropdownMenuItem(
+                            text = { Text("Repair") },
+                            leadingIcon = { MeshWarning(vm.meshErrors[sel.objectId]) },
+                            onClick = { moreMenu = false; vm.repair(listOf(sel.objectId)) },
+                        )
                         DropdownMenuItem(
                             text = { Text("Scale to fit") },
                             leadingIcon = { Icon(AppIcons.ViewInAr, null) },

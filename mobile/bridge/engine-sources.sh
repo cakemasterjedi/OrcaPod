@@ -246,6 +246,17 @@ engine_sources() {
             "$BOOST_DIR/libs/thread/src/$f.cpp"
     done
 
+    # mesh booleans (desktop's Mesh Boolean gizmo) over vendored MCUT, and
+    # MeshBoolean.cpp's CGAL corefinement. File list and define mirror
+    # deps_src/mcut/CMakeLists.txt (thread pool on, as on desktop).
+    local MCUT="-I$DEPS/mcut/include -DMCUT_WITH_COMPUTE_HELPER_THREADPOOL=1"
+    for f in mcut kernel hmesh math bvh frontend preproc; do
+        printf 'cxx\t%s\t%s\n' "$DEPS/mcut/source/$f.cpp" "$MCUT"
+    done
+    printf 'c\t%s\t%s\n' "$DEPS/mcut/source/shewchuk.c" "$MCUT"
+    printf 'cxx\t%s\n' "$SRC/libslic3r/MeshBoolean.cpp"
+    printf 'cxx\t%s\n' "$SRC/libslic3r/TryCatchSignal.cpp"
+
     # adapter stubs (DRC/SVG — loud throws, upstream untouched)
     printf 'cxx\t%s\n' "$BRIDGE/engine-cxx/format_stubs.cpp"
     # import name cleanup (desktop's name dialog; header-only Boost.Locale UTF)

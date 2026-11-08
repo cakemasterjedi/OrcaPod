@@ -188,6 +188,42 @@ static std::string write_cube_stl(const std::string &dir, const char *name) {
     return path;
 }
 
+// Binary STL of an axis-aligned box; `drop_top` leaves out the two +z
+// facets so the mesh has a hole (4 open edges), as a broken download would.
+static std::string write_box_stl(const std::string &dir, const char *name,
+                                 const float lo[3], const float hi[3],
+                                 bool drop_top = false) {
+    const std::string path = dir + "/" + name;
+    FILE *file = fopen(path.c_str(), "wb");
+    if (!file) {
+        fprintf(stderr, "FATAL: cannot write %s\n", path.c_str());
+        exit(2);
+    }
+    char header[80];
+    memset(header, 0, sizeof header);
+    fwrite(header, 1, 80, file);
+    unsigned int count = drop_top ? 10 : 12;
+    fwrite(&count, 4, 1, file);
+    const float v[8][3] = {
+        {lo[0], lo[1], lo[2]}, {hi[0], lo[1], lo[2]}, {hi[0], hi[1], lo[2]}, {lo[0], hi[1], lo[2]},
+        {lo[0], lo[1], hi[2]}, {hi[0], lo[1], hi[2]}, {hi[0], hi[1], hi[2]}, {lo[0], hi[1], hi[2]},
+    };
+    const int facets[12][3] = {
+        {0, 2, 1}, {0, 3, 2}, {4, 5, 6}, {4, 6, 7}, {0, 1, 5}, {0, 5, 4},
+        {1, 2, 6}, {1, 6, 5}, {2, 3, 7}, {2, 7, 6}, {3, 0, 4}, {3, 4, 7},
+    };
+    for (int i = 0; i < 12; ++i) {
+        if (drop_top && (i == 2 || i == 3)) continue;
+        const float zero[3] = {0, 0, 0};
+        fwrite(zero, 4, 3, file); // readers recompute normals
+        for (int k = 0; k < 3; ++k) fwrite(v[facets[i][k]], 4, 3, file);
+        unsigned short attribute = 0;
+        fwrite(&attribute, 2, 1, file);
+    }
+    fclose(file);
+    return path;
+}
+
 static std::string write_garbage_file(const std::string &dir) {
     const std::string path = dir + "/garbage.stl";
     FILE *file = fopen(path.c_str(), "wb");
@@ -278,7 +314,7 @@ static void test_md5_shim() {
 
 static void test_abi_version() {
     CHECK_EQ(orca_bridge_abi_version(), ORCA_BRIDGE_ABI_VERSION);
-    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 45);
+    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 46);
 }
 
 struct ProgressRecord {
@@ -3673,6 +3709,62 @@ static void test_painting(const std::string &dir) {
     CHECK_EQ(paint.count, 0u);
     orca_paint_mesh_dispose(&paint);
 
+    // ABI v46 brush strokes: a stroke and its continuations are one undo
+    // step; dabs off the mesh are skipped; repainting changes nothing.
+    {
+        const double q = 0.25 * size;
+        const double hits1[6] = {midX - q, midY, maxZ, midX + 100, midY, maxZ + 100};
+        const double hits2[3] = {midX + q, midY, maxZ};
+        const double down[6] = {0, 0, -1, 0, 0, -1};
+        orca_revision r1 = 0, r2 = 0, r3 = 0;
+        GUARD(s1, orca_plater_volume_paint_stroke(plater, object_id, volume, ORCA_PAINT_SEAM,
+                                                  hits1, down, 2, 0.2 * size, 1, 0, &r1));
+        expect_ok(s1, "stroke starts");
+        CHECK(r1 > revision);
+        GUARD(s2, orca_plater_volume_paint_stroke(plater, object_id, volume, ORCA_PAINT_SEAM,
+                                                  hits2, down, 1, 0.2 * size, 1, 1, &r2));
+        expect_ok(s2, "stroke continues");
+        CHECK_EQ(r2, r1 + 1);
+        GUARD(s3, orca_plater_volume_paint_stroke(plater, object_id, volume, ORCA_PAINT_SEAM,
+                                                  hits2, down, 1, 0.2 * size, 1, 1, &r3));
+        expect_ok(s3, "repainting is not an error");
+        CHECK_EQ(r3, r2);
+        GUARD(s4, orca_plater_volume_paint_stroke(plater, object_id, volume, ORCA_PAINT_SEAM,
+                                                  hits1 + 3, down, 1, 0.2 * size, 1, 0, &r3));
+        expect_ok(s4, "a stroke entirely off the mesh paints nothing");
+        CHECK_EQ(r3, r2);
+        GUARD(q5, orca_plater_volume_paint(plater, object_id, volume, ORCA_PAINT_SEAM, &paint));
+        expect_ok(q5, "seam query after stroke");
+        bool left = false, right = false;
+        for (uint32_t i = 0; i < paint.count; ++i) {
+            CHECK_EQ(paint.triangles[i].state, 1);
+            const float x = paint.triangles[i].positions[0];
+            if (x < midX) left = true; else right = true;
+        }
+        CHECK(left && right);
+        orca_paint_mesh_dispose(&paint);
+        GUARD(x4, orca_plater_volume_paint_stroke(plater, object_id, volume, ORCA_PAINT_SEAM,
+                                                  nullptr, down, 1, 1.0, 1, 0, &r3));
+        expect_code(x4, ORCA_STATUS_INVALID_ARGUMENT, "stroke without points");
+
+        GUARD(u2, orca_plater_undo(plater, &revision));
+        expect_ok(u2, "undo the whole stroke");
+        GUARD(q6, orca_plater_volume_paint(plater, object_id, volume, ORCA_PAINT_SEAM, &paint));
+        expect_ok(q6, "seam query after undo");
+        CHECK_EQ(paint.count, 0u);
+        orca_paint_mesh_dispose(&paint);
+        // After any other change a continuation starts its own step.
+        GUARD(s5, orca_plater_volume_paint_stroke(plater, object_id, volume, ORCA_PAINT_SEAM,
+                                                  hits2, down, 1, 0.2 * size, 2, 1, &r3));
+        expect_ok(s5, "continuation after undo");
+        GUARD(u3, orca_plater_undo(plater, &revision));
+        expect_ok(u3, "undo the continuation alone");
+        GUARD(q7, orca_plater_volume_paint(plater, object_id, volume, ORCA_PAINT_SEAM, &paint));
+        expect_ok(q7, "seam query after second undo");
+        CHECK_EQ(paint.count, 0u);
+        orca_paint_mesh_dispose(&paint);
+    }
+
     (void)instance;
     orca_plater_free(plater);
 }
@@ -5820,6 +5912,192 @@ static void test_calibration(const std::string &dir, const std::string &data_dir
     orca_presets_free(presets);
 }
 
+// Desktop "Fix model" and the Mesh Boolean gizmo.
+static void test_repair_and_boolean(const std::string &dir) {
+    orca_plater *plater = nullptr;
+    GUARD(g0, orca_plater_new(&plater));
+    expect_ok(g0, "plater for repair");
+    orca_revision revision = 0;
+
+    // --- an open box: errors reported, repair closes it, undo reopens it ----
+    const float lo[3] = {0, 0, 0}, hi[3] = {20, 20, 20};
+    const std::string open_box = write_box_stl(dir, "open_box.stl", lo, hi, true);
+    orca_object_id object_id = 0;
+    GUARD(g1, import_one(plater, open_box.c_str(), 100, 100, &object_id, &revision));
+    expect_ok(g1, "import open box");
+    orca_mesh_errors errors{};
+    GUARD(g2, orca_plater_mesh_errors(plater, object_id, 0, &errors));
+    expect_ok(g2, "mesh errors of open box");
+    CHECK_EQ(errors.manifold, 0);
+    CHECK(errors.open_edges > 0);
+    CHECK_EQ(errors.facets, 10u);
+    GUARD(e1, orca_plater_mesh_errors(plater, 0x7fffffff, 0, &errors));
+    expect_code(e1, ORCA_STATUS_NOT_FOUND, "mesh errors of bogus object");
+
+    const orca_revision before = revision;
+    orca_mesh_repair_report report{};
+    GUARD(g3, orca_plater_repair(plater, object_id, 0, 0, &report, &revision));
+    expect_ok(g3, "repair open box");
+    CHECK_EQ(report.modified, 1);
+    CHECK_EQ(report.repaired_volumes, 1u);
+    CHECK_EQ(report.failed_volumes, 0u);
+    CHECK(report.filled_holes >= 1u);
+    CHECK(revision > before);
+    orca_mesh_repair_report_dispose(&report);
+    GUARD(g4, orca_plater_mesh_errors(plater, object_id, 0, &errors));
+    expect_ok(g4, "mesh errors after repair");
+    CHECK_EQ(errors.manifold, 1);
+    CHECK_EQ(errors.open_edges, 0);
+    CHECK(errors.facets >= 12u);
+    orca_scene_snapshot snap = take_snapshot(plater);
+    CHECK(snapshot_label(snap.undo_label) == "Repairing model object");
+    const orca_scene_object *obj = find_object(snap, object_id);
+    if (obj) CHECK_NEAR(instance_min_z(*obj, obj->instances[0].matrix), 0.0, 1e-4);
+    orca_scene_snapshot_dispose(&snap);
+
+    // A closed mesh needs nothing: no undo step, same revision.
+    const orca_revision repaired = revision;
+    GUARD(g5, orca_plater_repair(plater, object_id, 0, 0, &report, &revision));
+    expect_ok(g5, "repair a closed box");
+    CHECK_EQ(report.modified, 0);
+    CHECK_EQ(revision, repaired);
+    orca_mesh_repair_report_dispose(&report);
+
+    GUARD(g6, orca_plater_undo(plater, &revision));
+    expect_ok(g6, "undo repair");
+    GUARD(g7, orca_plater_mesh_errors(plater, object_id, 0, &errors));
+    expect_ok(g7, "mesh errors after undo");
+    CHECK_EQ(errors.manifold, 0);
+    GUARD(g8, orca_plater_object_delete(plater, object_id, &revision));
+    expect_ok(g8, "delete open box");
+
+    // --- booleans: a 20 mm cube and a 20x10x10 bar through its +x face ----
+    // (no coplanar faces, so each result is exact)
+    const std::string cube = write_box_stl(dir, "bool_cube.stl", lo, hi);
+    // add_file keeps the bar's place relative to the cube in file coordinates;
+    // this one pokes out of the cube's +x face, through no face plane.
+    const float bar_lo[3] = {25, 15, 15}, bar_hi[3] = {45, 25, 25};
+    const std::string bar = write_box_stl(dir, "bool_bar.stl", bar_lo, bar_hi);
+    // Expected result bounds from the operands' bounds (both are boxes):
+    // 0 their union, 1 the cube's, 2 their overlap.
+    struct Case { int32_t op; uint8_t delete_tool; int volumes; int bounds; const char *suffix; };
+    const Case cases[] = {
+        {ORCA_BOOLEAN_UNION, 0, 1, 0, " - union"},
+        {ORCA_BOOLEAN_DIFFERENCE, 0, 2, 1, " - difference"},
+        {ORCA_BOOLEAN_INTERSECTION, 1, 1, 2, " - intersection"},
+    };
+    for (const Case &c : cases) {
+        GUARD(i1, import_one(plater, cube.c_str(), 100, 100, &object_id, &revision));
+        expect_ok(i1, "import boolean cube");
+        orca_volume_id tool_id = 0;
+        GUARD(i2, orca_plater_volume_add_file(plater, object_id, ORCA_VOLUME_PART,
+                                              bar.c_str(), &tool_id, &revision));
+        expect_ok(i2, "add boolean bar");
+        snap = take_snapshot(plater);
+        obj = find_object(snap, object_id);
+        const orca_volume_id source_id = obj ? obj->volumes[0].id : 0;
+        float expect_lo[3] = {0, 0, 0}, expect_hi[3] = {0, 0, 0};
+        double before_matrix[16] = {};
+        if (obj) memcpy(before_matrix, obj->instances[0].matrix, sizeof before_matrix);
+        if (obj && obj->volume_count == 2) {
+            const orca_scene_volume &a = obj->volumes[0], &b = obj->volumes[1];
+            for (int k = 0; k < 3; ++k) {
+                // The bar overlaps the cube on every axis without sharing a face plane.
+                CHECK(b.bbox_min[k] < a.bbox_max[k] && a.bbox_min[k] < b.bbox_max[k]);
+                switch (c.bounds) {
+                case 0: expect_lo[k] = std::min(a.bbox_min[k], b.bbox_min[k]);
+                        expect_hi[k] = std::max(a.bbox_max[k], b.bbox_max[k]); break;
+                case 1: expect_lo[k] = a.bbox_min[k]; expect_hi[k] = a.bbox_max[k]; break;
+                default: expect_lo[k] = std::max(a.bbox_min[k], b.bbox_min[k]);
+                         expect_hi[k] = std::min(a.bbox_max[k], b.bbox_max[k]); break;
+                }
+            }
+        }
+        orca_scene_snapshot_dispose(&snap);
+
+        orca_volume_id result_id = 0;
+        GUARD(b1, orca_plater_mesh_boolean(plater, object_id, source_id, tool_id, c.op,
+                                           c.delete_tool, 0, &result_id, &revision));
+        expect_ok(b1, "mesh boolean");
+        CHECK(result_id != 0);
+        snap = take_snapshot(plater);
+        obj = find_object(snap, object_id);
+        CHECK(obj != nullptr);
+        if (obj) {
+            CHECK_EQ(obj->volume_count, c.volumes);
+            CHECK(snapshot_label(snap.undo_label) == "Mesh Boolean");
+            for (int i = 0; i < obj->volume_count; ++i) {
+                const orca_scene_volume &v = obj->volumes[i];
+                if (v.id != result_id) continue;
+                const std::string name = snapshot_label(v.name);
+                CHECK(name.size() > strlen(c.suffix) &&
+                      name.compare(name.size() - strlen(c.suffix), std::string::npos, c.suffix) == 0);
+                // The result stays where the operands were on the bed. A last
+                // remaining volume has its transform folded into the instance
+                // (ModelObject::delete_volume), so compare world centres.
+                const double *m = obj->instances[0].matrix;
+                for (int k = 0; k < 3; ++k) {
+                    CHECK_NEAR(v.bbox_max[k] - v.bbox_min[k], expect_hi[k] - expect_lo[k], 1e-3);
+                    const double c_after = 0.5 * (v.bbox_min[0] + v.bbox_max[0]) * m[k] +
+                                           0.5 * (v.bbox_min[1] + v.bbox_max[1]) * m[4 + k] +
+                                           0.5 * (v.bbox_min[2] + v.bbox_max[2]) * m[8 + k] + m[12 + k];
+                    const double c_before = 0.5 * (expect_lo[0] + expect_hi[0]) * before_matrix[k] +
+                                            0.5 * (expect_lo[1] + expect_hi[1]) * before_matrix[4 + k] +
+                                            0.5 * (expect_lo[2] + expect_hi[2]) * before_matrix[8 + k] +
+                                            before_matrix[12 + k];
+                    CHECK_NEAR(c_after, c_before, 1e-2); // MCUT rounds in float
+                }
+            }
+        }
+        orca_scene_snapshot_dispose(&snap);
+        GUARD(b3, orca_plater_mesh_errors(plater, object_id, 0, &errors));
+        expect_ok(b3, "mesh errors of the boolean result");
+        CHECK_EQ(errors.manifold, 1);
+        GUARD(b4, orca_plater_undo(plater, &revision));
+        expect_ok(b4, "undo boolean");
+        snap = take_snapshot(plater);
+        obj = find_object(snap, object_id);
+        if (obj) CHECK_EQ(obj->volume_count, 2);
+        orca_scene_snapshot_dispose(&snap);
+        GUARD(b5, orca_plater_clear(plater, &revision));
+        expect_ok(b5, "clear after boolean");
+    }
+
+    // Validation: same volume twice, unknown operation, disjoint intersection.
+    GUARD(v1, import_one(plater, cube.c_str(), 100, 100, &object_id, &revision));
+    expect_ok(v1, "import cube for validation");
+    const float far_lo[3] = {50, 50, 50}, far_hi[3] = {60, 60, 60};
+    const std::string far_box = write_box_stl(dir, "bool_far.stl", far_lo, far_hi);
+    orca_volume_id far_id = 0;
+    GUARD(v2, orca_plater_volume_add_file(plater, object_id, ORCA_VOLUME_PART,
+                                          far_box.c_str(), &far_id, &revision));
+    expect_ok(v2, "add far box");
+    snap = take_snapshot(plater);
+    obj = find_object(snap, object_id);
+    const orca_volume_id first_id = obj ? obj->volumes[0].id : 0;
+    orca_scene_snapshot_dispose(&snap);
+    orca_volume_id result_id = 0;
+    GUARD(e2, orca_plater_mesh_boolean(plater, object_id, first_id, first_id,
+                                       ORCA_BOOLEAN_UNION, 0, 0, &result_id, &revision));
+    expect_code(e2, ORCA_STATUS_INVALID_ARGUMENT, "boolean of a volume with itself");
+    GUARD(e3, orca_plater_mesh_boolean(plater, object_id, first_id, far_id, 7, 0, 0,
+                                       &result_id, &revision));
+    expect_code(e3, ORCA_STATUS_INVALID_ARGUMENT, "unknown boolean operation");
+    snap = take_snapshot(plater);
+    const orca_revision unchanged = snap.revision;
+    orca_scene_snapshot_dispose(&snap);
+    GUARD(e4, orca_plater_mesh_boolean(plater, object_id, first_id, far_id,
+                                       ORCA_BOOLEAN_INTERSECTION, 0, 0, &result_id, &revision));
+    expect_code(e4, ORCA_STATUS_INVALID_MODEL, "intersection of disjoint volumes");
+    snap = take_snapshot(plater);
+    CHECK_EQ(snap.revision, unchanged);
+    obj = find_object(snap, object_id);
+    if (obj) CHECK_EQ(obj->volume_count, 2);
+    orca_scene_snapshot_dispose(&snap);
+
+    orca_plater_free(plater);
+}
+
 int main() {
     const std::string dir = test_dir();
     // One data directory per PROCESS (the Bridge contract is initialize-once).
@@ -5876,6 +6154,7 @@ int main() {
     test_arrange_orient(dir, data_dir);
     test_gcode_toolpath(dir);
     test_calibration(dir, data_dir);
+    test_repair_and_boolean(dir);
 
     fprintf(stderr, "\n═══ contract tests: %d checks, %d failures ═══\n",
             checks, failures);

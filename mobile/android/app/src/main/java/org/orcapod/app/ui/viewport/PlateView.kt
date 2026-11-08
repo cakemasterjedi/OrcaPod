@@ -27,6 +27,8 @@ interface ViewportListener {
      * world hit point and the viewing direction. [first] marks a new stroke.
      */
     fun onPaint(objectId: Long, volumeId: Long, hit: FloatArray, view: FloatArray, first: Boolean) {}
+    /** The finger painting since the last [onPaint] with first set has lifted. */
+    fun onPaintEnd() {}
     /** A tap on [PlateView.measureObject]: the merged-mesh triangle and the object-space point under the finger. */
     fun onMeasure(selection: Selection, triangle: Int, local: FloatArray) {}
 }
@@ -127,6 +129,7 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (mode == Mode.DRAG_OBJECT) cancelDrag()
+                if (mode == Mode.PAINT) listener.onPaintEnd()
                 lastPaint = null
                 mode = Mode.MULTI
                 lastFocusX = focusX(e); lastFocusY = focusY(e)
@@ -173,12 +176,13 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
                 }
             }
             MotionEvent.ACTION_UP -> {
-                if (mode == Mode.PAINT) { mode = Mode.NONE; lastPaint = null; return true }
+                if (mode == Mode.PAINT) { mode = Mode.NONE; lastPaint = null; listener.onPaintEnd(); return true }
                 if (!moved) tap(e.x, e.y)
                 else if (mode == Mode.DRAG_OBJECT) finishDrag()
                 mode = Mode.NONE
             }
             MotionEvent.ACTION_CANCEL -> {
+                if (mode == Mode.PAINT) { lastPaint = null; listener.onPaintEnd() }
                 cancelDrag()
                 mode = Mode.NONE
             }

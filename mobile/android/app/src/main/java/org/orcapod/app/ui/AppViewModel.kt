@@ -2,6 +2,8 @@ package org.orcapod.app.ui
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.system.Os
@@ -12,6 +14,11 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -19,6 +26,9 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.orcapod.app.data.ProfileStore
+import org.orcapod.app.data.ProjectStore
+import org.orcapod.app.data.RecentProject
+import org.orcapod.app.data.Recovery
 import org.orcapod.app.engine.BedTypeState
 import org.orcapod.app.engine.PaintLayer
 import org.orcapod.app.engine.CustomGcode
@@ -37,6 +47,8 @@ import org.orcapod.app.engine.Scene
 import org.orcapod.app.engine.SceneObject
 import org.orcapod.app.engine.Shape
 import org.orcapod.app.engine.SliceReport
+import org.orcapod.app.engine.StepFile
+import org.orcapod.app.engine.StepImportOptions
 import org.orcapod.app.engine.SliceTarget
 import org.orcapod.app.engine.Toolpath
 import org.orcapod.app.engine.VolumeType
@@ -59,6 +71,29 @@ sealed interface Phase {
     data class Failed(val message: String) : Phase
 }
 
+/** The STEP import dialog's question, open while [AppViewModel.stepImport] holds it. */
+class StepImportRequest(
+    val fileName: String,
+    val step: StepFile,
+    val initial: StepImportOptions,
+    internal val reply: CompletableDeferred<StepImportAnswer?>,
+)
+
+/** The dialog's answer: the options, and whether to keep them as defaults and stop asking. */
+data class StepImportAnswer(val options: StepImportOptions, val remember: Boolean, val dontAsk: Boolean)
+
+/** Desktop "Unsupported characters in names", open while [AppViewModel.nameCleanup] holds it. */
+class NameCleanupRequest(
+    val fileName: String,
+    val step: StepFile,
+    val initialRemove: Boolean,
+    val initialReplacement: String,
+    internal val reply: CompletableDeferred<NameCleanupAnswer?>,
+)
+
+/** Remove the characters, or replace each with [replacement]; and whether to keep the rule. */
+data class NameCleanupAnswer(val remove: Boolean, val replacement: String, val remember: Boolean, val dontAsk: Boolean)
+
 sealed interface SliceState {
     data object Idle : SliceState
     data class Running(val percent: Int, val message: String) : SliceState
@@ -77,6 +112,7 @@ data class LibraryRequest(val url: String? = null)
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = ProfileStore(app)
+    private val projects = ProjectStore(app)
     private val prefs = app.getSharedPreferences("session", Context.MODE_PRIVATE)
     private var engine: Engine? = null
     private var sliceJob: Job? = null
@@ -88,9 +124,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var selection by mutableStateOf<Selection?>(null)
     var busy by mutableStateOf<String?>(null)
         private set
+    /** Percent done of the busy work, when it reports one. */
+    var busyProgress by mutableStateOf<Int?>(null)
+        private set
+    /** Stops the busy work, when it can be stopped. */
+    var busyCancel by mutableStateOf<(() -> Unit)?>(null)
+        private set
     var slice by mutableStateOf<SliceState>(SliceState.Idle)
         private set
     var showPreview by mutableStateOf(false)
+    /** The open STEP import dialog, if any. */
+    var stepImport by mutableStateOf<StepImportRequest?>(null)
+        private set
+    /** The open name-cleanup dialog, if any. */
+    var nameCleanup by mutableStateOf<NameCleanupRequest?>(null)
+        private set
     /** Layers and moves of the preview shown (desktop's vertical and horizontal sliders). */
     var previewRange by mutableStateOf(PreviewRange())
     var previewMode by mutableStateOf(ViewMode.LINE_TYPE)
@@ -152,6 +200,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The installed brand whose profiles are loaded; the others load when picked. */
     var activeVendor by mutableStateOf<String?>(null)
+    // --- the open project (desktop's project title, dirty mark and recent list) ---
+
+    /** Name of the open project, or null for a plate never saved or opened. */
+    var projectName by mutableStateOf<String?>(null)
+        private set
+    /** Where the open project lives, when "Save" may write there again. */
+    var projectUri by mutableStateOf<Uri?>(null)
+        private set
+    private var savedRevision by mutableStateOf(0L)
+    private var savedSettings by mutableStateOf<Any?>(null)
+    /** The plate or settings changed since the project was last opened or saved. */
+    val projectDirty: Boolean
+        get() = scene.snapshot.objects.isNotEmpty() &&
+            (scene.snapshot.revision != savedRevision || settingsFingerprint() != savedSettings)
+    var recentProjects by mutableStateOf<List<RecentProject>>(emptyList())
+        private set
+    /** A project 3MF the user imported or opened from another app: open it, or import its geometry? */
+    var projectChoice by mutableStateOf<Uri?>(null)
+    /** An unsaved plate left by the last session, offered back once at startup. */
+    var recovery by mutableStateOf<Recovery?>(null)
         private set
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
@@ -261,6 +329,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         restoreSelection(e)
         refreshScene()
+        markSaved()
+        recentProjects = projects.recent()
+        recovery = projects.recovery()
         phase = Phase.Ready
     }
 
@@ -389,32 +460,67 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun openLibrary(url: String? = null) { library = LibraryRequest(url) }
     fun closeLibrary() { library = null }
 
-    /** Copies picked files into the cache (the engine reads by extension) and imports them. */
-    fun importUris(uris: List<Uri>, asProject: Boolean = false) = engineAction("Importing…") { e ->
-        importFiles(e, uris.map { copyToCache(it) }, asProject)
+    /**
+     * Copies picked files into the cache (the engine reads by extension) and imports them.
+     * A single 3MF that carries project settings is not imported straight away: like
+     * desktop, the user picks between opening it as a project and taking its geometry.
+     */
+    fun importUris(uris: List<Uri>, askProject: Boolean = true) = engineAction("Importing…") { e ->
+        val files = uris.map { copyToCache(it) }
+        val single = files.singleOrNull()
+        if (askProject && single != null && single.extension.lowercase() == "3mf" &&
+            withContext(Dispatchers.IO) { ProjectStore.isProject(single) }
+        ) {
+            projectChoice = uris.single()
+            return@engineAction
+        }
+        importFiles(e, files)
     }
 
     /** Imports model files already on disk, such as downloads from the model library. */
-    fun importFiles(files: List<File>) = engineAction("Importing…") { e -> importFiles(e, files, asProject = false) }
+    fun importFiles(files: List<File>) = engineAction("Importing…") { e -> importFiles(e, files) }
 
-    private suspend fun importFiles(e: Engine, files: List<File>, asProject: Boolean) {
+    private suspend fun importFiles(e: Engine, files: List<File>) {
         var imported = 0
+        // Desktop asks once per import for all its STEP files.
+        var stepOptions: StepImportOptions? = null
+        // and once for the names of all of them ("" removes the characters)
+        var nameRule: String? = null
         for (file in files) {
             val ext = file.extension.lowercase()
-            if (ext == "step" || ext == "stp") {
-                _messages.tryEmit("STEP files are not supported yet; export the model as STL or 3MF")
-                continue
-            }
             if (ext !in IMPORTABLE) {
-                _messages.tryEmit("${file.name}: not a model file (STL, 3MF, OBJ or AMF)")
+                _messages.tryEmit("${file.name}: not a model file (STL, 3MF, OBJ, AMF or STEP)")
                 continue
             }
-            if (asProject && ext == "3mf") {
-                e.openProject(file.path)
-                refreshPresets()
-            } else {
-                imported += e.import(file.path)
+            if (ext in STEP_EXTENSIONS) {
+                val step = e.newStep(file.path)
+                try {
+                    stepStage(step, "Reading ${file.name}") { e.loadStep(step) }
+                    val options = stepOptions ?: askStepOptions(file.name, step) ?: break
+                    stepOptions = options
+                    stepStage(step, "Meshing ${file.name}") { e.meshStep(step, options) }
+                    val replacement = nameRule ?: when (val rule = cleanNames(e, file.name, step)) {
+                        NameRule.Cancelled -> break
+                        NameRule.Unneeded -> null
+                        is NameRule.Chosen -> rule.replacement.also { nameRule = it }
+                        // desktop refuses the file and goes on with the others
+                        NameRule.InvalidUnicode -> {
+                            _messages.tryEmit("${file.name}: a name in the file is not valid Unicode. The geometry was not imported.")
+                            continue
+                        }
+                    }
+                    imported += e.importStep(step, replacement)
+                } catch (ex: OrcaException) {
+                    if (ex.code != OrcaException.CANCELLED) throw ex
+                    _messages.tryEmit("Import of ${file.name} cancelled")
+                    break
+                } finally {
+                    e.closeStep(step)
+                    busy = "Importing…"
+                }
+                continue
             }
+            imported += e.import(file.path)
         }
         if (files.size > 1 && imported > 1) {
             val unfit = e.arrange()
@@ -424,13 +530,375 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         invalidateSlice()
     }
 
-    /** Saves the whole project (model, plates, settings) as an OrcaSlicer 3MF. */
-    fun saveProject(uri: Uri) = engineAction("Saving…") { e ->
-        val tmp = File(getApplication<Application>().cacheDir, "project.3mf")
-        e.saveProject(tmp.path)
-        copyFromFile(tmp, uri)
-        _messages.tryEmit("Project saved")
+    // --- STEP import dialog ---
+
+    /** The saved STEP choices (desktop's linear_deflection, angle_deflection, is_split_compound, ...). */
+    private fun savedStepOptions() = StepImportOptions(
+        linearDeflection = prefs.getFloat(KEY_STEP_LINEAR, StepImportOptions.LINEAR_DEFAULT.toFloat()).toDouble()
+            .takeIf { it in StepImportOptions.LINEAR_MIN..StepImportOptions.LINEAR_MAX } ?: StepImportOptions.LINEAR_DEFAULT,
+        angleDeflection = prefs.getFloat(KEY_STEP_ANGLE, StepImportOptions.ANGLE_DEFAULT.toFloat()).toDouble()
+            .takeIf { it in StepImportOptions.ANGLE_MIN..StepImportOptions.ANGLE_MAX } ?: StepImportOptions.ANGLE_DEFAULT,
+        splitCompound = prefs.getBoolean(KEY_STEP_SPLIT, true),
+        keepNames = prefs.getBoolean(KEY_STEP_KEEP_NAMES, true),
+        asAssembly = prefs.getBoolean(KEY_STEP_ASSEMBLY, true),
+        sortNames = prefs.getBoolean(KEY_STEP_SORT_NAMES, false),
+    )
+
+    /** Runs a slow STEP stage with its progress and a Cancel button in the busy row. */
+    private suspend fun <T> stepStage(step: StepFile, label: String, block: suspend () -> T): T = coroutineScope {
+        busy = "$label…"
+        busyProgress = 0
+        busyCancel = { step.cancel() }
+        val poll = launch {
+            while (true) {
+                busyProgress = step.progress()
+                delay(200)
+            }
+        }
+        try {
+            block()
+        } finally {
+            poll.cancel()
+            busyProgress = null
+            busyCancel = null
+        }
     }
+
+    /** Desktop StepMeshDialog: null when the user cancelled the import. */
+    private suspend fun askStepOptions(fileName: String, step: StepFile): StepImportOptions? {
+        val saved = savedStepOptions()
+        if (!askStepOptions) return saved
+        val reply = CompletableDeferred<StepImportAnswer?>()
+        val label = busy
+        busy = null
+        stepImport = StepImportRequest(fileName, step, saved, reply)
+        val answer = try {
+            reply.await()
+        } finally {
+            stepImport = null
+            busy = label
+            // the mesh must not start while the dialog's count runs, nor be stopped by it
+            countJob?.let {
+                stopTriangleCount(step, it)
+                it.join()
+            }
+            countJob = null
+        }
+        if (answer == null) return null
+        if (answer.remember || answer.dontAsk) {
+            val o = answer.options
+            val edit = prefs.edit()
+                .putFloat(KEY_STEP_LINEAR, o.linearDeflection.toFloat())
+                .putFloat(KEY_STEP_ANGLE, o.angleDeflection.toFloat())
+                .putBoolean(KEY_STEP_SPLIT, o.splitCompound)
+                .putBoolean(KEY_STEP_KEEP_NAMES, o.keepNames)
+                .putBoolean(KEY_STEP_ASSEMBLY, o.asAssembly)
+            // a disabled sorting choice keeps the remembered one, as on desktop
+            if (o.keepNames) edit.putBoolean(KEY_STEP_SORT_NAMES, o.sortNames)
+            edit.apply()
+        }
+        if (answer.dontAsk) askStepOptions = false
+        return answer.options
+    }
+
+    /** Answers the open STEP dialog; null cancels the import. */
+    fun answerStepImport(answer: StepImportAnswer?) {
+        stepImport?.reply?.complete(answer)
+    }
+
+    private var countJob: Deferred<Long?>? = null
+
+    /**
+     * Counts the triangles the import would produce, for the dialog. Runs
+     * outside the caller's scope so the caller can stop waiting at once and
+     * stop the count with [stopTriangleCount]. Null when cancelled or failed.
+     */
+    fun stepTriangleCountAsync(step: StepFile, linear: Double, angle: Double): Deferred<Long?> = viewModelScope.async {
+        try {
+            engine?.stepTriangleCount(step, linear, angle)
+        } catch (ex: OrcaException) {
+            null
+        }
+    }.also { countJob = it }
+
+    /** Stops a count from [stepTriangleCountAsync] that has not finished; a finished one is left alone. */
+    fun stopTriangleCount(step: StepFile, count: Deferred<Long?>) {
+        if (count.isCompleted) return
+        count.cancel()
+        step.cancel()
+    }
+
+    private sealed interface NameRule {
+        data object Unneeded : NameRule
+        data object Cancelled : NameRule
+        data object InvalidUnicode : NameRule
+        /** "" removes the characters. */
+        data class Chosen(val replacement: String) : NameRule
+    }
+
+    /** Desktop prepare_geometry_import_names: picks how unsupported characters in names change. */
+    private suspend fun cleanNames(e: Engine, fileName: String, step: StepFile): NameRule {
+        var remove = prefs.getBoolean(KEY_NAMES_REMOVE, false)
+        var replacement = prefs.getString(KEY_NAMES_REPLACEMENT, null) ?: NAME_REPLACEMENT_DEFAULT
+        var ask = askNameCleanup
+        val changes = try {
+            e.stepNameChanges(step, if (remove) "" else replacement)
+        } catch (ex: OrcaException) {
+            when (ex.code) {
+                OrcaException.INVALID_MODEL -> return NameRule.InvalidUnicode
+                // a damaged saved replacement must not silently create more invalid names
+                OrcaException.INVALID_ARGUMENT -> {
+                    replacement = NAME_REPLACEMENT_DEFAULT
+                    ask = true
+                    e.stepNameChanges(step, replacement)
+                }
+                else -> throw ex
+            }
+        }
+        if (changes.isEmpty()) return NameRule.Unneeded
+        if (!ask) return NameRule.Chosen(if (remove) "" else replacement)
+        val reply = CompletableDeferred<NameCleanupAnswer?>()
+        val label = busy
+        busy = null
+        nameCleanup = NameCleanupRequest(fileName, step, remove, replacement, reply)
+        val answer = try {
+            reply.await()
+        } finally {
+            nameCleanup = null
+            busy = label
+        } ?: return NameRule.Cancelled
+        remove = answer.remove
+        replacement = answer.replacement
+        if (answer.remember || answer.dontAsk)
+            prefs.edit().putBoolean(KEY_NAMES_REMOVE, remove).putString(KEY_NAMES_REPLACEMENT, replacement).apply()
+        if (answer.dontAsk) askNameCleanup = false
+        return NameRule.Chosen(if (remove) "" else replacement)
+    }
+
+    /** The name changes [replacement] makes, for the dialog's preview; null when it is not usable. */
+    suspend fun previewNameChanges(step: StepFile, replacement: String): List<Pair<String, String>>? = try {
+        engine?.stepNameChanges(step, replacement)
+    } catch (ex: OrcaException) {
+        null
+    }
+
+    /** Answers the open name dialog; null cancels the import. */
+    fun answerNameCleanup(answer: NameCleanupAnswer?) {
+        nameCleanup?.reply?.complete(answer)
+    }
+
+    /** Desktop Preferences "Show the dialog for unsupported characters in names". */
+    var askNameCleanup: Boolean
+        get() = askNameCleanupState
+        set(ask) {
+            askNameCleanupState = ask
+            prefs.edit().putBoolean(KEY_NAMES_SHOW_DIALOG, ask).apply()
+        }
+    private var askNameCleanupState by mutableStateOf(prefs.getBoolean(KEY_NAMES_SHOW_DIALOG, true))
+
+    /** Desktop Preferences "Show the STEP mesh parameter setting dialog". */
+    var askStepOptions: Boolean
+        get() = askStepOptionsState
+        set(ask) {
+            askStepOptionsState = ask
+            prefs.edit().putBoolean(KEY_STEP_SHOW_DIALOG, ask).apply()
+        }
+    private var askStepOptionsState by mutableStateOf(prefs.getBoolean(KEY_STEP_SHOW_DIALOG, true))
+
+    // --- project files ---
+
+    /** Desktop "Open project": the 3MF's objects, plates and settings replace the current plate. */
+    fun openProject(uri: Uri) = engineAction("Opening…") { e ->
+        val file = copyToCache(uri)
+        if (file.extension.lowercase() != "3mf") {
+            _messages.tryEmit("${file.name}: a project is a 3MF file")
+            return@engineAction
+        }
+        openProjectFile(e, file, uri)
+        refreshScene()
+        invalidateSlice()
+        markSaved()
+    }
+
+    /** Re-opens a project from the recent list; drops it when the file is gone or no longer readable. */
+    fun openRecent(project: RecentProject) = engineAction("Opening…") { e ->
+        val uri = Uri.parse(project.uri)
+        val file = try {
+            copyToCache(uri)
+        } catch (ex: Exception) {
+            if (ex is CancellationException) throw ex
+            projects.forget(project.uri)
+            recentProjects = projects.recent()
+            _messages.tryEmit("${project.name} can no longer be opened; removed it from the list")
+            return@engineAction
+        }
+        openProjectFile(e, file, uri)
+        refreshScene()
+        invalidateSlice()
+        markSaved()
+    }
+
+    fun recentThumbnail(project: RecentProject): Bitmap? = projects.thumbnail(project)
+
+    fun forgetRecent(project: RecentProject) {
+        runCatching {
+            getApplication<Application>().contentResolver.releasePersistableUriPermission(
+                Uri.parse(project.uri),
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+        }
+        projects.forget(project.uri)
+        recentProjects = projects.recent()
+    }
+
+    private suspend fun openProjectFile(e: Engine, file: File, uri: Uri) {
+        e.openProject(file.path)
+        refreshPresets()
+        selection = null
+        selectedVolume = null
+        val name = ProjectStore.projectName(file.name)
+        projectName = name
+        projectUri = uri.takeIf { keepAccess(it) }
+        val thumbnail = withContext(Dispatchers.IO) { ProjectStore.thumbnailOf(file) }
+        if (projectUri != null) remember(uri, name, thumbnail)
+        projects.clearRecovery()
+        recovery = null
+    }
+
+    /** Starts an empty, unnamed project (desktop "New project"); keeps the selected presets. */
+    fun newProject() = engineAction { e ->
+        e.clear()
+        selection = null
+        selectedVolume = null
+        projectName = null
+        projectUri = null
+        refreshScene()
+        invalidateSlice()
+        markSaved()
+        projects.clearRecovery()
+        recovery = null
+    }
+
+    /**
+     * Desktop "Save project": the whole plate (objects, parts, transforms, per-object and
+     * per-plate settings, painting, plates) and the selected settings as an OrcaSlicer 3MF.
+     * [uri] null writes back to the open project ("Save"); otherwise it is "Save as".
+     */
+    fun saveProject(uri: Uri? = null, then: (() -> Unit)? = null) = engineAction("Saving…") { e ->
+        val target = uri ?: projectUri ?: return@engineAction
+        val name = if (uri == null) projectName ?: "Project" else ProjectStore.projectName(displayName(target) ?: "Project")
+        val thumbnail = renderThumbnail()
+        val tmp = File(getApplication<Application>().cacheDir, "project.3mf")
+        e.saveProject(tmp.path, thumbnail?.size ?: 0, thumbnail?.rgba())
+        copyFromFile(tmp, target)
+        projectName = name
+        if (keepAccess(target)) {
+            projectUri = target
+            remember(target, name, thumbnail?.bitmap())
+        }
+        markSaved()
+        projects.clearRecovery()
+        _messages.tryEmit("Saved $name")
+        then?.invoke()
+    }
+
+    /**
+     * Keeps a copy of an unsaved plate when the app goes to the background, so a
+     * process the system kills can be restored on the next start.
+     */
+    fun saveRecovery() {
+        val e = engine ?: return
+        if (phase != Phase.Ready || slice is SliceState.Running) return
+        if (!projectDirty) {
+            projects.clearRecovery()
+            recoveryState = null
+            return
+        }
+        // Opening a file picker stops the activity too: skip a copy that would not change.
+        val state = listOf(scene.snapshot.revision, settingsFingerprint(), projectName, projectUri)
+        if (state == recoveryState && projects.recoveryFile.isFile) return
+        viewModelScope.launch {
+            try {
+                val thumbnail = renderThumbnail()
+                val tmp = File(projects.recoveryFile.path + ".tmp.3mf")
+                e.saveProject(tmp.path, thumbnail?.size ?: 0, thumbnail?.rgba())
+                if (!tmp.renameTo(projects.recoveryFile)) throw java.io.IOException("Cannot keep the recovery copy")
+                projects.recoveryWritten(projectName, projectUri?.toString())
+                recoveryState = state
+            } catch (ex: Exception) {
+                if (ex is CancellationException) throw ex
+                Log.w(TAG, "recovery save failed", ex)
+            }
+        }
+    }
+
+    /** Opens the plate the last session left unsaved; it stays marked as unsaved. */
+    fun restoreRecovery() = engineAction("Restoring…") { e ->
+        val r = recovery ?: return@engineAction
+        recovery = null
+        e.openProject(r.file.path)
+        refreshPresets()
+        refreshScene()
+        invalidateSlice()
+        projectName = r.name
+        projectUri = r.uri?.let(Uri::parse)?.takeIf { stillGranted(it) }
+        savedRevision = -1 // unsaved until the user saves it
+        savedSettings = settingsFingerprint()
+    }
+
+    fun discardRecovery() {
+        recovery = null
+        projects.clearRecovery()
+    }
+
+    private suspend fun renderThumbnail(): PlateThumbnail? = withContext(Dispatchers.Default) {
+        try {
+            PlateThumbnail.render(scene, filamentSlots.map { it.colour })
+        } catch (ex: OutOfMemoryError) {
+            null
+        }
+    }
+
+    private suspend fun remember(uri: Uri, name: String, thumbnail: Bitmap?) {
+        withContext(Dispatchers.IO) { projects.remember(RecentProject(uri.toString(), name, System.currentTimeMillis()), thumbnail) }
+        recentProjects = projects.recent()
+    }
+
+    private var recoveryState: Any? = null
+
+    private fun markSaved() {
+        savedRevision = scene.snapshot.revision
+        savedSettings = settingsFingerprint()
+    }
+
+    /** Everything about the selected settings that a saved project carries. */
+    private fun settingsFingerprint(): Any = listOf(printer, filament, process, presetValues, filamentSlots)
+
+    /**
+     * Keeps read (and, when granted, write) access to a picked document across restarts.
+     * True when the app can write to it again later, so "Save" may overwrite it.
+     */
+    private fun keepAccess(uri: Uri): Boolean {
+        if (uri.scheme != "content") return false
+        val resolver = getApplication<Application>().contentResolver
+        val rw = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        return try {
+            resolver.takePersistableUriPermission(uri, rw)
+            true
+        } catch (_: SecurityException) {
+            runCatching { resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            false
+        }
+    }
+
+    private fun stillGranted(uri: Uri): Boolean =
+        getApplication<Application>().contentResolver.persistedUriPermissions.any { it.uri == uri && it.isWritePermission }
+
+    private fun displayName(uri: Uri): String? = runCatching {
+        getApplication<Application>().contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        }
+    }.getOrNull()
 
     /** Geometry-only 3MF that any slicer reads. */
     fun exportGeneric3mf(uri: Uri) = engineAction("Exporting…") { e ->
@@ -1171,7 +1639,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private const val TAG = "OrcaPod"
         /** Most dabs [fillGaps] adds between two finger samples. */
         private const val MAX_GAP_DABS = 64
-        val IMPORTABLE = setOf("stl", "3mf", "obj", "amf")
+        val STEP_EXTENSIONS = setOf("step", "stp")
+        val IMPORTABLE = setOf("stl", "3mf", "obj", "amf") + STEP_EXTENSIONS
+        private const val KEY_STEP_LINEAR = "step_linear_deflection"
+        private const val KEY_STEP_ANGLE = "step_angle_deflection"
+        private const val KEY_STEP_SPLIT = "step_split_compound"
+        private const val KEY_STEP_KEEP_NAMES = "step_keep_names"
+        private const val KEY_STEP_ASSEMBLY = "step_load_as_assembly"
+        private const val KEY_STEP_SHOW_DIALOG = "step_show_dialog"
+        private const val KEY_STEP_SORT_NAMES = "step_sort_names"
+        private const val KEY_NAMES_REMOVE = "import_names_cleanup_remove"
+        private const val KEY_NAMES_REPLACEMENT = "import_names_cleanup_replacement"
+        private const val KEY_NAMES_SHOW_DIALOG = "import_names_cleanup_show_dialog"
+        const val NAME_REPLACEMENT_DEFAULT = "_"
 
         /** Colours for new filament slots, like desktop's default palette. */
         val NEW_SLOT_COLOURS = listOf("#00AE42", "#F4EE2A", "#2850E0", "#EC008C", "#FF6A13", "#FFFFFF", "#161616", "#A3D8E1")

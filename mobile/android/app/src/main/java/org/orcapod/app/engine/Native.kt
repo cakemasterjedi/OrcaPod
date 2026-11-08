@@ -55,6 +55,25 @@ internal object Native {
     external fun platerLayFlat(plater: Long, objectId: Long, instanceId: Long, nx: Double, ny: Double, nz: Double)
     external fun platerExport3mf(plater: Long, path: String)
 
+    // --- STEP import ---
+    external fun stepNew(path: String): Long
+    /** Reads the file; returns has-original-names (0/1) and has-multi-body-compound (0/1). */
+    external fun stepLoad(step: Long): LongArray
+    external fun stepFree(step: Long)
+    /** Stops a running [stepLoad], [stepTriangleCount] or [stepMesh]; callable from any thread. */
+    external fun stepCancel(step: Long)
+    /** How far the running load or mesh is, 0..100; callable from any thread. */
+    external fun stepProgress(step: Long): Int
+    external fun stepTriangleCount(step: Long, linear: Double, angle: Double): Long
+    external fun stepMesh(
+        step: Long, linear: Double, angle: Double,
+        splitCompound: Boolean, keepNames: Boolean, asAssembly: Boolean, sortNames: Boolean,
+    )
+    /** JSON array of [original, cleaned] name pairs; a null replacement is "_", "" removes. */
+    external fun stepNameChanges(step: Long, replacement: String?): String
+    /** Returns the first imported object id and the object count. */
+    external fun platerImportStep(plater: Long, step: Long, replacement: String?, cx: Double, cy: Double): LongArray
+
     // --- slicing ---
     external fun jobNew(): Long
     external fun jobCancel(job: Long)
@@ -140,7 +159,7 @@ internal object Native {
     external fun fillBed(plater: Long, presets: Long, objectId: Long): Int
     external fun objectExportStl(plater: Long, objectId: Long, path: String)
     external fun exportStlAll(plater: Long, path: String)
-    external fun projectSave(plater: Long, presets: Long, path: String)
+    external fun projectSave(plater: Long, presets: Long, path: String, thumbnailSize: Int, thumbnail: ByteArray?)
 
     // --- height range modifiers: flat (min z, max z, layer height) triples ---
     external fun heightRanges(plater: Long, objectId: Long): DoubleArray

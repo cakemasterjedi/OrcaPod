@@ -19,8 +19,10 @@ mobile/bridge/build-host.sh          # build only
 mobile/bridge/build-host.sh --test   # build, then run the contract tests and the CLI test
 ```
 
-The first run downloads Boost, CGAL, Eigen, oneTBB and a few smaller sources into
-`mobile/bridge/cache/`. Outputs land in `mobile/bridge/build-host/`. Set
+The first run downloads Boost, CGAL, Eigen, oneTBB, OpenCASCADE and a few smaller
+sources into `mobile/bridge/cache/`, and builds OpenCASCADE's STEP toolkits once
+(about 20 minutes on four cores; `ORCAPOD_STEP=stub` skips it and builds without
+STEP import). Outputs land in `mobile/bridge/build-host/`. Set
 `ORCAPOD_JOBS` to change the number of parallel compile jobs (default 6).
 `ORCAPOD_TBB=serial` builds the engine single-threaded, without oneTBB, and
 `ORCAPOD_HOST_BUILD_DIR` puts the outputs in another directory.
@@ -54,8 +56,9 @@ mobile/bridge/build-android.sh --test   # also run the CLI smoke test under qemu
 Outputs land in `mobile/bridge/build-android/<abi>/`: `liborcapod.so`, the
 engine and C API for the app's `jniLibs/<abi>/`, and a static `orcapod-slice`.
 `ORCAPOD_ANDROID_ABI` picks `arm64-v8a` (default) or `x86_64`, and
-`ORCAPOD_ANDROID_API` the minimum API level (default 26), and
-`ORCAPOD_TBB=serial` builds the engine single-threaded, without oneTBB. GMP and MPFR come
+`ORCAPOD_ANDROID_API` the minimum API level (default 26),
+`ORCAPOD_TBB=serial` builds the engine single-threaded, without oneTBB, and
+`ORCAPOD_STEP=stub` builds it without OpenCASCADE (no STEP import). GMP and MPFR come
 from ftp.gnu.org and are checked against their pinned SHA-256; point `GMP_URL`
 and `MPFR_URL` at a mirror if that host is unreachable. The `--test` run needs
 `qemu-user` on an x86_64 host.

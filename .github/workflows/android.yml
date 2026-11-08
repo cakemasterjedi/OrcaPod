@@ -113,9 +113,18 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.ORCAPOD_KEYSTORE_PASSWORD }}
         run: |
           if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/orcapod.keystore"
-            echo "ORCAPOD_KEYSTORE=$RUNNER_TEMP/orcapod.keystore" >> "$GITHUB_ENV"
-            echo "ORCAPOD_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            # Pasting a secret can add line breaks or spaces; neither belongs
+            # in base64 or in the generated password.
+            password="$(printf '%s' "$KEYSTORE_PASSWORD" | tr -d '[:space:]')"
+            echo "::add-mask::$password"
+            keystore="$RUNNER_TEMP/orcapod.keystore"
+            printf '%s' "$KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > "$keystore"
+            if ! keytool -list -keystore "$keystore" -storepass "$password" -alias orcapod > /dev/null; then
+              echo "::error::The ORCAPOD_KEYSTORE_BASE64 and ORCAPOD_KEYSTORE_PASSWORD secrets do not open a keystore with the key 'orcapod'; paste both again."
+              exit 1
+            fi
+            echo "ORCAPOD_KEYSTORE=$keystore" >> "$GITHUB_ENV"
+            echo "ORCAPOD_KEYSTORE_PASSWORD=$password" >> "$GITHUB_ENV"
             echo "signed=true" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::ORCAPOD_KEYSTORE_BASE64 and ORCAPOD_KEYSTORE_PASSWORD are not set; this APK cannot update an installed release."

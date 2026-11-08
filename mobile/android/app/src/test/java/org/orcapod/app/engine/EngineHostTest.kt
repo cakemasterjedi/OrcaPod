@@ -20,6 +20,7 @@ import org.orcapod.app.ui.viewport.ViewMode
 import org.orcapod.app.ui.viewport.roleTimes
 import org.junit.AfterClass
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -681,6 +682,48 @@ class EngineHostTest {
             listOf("Part<10>" to "Part_10_", "a\"b\u0001" to "Тело (2)"),
             parseNamePairs("""[["Part<10>","Part_10_"],["a\"b\u0001","Тело (2)"]]"""),
         )
+    }
+
+    @Test
+    fun z_repairsAndRunsBooleans() = runBlocking {
+        if (e.scene().snapshot.objects.isNotEmpty()) e.clear()
+        // A cube missing its top face: errors reported, "Fix model" closes it, undo reopens it.
+        val open = File(work, "open.stl").apply {
+            writeText(cubeStl(20.0).replace(Regex(" facet normal 0 0 0\n  outer loop\n   vertex 0.0 0.0 20.0[\\s\\S]*?endfacet\n"), ""))
+        }
+        e.import(open.path)
+        val broken = e.scene().snapshot.objects.single()
+        assertFalse(e.meshErrors(broken.id).manifold)
+        val report = e.repair(broken.id)
+        assertTrue(report.modified)
+        assertEquals(0, report.failedVolumes)
+        assertTrue(e.meshErrors(broken.id).manifold)
+        assertFalse("a closed mesh needs no repair", e.repair(broken.id).modified)
+        e.undo()
+        assertFalse(e.meshErrors(broken.id).manifold)
+        e.clear()
+
+        // Difference of a 20 mm cube and a bar through its side keeps both parts' places.
+        e.import(File(work, "cube.stl").path)
+        val cube = e.scene().snapshot.objects.single()
+        val bar = File(work, "bar.stl").apply {
+            writeText(cubeStl(1.0).replace(Regex("vertex (\\S+) (\\S+) (\\S+)")) { m ->
+                val (x, y, z) = m.destructured
+                "vertex ${10 + 20 * x.toDouble()} ${5 + 10 * y.toDouble()} ${5 + 10 * z.toDouble()}"
+            })
+        }
+        val tool = e.addVolumeFile(cube.id, VolumeType.PART, bar.path)
+        val source = cube.volumes.single().id
+        val result = e.meshBoolean(cube.id, source, tool, BooleanOperation.DIFFERENCE, deleteTool = true)
+        val o = e.scene().snapshot.objects.single()
+        val v = o.volumes.single()
+        assertEquals(result, v.id)
+        assertTrue(v.name.endsWith(" - difference"))
+        assertEquals(20f, v.bboxMax[0] - v.bboxMin[0], 1e-3f)
+        assertTrue(e.meshErrors(o.id).manifold)
+        e.undo()
+        assertEquals(2, e.scene().snapshot.objects.single().volumes.size)
+        e.clear()
     }
 
     private suspend fun layerHeight() =

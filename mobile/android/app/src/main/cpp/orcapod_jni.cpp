@@ -1374,6 +1374,50 @@ JNI_FN(jint, splitParts)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol)
     return jint(count);
 }
 
+// Mesh statistics: open edges, repaired errors, shells, facets, manifold, repaired.
+JNI_FN(jintArray, meshErrors)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol)
+{
+    orca_mesh_errors e{};
+    if (!check(env, orca_plater_mesh_errors(plater_of(pl), orca_object_id(obj), orca_volume_id(vol), &e)))
+        return nullptr;
+    const jint values[] = {e.open_edges, e.repaired_errors, e.number_of_parts, jint(e.facets), e.manifold, e.repaired};
+    jintArray out = env->NewIntArray(6);
+    env->SetIntArrayRegion(out, 0, 6, values);
+    return out;
+}
+
+JNI_FN(jobject, repair)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong vol, jboolean keep_painting)
+{
+    orca_mesh_repair_report r{};
+    orca_revision rev = 0;
+    if (!check(env, orca_plater_repair(plater_of(pl), orca_object_id(obj), orca_volume_id(vol), keep_painting ? 1 : 0,
+                                       &r, &rev)))
+        return nullptr;
+    const jint counts[] = {jint(r.welded_vertices), jint(r.removed_triangles), jint(r.reversed_shells),
+                           jint(r.filled_holes),    jint(r.removed_shells),    jint(r.self_intersections),
+                           jint(r.repaired_volumes), jint(r.failed_volumes),   jint(r.modified),
+                           jint(r.painting_removed)};
+    jintArray jcounts = env->NewIntArray(10);
+    env->SetIntArrayRegion(jcounts, 0, 10, counts);
+    jstring failures = jstr(env, r.failures);
+    orca_mesh_repair_report_dispose(&r);
+    jclass report_cls = env->FindClass(cls("RepairReport").c_str());
+    jmethodID ctor = env->GetMethodID(report_cls, "<init>", "([ILjava/lang/String;)V");
+    return env->NewObject(report_cls, ctor, jcounts, failures);
+}
+
+JNI_FN(jlong, meshBoolean)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong source, jlong tool, jint op,
+                           jboolean delete_tool, jboolean keep_painting)
+{
+    orca_volume_id result = 0;
+    orca_revision rev = 0;
+    if (!check(env, orca_plater_mesh_boolean(plater_of(pl), orca_object_id(obj), orca_volume_id(source),
+                                             orca_volume_id(tool), op, delete_tool ? 1 : 0, keep_painting ? 1 : 0,
+                                             &result, &rev)))
+        return 0;
+    return jlong(result);
+}
+
 JNI_FN(void, instanceMirror)(JNIEnv *env, jobject, jlong pl, jlong obj, jlong inst, jint axis)
 {
     orca_revision rev = 0;

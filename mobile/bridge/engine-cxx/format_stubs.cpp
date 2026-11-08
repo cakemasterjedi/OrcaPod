@@ -12,13 +12,11 @@
 #include "libslic3r/Format/bbs_3mf.hpp"
 #include "libslic3r/GCode/Thumbnails.hpp"
 #include "libslic3r/Model.hpp"
-#include "libslic3r/MeshBoolean.hpp"
 #include "libslic3r/PNGReadWrite.hpp"
 #include "libslic3r/Format/AssimpImport.hpp"
 
 #include <boost/filesystem/path.hpp>
 
-#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -49,14 +47,6 @@ bool decode_colored_png(IStream &, ImageColorscale &) { orcapad_unsupported("PNG
 bool decode_colored_png(const ReadBuf &, ImageColorscale &) { orcapad_unsupported("PNG decoding (libpng)"); }
 } // namespace png
 
-// --- texture UV parameterization (MeshBoolean.cpp needs CGAL's mesh
-// processing and MCUT, not in the closure) ---
-namespace MeshBoolean { namespace cgal {
-std::optional<std::vector<Vec2f>> parameterize_lscm(const indexed_triangle_set &) {
-    orcapad_unsupported("texture UV parameterization (CGAL mesh processing)");
-}
-}} // namespace MeshBoolean::cgal
-
 // --- GCode thumbnails: the REAL GCode/Thumbnails.cpp is compiled into the
 // closure (pure-string list parsing for load paths; PNG/QOI via vendored
 // miniz/qoi; JPEG reaches the loud adapter in jpeg_stubs.cpp).
@@ -84,15 +74,6 @@ bool load_svg(const char *, Model *, std::string &) {
 std::string make_temp_stl_with_modelio(const std::string &) {
     orcapad_unsupported("ModelIO STEP conversion");
 }
-
-// --- MeshBoolean (CGAL/mcut wall) ---
-#include "libslic3r/MeshBoolean.hpp"
-namespace MeshBoolean { namespace mcut {
-void make_boolean(const TriangleMesh &, const TriangleMesh &,
-                  std::vector<TriangleMesh> &, const std::string &) {
-    orcapad_unsupported("mesh boolean");
-}
-}} // namespace MeshBoolean::mcut
 
 } // namespace Slic3r
 

@@ -436,6 +436,21 @@ class Engine private constructor(private var presets: Long, private val plater: 
             Native.objectCut(plater, objectId, instanceId, doubleArrayOf(plane.x, plane.y, plane.z, plane.nx, plane.ny, plane.nz), keep.code)
         }
     suspend fun splitToParts(objectId: Long, volumeId: Long): Int = onEngine { Native.splitParts(plater, objectId, volumeId) }
+    /** Mesh errors of the object ([volumeId] 0) or of one volume (desktop object list warning icon). */
+    suspend fun meshErrors(objectId: Long, volumeId: Long = 0): MeshErrors = onEngine {
+        MeshErrors(Native.meshErrors(plater, objectId, volumeId))
+    }
+    /** Desktop "Fix model" on every volume of the object ([volumeId] 0) or on one volume. */
+    suspend fun repair(objectId: Long, volumeId: Long = 0, keepPainting: Boolean = false): RepairReport = onEngine {
+        Native.repair(plater, objectId, volumeId, keepPainting)
+    }
+    /** Desktop Mesh Boolean between two volumes of one object; returns the new volume's id. */
+    suspend fun meshBoolean(
+        objectId: Long, sourceVolumeId: Long, toolVolumeId: Long, operation: BooleanOperation,
+        deleteTool: Boolean, keepPainting: Boolean = false,
+    ): Long = onEngine {
+        Native.meshBoolean(plater, objectId, sourceVolumeId, toolVolumeId, operation.code, deleteTool, keepPainting)
+    }
     suspend fun mirror(objectId: Long, instanceId: Long, axis: Int) = onEngine { Native.instanceMirror(plater, objectId, instanceId, axis) }
     /** [instanceId] 0 applies to every instance of the object. */
     suspend fun setPrintable(objectId: Long, instanceId: Long, printable: Boolean) = onEngine {

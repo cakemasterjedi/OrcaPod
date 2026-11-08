@@ -40,6 +40,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import org.orcapod.app.data.ProfileStore
 import org.orcapod.app.data.VendorNames
+import org.orcapod.app.engine.PresetKind
 
 @Composable
 fun OrcaPodApp(viewModel: AppViewModel, pendingImports: List<Uri>, onImportsTaken: () -> Unit) {
@@ -62,6 +63,13 @@ fun OrcaPodApp(viewModel: AppViewModel, pendingImports: List<Uri>, onImportsTake
                     firstRun = phase.firstRun,
                     onCancel = viewModel::cancelVendorSetup,
                     onInstall = { viewModel.installVendors(it) },
+                )
+                is Phase.ModelSetup -> ModelSetupScreen(
+                    catalog = phase.catalog,
+                    printerChoice = viewModel.choice(PresetKind.PRINTER),
+                    filamentChoice = viewModel.choice(PresetKind.FILAMENT),
+                    onDone = { printers, filaments -> viewModel.finishModelSetup(phase.catalog, printers, filaments) },
+                    onSkip = viewModel::skipModelSetup,
                 )
                 Phase.Ready -> {
                     LaunchedEffect(pendingImports.size) {

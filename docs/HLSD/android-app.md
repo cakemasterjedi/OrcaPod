@@ -323,6 +323,13 @@ choice also remembers every preset listed when it was made, so presets that
 appear later (imported filaments, profile updates) are listed until the user
 decides on them, and the selected preset is always listed.
 
+Right after the brand step, and from the menu later, a model step sets the
+same choices one level up. It lists the printer models and filament products
+of the installed brands, read from the bundled profile files by
+`ProfileCatalog` rather than from the engine, which only holds the active
+brand. A model stands for all its nozzle variants (`printer_model`), and a
+filament product for all its per-printer variants (the name before ` @`).
+
 The settings sheet edits a handful of common process and filament options on
 top of the selected presets through the engine's edited-preset mechanism, so
 slicing picks them up exactly as desktop does; they can be saved as user

@@ -167,7 +167,7 @@ compile_one() { # compile_one <src> <obj> <compiler+flags...>
     SEEN_OBJS[$o]=1
     if needs_build "$src" "$o"; then
         {
-            printf '%q ' "$@" -MD -MF "$o.d" -c "$src" -o "$o"
+            printf '%q ' "${CCACHE[@]}" "$@" -MD -MF "$o.d" -c "$src" -o "$o"
             printf ' 2>%q\n' "$o.err"
         } >> "$JOBS"
         echo "$o" >> "$PENDING_OBJS"

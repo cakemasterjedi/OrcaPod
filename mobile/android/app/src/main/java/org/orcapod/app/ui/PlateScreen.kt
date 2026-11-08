@@ -91,6 +91,7 @@ fun PlateScreen(vm: AppViewModel) {
     var queueOpen by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     var picker by remember { mutableStateOf<PresetKind?>(null) }
+    var profilesOpen by remember { mutableStateOf(false) }
     var settingsFor by remember { mutableStateOf<PresetKind?>(null) }
     var objectList by remember { mutableStateOf(false) }
     var objectSheet by remember { mutableStateOf<Selection?>(null) }
@@ -212,6 +213,7 @@ fun PlateScreen(vm: AppViewModel) {
                 MenuEntry("My printers", AppIcons.Print) { printersOpen = true },
                 MenuEntry("Print queue", AppIcons.Queue) { queueOpen = true },
                 MenuEntry("Printer brands", Icons.Filled.Star) { vm.manageVendors() },
+                MenuEntry("Back up and sync profiles", AppIcons.CloudDownload) { profilesOpen = true },
             ),
         ),
         MenuGroup(
@@ -448,6 +450,7 @@ fun PlateScreen(vm: AppViewModel) {
             onBrand = vm::switchBrand,
         )
     }
+    if (profilesOpen) ProfilesSheet(vm) { profilesOpen = false }
     settingsFor?.let { kind -> SettingsScreen(vm, kind) { settingsFor = null } }
     // The side pane already shows the object list.
     if (objectList && !twoPane) ObjectListSheet(vm, onOpen = { objectList = false; vm.selection = it; objectSheet = it }) { objectList = false }

@@ -29,6 +29,13 @@ BOOST_INC="$BRIDGE/cache/boost-include-$BOOST_VER"
 CGAL_INC="$BRIDGE/cache/CGAL-$CGAL_VER/include"
 EIGEN_INC="$BRIDGE/cache/eigen-$EIGEN_VER"
 TBB_SRC="$BRIDGE/cache/oneTBB-$TBB_VER"
+# Expat, OrcaSlicer's deps/EXPAT pin: built from the release with its
+# entity-amplification guard (XML_DTD, XML_GE) on, from the config header
+# engine_fetch_deps writes next to the sources.
+EXPAT_VER=2.10.0
+EXPAT_SHA256=5466a341f9c692ef7a958a6881311be597f8e1ce345984cf78414f54793dea4c
+EXPAT_DIR="$BRIDGE/cache/expat-$EXPAT_VER"
+EXPAT_INC="$EXPAT_DIR/lib"
 # OpenCASCADE for STEP import: OrcaSlicer's deps/OCCT pin and patch.
 OCCT_VER=8.0.1
 OCCT_SRC="$BRIDGE/cache/occt-$OCCT_VER"
@@ -178,9 +185,9 @@ engine_sources() {
         printf 'cxx\t%s\n' "$DEPS/clipper2/Clipper2Lib/src/$f.cpp"
     done
 
-    # vendored expat (XML for AMF/3mf metadata)
-    for f in xmlparse xmltok xmlrole; do
-        printf 'c\t%s\n' "$DEPS/expat/$f.c"
+    # expat (XML for AMF/3mf metadata), from the pinned release
+    for f in xmlparse xmltok xmlrole xcs random_arc4random_buf; do
+        printf 'c\t%s\n' "$EXPAT_INC/$f.c"
     done
 
     # vendored miniz (zip I/O)
@@ -295,8 +302,40 @@ _fetch_archive() { # _fetch_archive <url> <dir> <sentinel>
     mv "$tmp"/* "$2"; rm -rf "$tmp"
     [ -f "$2/$3" ] || { echo "FATAL: $(basename "$2") download failed" >&2; return 1; }
 }
+engine_fetch_expat() {
+    [ -f "$EXPAT_INC/expat_config.h" ] && return 0
+    local url="https://github.com/libexpat/libexpat/releases/download/R_${EXPAT_VER//./_}/expat-$EXPAT_VER.tar.gz"
+    local dl="$BRIDGE/cache/expat-$EXPAT_VER.tar.gz"
+    echo "==> downloading expat-$EXPAT_VER.tar.gz into mobile/bridge/cache/" >&2
+    curl -fsSL "$url" -o "$dl.part" && mv "$dl.part" "$dl" || return 1
+    echo "$EXPAT_SHA256  $dl" | sha256sum -c --quiet - ||
+        { echo "FATAL: $dl does not match its pinned SHA-256" >&2; rm -f "$dl"; return 1; }
+    rm -rf "$EXPAT_DIR"; tar -xzf "$dl" -C "$BRIDGE/cache" && rm "$dl" || return 1
+    # What expat's CMake would generate for a little-endian Android or Linux
+    # target; both bionic and glibc 2.36+ have arc4random_buf.
+    cat > "$EXPAT_INC/expat_config.h" <<'CFG'
+#ifndef EXPAT_CONFIG_H
+#define EXPAT_CONFIG_H 1
+#define BYTEORDER 1234
+#define HAVE_MEMMOVE 1
+#define HAVE_STDINT_H 1
+#define HAVE_STDLIB_H 1
+#define HAVE_STRING_H 1
+#define HAVE_UNISTD_H 1
+#define HAVE_FCNTL_H 1
+#define HAVE_SYS_TYPES_H 1
+#define HAVE_SYS_STAT_H 1
+#define HAVE_ARC4RANDOM_BUF 1
+#define XML_CONTEXT_BYTES 1024
+#define XML_DTD 1
+#define XML_GE 1
+#define XML_NS 1
+#endif
+CFG
+}
 engine_fetch_deps() {
     mkdir -p "$BRIDGE/cache"
+    engine_fetch_expat || return 1
     _fetch_archive "https://github.com/boostorg/boost/releases/download/boost-$BOOST_VER/boost-$BOOST_VER.tar.gz" \
         "$BOOST_DIR" libs/filesystem/src/path.cpp || return 1
     # The GitHub release keeps each library's headers in libs/<lib>/include;

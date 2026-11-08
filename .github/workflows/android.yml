@@ -6,6 +6,8 @@ name: Android
 #   android  the engine cross-compiled for arm64-v8a (CLI smoke test under
 #            qemu), the app's unit tests and the debug APK, uploaded as an
 #            artifact
+#   release  on main, publishes that APK as the latest GitHub release, which
+#            the app's update check and the README's download link point at
 # See mobile/bridge/README.md and mobile/android/README.md for the same steps
 # run by hand.
 on:
@@ -106,6 +108,8 @@ jobs:
     name: Android engine and APK
     runs-on: ubuntu-24.04
     timeout-minutes: 150
+    outputs:
+      signed: ${{ steps.key.outputs.signed }}
     steps:
       - uses: actions/checkout@v7
       - name: Install build tools
@@ -144,9 +148,40 @@ jobs:
           CCACHE_DIR="$HOME/.ccache" ccache --zero-stats
       - name: Build the engine for arm64-v8a and run the CLI smoke test
         run: mobile/bridge/build-android.sh --test
+      # The release signing key (see "Updates" in docs/HLSD/android-app.md).
+      # Without the secrets (forks, or before they are added) the APK gets a
+      # throwaway debug key and is not published.
+      - name: Load the signing key
+        id: key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ORCAPOD_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ORCAPOD_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
+            # Pasting a secret can add line breaks or spaces; neither belongs
+            # in base64 or in the generated password.
+            password="$(printf '%s' "$KEYSTORE_PASSWORD" | tr -d '[:space:]')"
+            echo "::add-mask::$password"
+            keystore="$RUNNER_TEMP/orcapod.keystore"
+            printf '%s' "$KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > "$keystore"
+            if ! keytool -list -keystore "$keystore" -storepass "$password" -alias orcapod > /dev/null; then
+              echo "::error::The ORCAPOD_KEYSTORE_BASE64 and ORCAPOD_KEYSTORE_PASSWORD secrets do not open a keystore with the key 'orcapod'; paste both again."
+              exit 1
+            fi
+            echo "ORCAPOD_KEYSTORE=$keystore" >> "$GITHUB_ENV"
+            echo "ORCAPOD_KEYSTORE_PASSWORD=$password" >> "$GITHUB_ENV"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::ORCAPOD_KEYSTORE_BASE64 and ORCAPOD_KEYSTORE_PASSWORD are not set; this APK cannot update an installed release."
+          fi
       - name: Run the app's unit tests and build the APK
         working-directory: mobile/android
-        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+        # The run number is the version code, so each build installs over the
+        # last one (all builds share the signing key in app/build.gradle.kts).
+        run: >-
+          ./gradlew --no-daemon testDebugUnitTest assembleDebug
+          -Porcapod.versionCode=${{ github.run_number }}
+          -Porcapod.updateRepo=${{ github.repository }}
       # Saved even when a step failed, so the files that compiled are reused.
       # Entries this run did not use are dropped first, keeping each saved
       # cache to one build.
@@ -175,3 +210,38 @@ jobs:
           name: android-test-reports
           path: mobile/android/app/build/reports/tests/
           if-no-files-found: ignore
+
+  release:
+    name: Publish the APK
+    needs: [host, android]
+    # Only builds signed with the release key go out, so each one installs over the last.
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      needs.android.outputs.signed == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: android-build-${{ github.run_number }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: orcapod-apk
+          path: apk
+      # A fixed asset name keeps releases/latest/download/OrcaPod.apk a
+      # permanent link to the newest build.
+      - name: Create the release
+        run: |
+          cp apk/OrcaPod-*.apk OrcaPod.apk
+          gh release create "$TAG" OrcaPod.apk \
+            --target "$GITHUB_SHA" --latest \
+            --title "OrcaPod build ${{ github.run_number }}" \
+            --notes "Android app built from ${GITHUB_SHA::7}. Install it over any earlier OrcaPod build from these releases; your projects and settings are kept."
+      - name: Keep the newest 10 app releases
+        run: |
+          gh release list --limit 200 --json tagName --jq '.[].tagName' |
+            grep '^android-build-' | sort -t- -k3 -n -r | tail -n +11 |
+            while read -r old; do gh release delete "$old" --cleanup-tag --yes; done

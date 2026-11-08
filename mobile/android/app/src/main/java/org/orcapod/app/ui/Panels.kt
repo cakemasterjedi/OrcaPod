@@ -17,7 +17,6 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -85,14 +84,6 @@ fun ObjectPanel(vm: AppViewModel, sel: Selection, layFlat: Boolean, onLayFlat: (
                 }
             }
             Spacer(Modifier.height(6.dp))
-            // A broken mesh gets its fix in plain sight.
-            if (vm.meshErrors[sel.objectId]?.manifold == false) {
-                AssistChip(
-                    onClick = { vm.repair(listOf(sel.objectId)) },
-                    label = { Text("Repair this model") },
-                    leadingIcon = { MeshWarning(vm.meshErrors[sel.objectId]) },
-                )
-            }
             // The everyday actions as labelled buttons; the rarer tools sit under "More".
             var rotateMenu by remember { mutableStateOf(false) }
             var moreMenu by remember { mutableStateOf(false) }
@@ -113,6 +104,11 @@ fun ObjectPanel(vm: AppViewModel, sel: Selection, layFlat: Boolean, onLayFlat: (
                 Box {
                     ToolButton("More", Icons.Filled.MoreVert) { moreMenu = true }
                     DropdownMenu(expanded = moreMenu, onDismissRequest = { moreMenu = false }) {
+                        if (vm.meshErrors[sel.objectId]?.manifold == false) DropdownMenuItem(
+                            text = { Text("Repair") },
+                            leadingIcon = { MeshWarning(vm.meshErrors[sel.objectId]) },
+                            onClick = { moreMenu = false; vm.repair(listOf(sel.objectId)) },
+                        )
                         DropdownMenuItem(
                             text = { Text("Scale to fit") },
                             leadingIcon = { Icon(AppIcons.ViewInAr, null) },

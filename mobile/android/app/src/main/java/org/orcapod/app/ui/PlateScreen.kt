@@ -27,7 +27,6 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.DrawerValue
@@ -73,6 +72,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
+import org.orcapod.app.data.VendorNames
 import org.orcapod.app.engine.PresetKind
 import org.orcapod.app.engine.Shape
 import org.orcapod.app.ui.viewport.PlateView
@@ -215,7 +215,7 @@ fun PlateScreen(vm: AppViewModel) {
                 MenuEntry("My printers", AppIcons.Print) { printersOpen = true },
                 MenuEntry("Print queue", AppIcons.Queue) { queueOpen = true },
                 MenuEntry("Printer brands", Icons.Filled.Star) { vm.manageVendors() },
-                MenuEntry("Back up and sync profiles", Icons.Filled.Refresh) { profilesOpen = true },
+                MenuEntry("Back up and sync profiles", AppIcons.CloudDownload) { profilesOpen = true },
             ),
         ),
         MenuGroup(
@@ -233,6 +233,9 @@ fun PlateScreen(vm: AppViewModel) {
                 MenuEntry("Print settings", AppIcons.Tune) { settingsFor = PresetKind.PROCESS },
                 MenuEntry("Calibration", Icons.Filled.Build) { calibrating = true },
                 MenuEntry("Reset view", AppIcons.ViewInAr) { viewRef?.resetView() },
+                MenuEntry("Check for updates", AppIcons.CloudDownload) {
+                    UpdateController.check(context.applicationContext, scope, manual = true)
+                },
             ),
         ),
     )
@@ -443,10 +446,12 @@ fun PlateScreen(vm: AppViewModel) {
             },
             onDelete = if (kind == PresetKind.PRINTER) null else { name -> vm.deleteUserPreset(kind, name) },
             onDismiss = { picker = null },
-            brands = if (kind == PresetKind.PRINTER) vm.installedVendors.sortedWith(String.CASE_INSENSITIVE_ORDER) else emptyList(),
+            brands = if (kind == PresetKind.PRINTER) VendorNames.sorted(vm.installedVendors) else emptyList(),
             brand = vm.activeVendor,
             loading = vm.busy != null,
             onBrand = vm::switchBrand,
+            choice = vm.choices[kind],
+            onChoose = { vm.choosePresets(kind, entries, it) },
         )
     }
     if (profilesOpen) ProfilesSheet(vm) { profilesOpen = false }

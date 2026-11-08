@@ -5,8 +5,20 @@ import kotlinx.coroutines.withContext
 import java.io.Closeable
 import java.util.concurrent.Executors
 
-/** An object's mesh in object space, shared across snapshots while its revision holds. */
-class Mesh(val revision: Long, val positions: FloatArray, val indices: IntArray)
+/** A triangle mesh in object space. */
+class TriMesh(val positions: FloatArray, val indices: IntArray)
+
+/**
+ * An object's merged part mesh in object space, plus the meshes of its
+ * modifiers, negative parts and support blockers/enforcers by volume id;
+ * shared across snapshots while its revision holds.
+ */
+class Mesh(
+    val revision: Long,
+    val positions: FloatArray,
+    val indices: IntArray,
+    val volumes: Map<Long, TriMesh> = emptyMap(),
+)
 
 /** A document snapshot with every object's mesh resolved. */
 class Scene(val snapshot: SceneSnapshot, val meshes: Map<Long, Mesh>) {
@@ -46,6 +58,9 @@ class Engine private constructor(private var presets: Long, private val plater: 
     }
 
     suspend fun printVolume(): PrintVolume = onEngine { volume() }
+
+    /** Re-derives the plates from the printer's (possibly edited) printable area and height. */
+    suspend fun refreshBed() = onEngine { applyBed() }
 
     /** The fully resolved config ({key: serialized value}) slicing will use. */
     suspend fun resolvedConfig(): String = onEngine { Native.presetsResolvedConfig(presets) }
@@ -93,7 +108,13 @@ class Engine private constructor(private var presets: Long, private val plater: 
             val positions = o.positions
             val indices = o.indices
             meshes[o.id] = if (positions != null && indices != null) {
-                Mesh(o.meshRevision, positions, indices)
+                val volumes = HashMap<Long, TriMesh>()
+                for (v in o.volumes) {
+                    val vp = v.positions
+                    val vi = v.indices
+                    if (vp != null && vi != null) volumes[v.id] = TriMesh(vp, vi)
+                }
+                Mesh(o.meshRevision, positions, indices, volumes)
             } else {
                 meshCache.getValue(o.id)
             }
@@ -141,13 +162,262 @@ class Engine private constructor(private var presets: Long, private val plater: 
 
     suspend fun export3mf(path: String) = onEngine { Native.platerExport3mf(plater, path) }
 
+    /**
+     * Saves an OrcaSlicer project 3MF: model, plates and the current settings, with
+     * [thumbnail] (top-down RGBA8, [thumbnailSize] square) as the plate picture.
+     */
+    suspend fun saveProject(path: String, thumbnailSize: Int = 0, thumbnail: ByteArray? = null) = onEngine {
+        Native.projectSave(plater, presets, path, thumbnailSize, thumbnail)
+    }
+
+    suspend fun exportStl(objectId: Long?, path: String) = onEngine {
+        if (objectId == null) Native.exportStlAll(plater, path) else Native.objectExportStl(plater, objectId, path)
+    }
+
+    // --- settings editors ---
+
+    /** Every option definition, as JSON; parse with [org.orcapod.app.settings.OptionDefs]. */
+    suspend fun optionDefs(): String = onEngine { Native.optionDefs(null) }
+
+    /** The edited (or, with [edited] false, the selected saved) preset of [kind] as {key: value} JSON. */
+    suspend fun presetConfig(kind: PresetKind, edited: Boolean): String = onEngine {
+        Native.presetsConfigDump(presets, kind.code, edited)
+    }
+
+    suspend fun resetValue(kind: PresetKind, key: String) = onEngine { Native.presetsResetValue(presets, kind.code, key) }
+
+    suspend fun saveUserPreset(kind: PresetKind, name: String, detach: Boolean) = onEngine {
+        Native.presetsSaveUserDetached(presets, kind.code, name, detach)
+    }
+
+    // --- filament slots and plate type ---
+
+    suspend fun filamentSlots(): List<FilamentSlot> = onEngine {
+        Native.presetsFilamentSlots(presets).toList().chunked(2).map { FilamentSlot(it[0], it[1]) }
+    }
+
+    suspend fun setFilamentCount(count: Int, colour: String?) = onEngine {
+        Native.presetsSetFilamentCount(presets, count, colour)
+    }
+
+    suspend fun selectFilamentSlot(slot: Int, name: String) = onEngine { Native.presetsSelectFilamentSlot(presets, slot, name) }
+    suspend fun setFilamentColour(slot: Int, colour: String) = onEngine { Native.presetsSetFilamentColour(presets, slot, colour) }
+
+    suspend fun bedType(): BedTypeState = onEngine {
+        val v = Native.presetsBedType(presets)
+        BedTypeState(v[0], v[1], v[2], v[3] != 0, v[4])
+    }
+
+    suspend fun setBedType(type: Int) = onEngine { Native.presetsSetBedType(presets, type) }
+
+    // --- per-object / per-part settings ([volumeId] 0 = the object itself) ---
+
+    suspend fun overrideKeys(forVolume: Boolean): String = onEngine { Native.settingsKeys(forVolume) }
+    suspend fun overrides(objectId: Long, volumeId: Long): String = onEngine { Native.settingsDump(plater, objectId, volumeId) }
+    suspend fun setOverride(objectId: Long, volumeId: Long, key: String, value: String) = onEngine {
+        Native.settingsSet(plater, objectId, volumeId, key, value)
+    }
+    suspend fun eraseOverride(objectId: Long, volumeId: Long, key: String) = onEngine {
+        Native.settingsErase(plater, objectId, volumeId, key)
+    }
+    /** Assigns filament slot [extruder] (1-based) to the object, or a part when [volumeId] is not 0 (0 = follow the object). */
+    suspend fun setExtruder(objectId: Long, volumeId: Long, extruder: Int) = onEngine {
+        Native.setExtruder(plater, objectId, volumeId, extruder)
+    }
+
+    /** Replaces every override of the target in one undo step (desktop "Paste settings"). */
+    suspend fun replaceOverrides(objectId: Long, volumeId: Long, values: Map<String, String>) = onEngine {
+        Native.settingsApply(plater, objectId, volumeId, values.keys.toTypedArray(), values.values.toTypedArray())
+    }
+
+    // --- objects and parts ---
+
+    suspend fun renameObject(objectId: Long, name: String) = onEngine { Native.objectRename(plater, objectId, name) }
+
+    suspend fun addShapeObject(shape: Shape): Long = onEngine {
+        val v = volume()
+        Native.addShapeObject(plater, shape.code, maxOf(v.width, v.depth) * 0.1, v.centerX, v.centerY)
+    }
+
+    suspend fun addVolumeShape(objectId: Long, instanceId: Long, type: VolumeType, shape: Shape): Long = onEngine {
+        val v = volume()
+        Native.volumeAddShape(plater, objectId, instanceId, type.code, shape.code, maxOf(v.width, v.depth) * 0.1)
+    }
+
+    suspend fun addVolumeFile(objectId: Long, type: VolumeType, path: String): Long = onEngine {
+        Native.volumeAddFile(plater, objectId, type.code, path)
+    }
+
+    suspend fun setVolumeType(objectId: Long, volumeId: Long, type: VolumeType) = onEngine {
+        Native.volumeSetType(plater, objectId, volumeId, type.code)
+    }
+
+    suspend fun deleteVolume(objectId: Long, volumeId: Long) = onEngine { Native.volumeDelete(plater, objectId, volumeId) }
+    suspend fun renameVolume(objectId: Long, volumeId: Long, name: String) = onEngine {
+        Native.volumeRename(plater, objectId, volumeId, name)
+    }
+
+    suspend fun splitToObjects(objectId: Long): Int = onEngine { Native.splitObjects(plater, objectId) }
+
+    /** Variable layer height: flat (z, layer height) pairs; empty follows the process layer height. */
+    suspend fun heightProfile(objectId: Long): DoubleArray = onEngine { Native.heightProfile(plater, objectId) }
+
+    /** Desktop "Reset": the object follows the process layer height again. */
+    suspend fun resetHeightProfile(objectId: Long) = onEngine { Native.setHeightProfile(plater, objectId, DoubleArray(0)) }
+
+    /** Desktop "Adaptive", at [quality] -0.1 (fast) to 1 (fine detail). */
+    suspend fun adaptiveHeightProfile(objectId: Long, quality: Double): DoubleArray =
+        onEngine { Native.heightProfileAdaptive(plater, presets, objectId, quality) }
+
+    suspend fun smoothHeightProfile(objectId: Long, radius: Int, keepMin: Boolean): DoubleArray =
+        onEngine { Native.heightProfileSmooth(plater, presets, objectId, radius, keepMin) }
+
+    /** Desktop manual editing at [z]: [action] 0 increase, 1 decrease, 2 reduce, 3 smooth, over [band] mm. */
+    suspend fun adjustHeightProfile(objectId: Long, z: Double, delta: Double, band: Double, action: Int) =
+        onEngine { Native.heightProfileAdjust(plater, presets, objectId, z, delta, band, action) }
+
+    /** Desktop Plater::calib_*: replaces the document with the test's model at [modelPath] (none for the PA pattern) and sets it up. */
+    suspend fun startCalibration(setup: CalibrationSetup, modelPath: String?) = onEngine {
+        endMeasureNow()
+        val t = setup.test
+        val ints = intArrayOf(
+            t.mode, t.flowPass, t.flowPattern, if (setup.printNumbers) 1 else 0, if (setup.resize) 1 else 0,
+            if (t.flowLinear) 1 else 0, setup.testModel,
+        )
+        val doubles = doubleArrayOf(setup.start, setup.end, setup.step, 0.0, setup.freqStartX, setup.freqEndX, setup.freqStartY, setup.freqEndY)
+        Native.calibrationStart(plater, presets, ints, doubles, setup.shaperType, setup.speeds.toDoubleArray(), setup.accelerations.toDoubleArray(), modelPath)
+    }
+
+    /** The test the document is set up for, by engine mode (0 for none), with its range. */
+    suspend fun calibration(): DoubleArray = onEngine { Native.calibration(plater) }
+
+    suspend fun clearCalibration() = onEngine { Native.calibrationClear(plater) }
+
+    /** The measure context of one object's mesh revision; building it segments the mesh, so it is kept. */
+    private var measure: Triple<Long, Long, Long>? = null
+
+    /**
+     * Desktop measure hover: the feature at the object-space [point] on merged
+     * triangle [face] of [objectId] at [meshRevision]; null when there is none.
+     */
+    suspend fun measurePick(objectId: Long, meshRevision: Long, face: Int, point: DoubleArray): SurfaceFeature? = onEngine {
+        val m = measure?.takeIf { it.first == objectId && it.second == meshRevision }?.third ?: run {
+            endMeasureNow()
+            Native.measureCreate(plater, objectId).also { measure = Triple(objectId, meshRevision, it) }
+        }
+        Native.measurePick(m, face, point[0], point[1], point[2])?.let { SurfaceFeature.of(it) }
+    }
+
+    /** Desktop's measurement between two features, given in the same (world) space. */
+    suspend fun measureBetween(a: SurfaceFeature, b: SurfaceFeature): Measurement? = onEngine {
+        val m = measure?.third ?: return@onEngine null
+        try {
+            Measurement.of(Native.measureBetween(m, a.values(), b.values()))
+        } catch (ex: OrcaException) {
+            null // the engine finds no relation between the two
+        }
+    }
+
+    suspend fun endMeasure() = onEngine { endMeasureNow() }
+
+    private fun endMeasureNow() {
+        measure?.let { Native.measureFree(it.third) }
+        measure = null
+    }
+
+    /** One paint layer of a volume, as world triangles with their states. */
+    suspend fun paint(objectId: Long, volumeId: Long, layer: PaintLayer): PaintMesh = onEngine {
+        val r = Native.volumePaint(plater, objectId, volumeId, layer.code)
+        PaintMesh(r[0] as FloatArray, r[1] as ByteArray)
+    }
+
+    /** One brush dab at a world [hit], seen along [view] (one undo step). */
+    suspend fun paintSphere(objectId: Long, volumeId: Long, layer: PaintLayer, hit: FloatArray, view: FloatArray, radius: Double, state: Int) =
+        onEngine { Native.volumePaintSphere(plater, objectId, volumeId, layer.code, ray(hit, view), radius, state) }
+
+    /** Smart fill with [angle] > 0, else bucket fill of the hit facet's region. */
+    suspend fun paintFill(objectId: Long, volumeId: Long, layer: PaintLayer, hit: FloatArray, view: FloatArray, angle: Double, state: Int) =
+        onEngine { Native.volumePaintFill(plater, objectId, volumeId, layer.code, ray(hit, view), angle, angle <= 0.0, state) }
+
+    suspend fun paintReset(objectId: Long, volumeId: Long, layer: PaintLayer) =
+        onEngine { Native.volumePaintReset(plater, objectId, volumeId, layer.code) }
+
+    private fun ray(hit: FloatArray, view: FloatArray) =
+        doubleArrayOf(hit[0].toDouble(), hit[1].toDouble(), hit[2].toDouble(), view[0].toDouble(), view[1].toDouble(), view[2].toDouble())
+
+    /**
+     * Desktop cut: replaces the object by the [keep] result of cutting it
+     * through [plane]. Its connectors are drilled into the cut faces; the
+     * object's earlier connectors are replaced. Returns the objects produced.
+     */
+    suspend fun cut(objectId: Long, instanceId: Long, plane: CutPlane, keep: CutKeep, connectors: List<CutConnector>): Int =
+        onEngine {
+            Native.cutConnectorsClear(plater, objectId)
+            for (c in connectors) {
+                Native.cutConnectorAdd(
+                    plater, objectId, doubleArrayOf(c.x, c.y, c.z, plane.nx, plane.ny, plane.nz),
+                    floatArrayOf(c.radius, c.depth, c.radiusTolerance, c.depthTolerance),
+                    intArrayOf(c.type.ordinal, c.style.ordinal, c.shape.ordinal),
+                )
+            }
+            Native.objectCut(plater, objectId, instanceId, doubleArrayOf(plane.x, plane.y, plane.z, plane.nx, plane.ny, plane.nz), keep.code)
+        }
+    suspend fun splitToParts(objectId: Long, volumeId: Long): Int = onEngine { Native.splitParts(plater, objectId, volumeId) }
+    suspend fun mirror(objectId: Long, instanceId: Long, axis: Int) = onEngine { Native.instanceMirror(plater, objectId, instanceId, axis) }
+    /** [instanceId] 0 applies to every instance of the object. */
+    suspend fun setPrintable(objectId: Long, instanceId: Long, printable: Boolean) = onEngine {
+        Native.setPrintable(plater, objectId, instanceId, printable)
+    }
+    suspend fun setInstanceCount(objectId: Long, count: Int) = onEngine { Native.setInstanceCount(plater, objectId, count) }
+    suspend fun cloneObject(objectId: Long, count: Int) = onEngine { Native.cloneObject(plater, objectId, count) }
+    suspend fun instanceToObject(objectId: Long, instanceId: Long) = onEngine { Native.instanceToObject(plater, objectId, instanceId) }
+    suspend fun mergeObjects(objectIds: List<Long>) = onEngine { Native.mergeObjects(plater, objectIds.toLongArray()) }
+    /** ORCA_UNITS_*: 0 from inch, 1 to inch, 2 from metre, 3 to metre. */
+    suspend fun convertUnits(objectId: Long, conversion: Int) = onEngine { Native.convertUnits(plater, objectId, conversion) }
+    suspend fun drop(objectId: Long) = onEngine { Native.objectDrop(plater, objectId) }
+    /** Simplifies toward [targetTriangles] triangles; returns the resulting count. */
+    suspend fun simplify(objectId: Long, volumeId: Long, targetTriangles: Int): Int = onEngine {
+        Native.volumeSimplify(plater, objectId, volumeId, true, targetTriangles, 0.0)
+    }
+    suspend fun subdivide(objectId: Long, volumeId: Long): Int = onEngine { Native.volumeSubdivide(plater, objectId, volumeId) }
+    suspend fun fillBed(objectId: Long): Int = onEngine { Native.fillBed(plater, presets, objectId) }
+
+    // --- height range modifiers ---
+
+    suspend fun heightRanges(objectId: Long): List<HeightRange> = onEngine {
+        Native.heightRanges(plater, objectId).toList().chunked(3).map { HeightRange(it[0], it[1], it[2]) }
+    }
+
+    suspend fun setHeightRanges(objectId: Long, ranges: List<HeightRange>) = onEngine {
+        Native.setHeightRanges(plater, objectId, ranges.flatMap { listOf(it.minZ, it.maxZ, it.layerHeight) }.toDoubleArray())
+    }
+
+    // --- plates ---
+
+    suspend fun addPlate() = onEngine { Native.plateAdd(plater) }
+    suspend fun deletePlate(plateId: Long) = onEngine { Native.plateDelete(plater, plateId) }
+    suspend fun renamePlate(plateId: Long, name: String) = onEngine { Native.plateRename(plater, plateId, name) }
+    suspend fun lockPlate(plateId: Long, lock: Boolean) = onEngine { Native.plateLock(plater, plateId, lock) }
+    suspend fun selectPlate(plateId: Long) = onEngine { Native.plateSelect(plater, plateId) }
+    suspend fun duplicatePlate(plateId: Long) = onEngine { Native.plateDuplicate(plater, plateId) }
+    suspend fun movePlateToFront(plateId: Long) = onEngine { Native.plateMoveToFront(plater, plateId) }
+    suspend fun plateSettings(plateId: Long): PlateSettings = onEngine { PlateSettings.fromArray(Native.plateSettings(plater, plateId)) }
+    suspend fun setPlateSettings(plateId: Long, settings: PlateSettings) = onEngine {
+        Native.plateSetSettings(plater, plateId, settings.toArray())
+    }
+
     // --- slicing ---
 
-    suspend fun slice(gcodePath: String, listener: ProgressListener): SliceReport {
+    suspend fun slice(
+        gcodePath: String,
+        target: SliceTarget = SliceTarget.PLATE,
+        plateIndex: Int = 0,
+        listener: ProgressListener,
+    ): SliceReport {
         val handle = Native.jobNew()
         job = handle
         try {
-            return onEngine { Native.platerSlice(plater, presets, gcodePath, handle, listener) }
+            return onEngine { Native.platerSlice(plater, presets, gcodePath, handle, listener, target.code, plateIndex) }
         } finally {
             job = 0
             Native.jobFree(handle)
@@ -162,8 +432,18 @@ class Engine private constructor(private var presets: Long, private val plater: 
 
     suspend fun loadToolpath(gcodePath: String): Toolpath = onEngine { Native.toolpathLoad(gcodePath) }
 
+    /** The current plate's per-layer custom G-code (desktop layer-slider ticks), by height. */
+    suspend fun customGcodes(): List<CustomGcode> = onEngine { Native.customGcodes(plater).toList() }
+
+    suspend fun addCustomGcode(item: CustomGcode) = onEngine {
+        Native.customGcodeAdd(plater, item.printZ, item.type.code, item.extruder, item.colour, item.extra)
+    }
+
+    suspend fun deleteCustomGcode(printZ: Double) = onEngine { Native.customGcodeDelete(plater, printZ) }
+
     override fun close() {
         thread.execute {
+            endMeasureNow()
             Native.platerFree(plater)
             Native.presetsFree(presets)
         }

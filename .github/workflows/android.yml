@@ -40,7 +40,6 @@ env:
   # itself rather than its timestamp.
   ORCAPOD_CCACHE: 1
   CCACHE_COMPILERCHECK: content
-  CCACHE_COMPILERTYPE: clang
   CCACHE_MAXSIZE: 3G
 
 jobs:

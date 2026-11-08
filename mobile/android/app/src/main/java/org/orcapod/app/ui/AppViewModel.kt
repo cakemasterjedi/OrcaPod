@@ -27,6 +27,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.orcapod.app.data.LocalProfileFolder
+import org.orcapod.app.data.PresetChoice
 import org.orcapod.app.data.ProfileBackup
 import org.orcapod.app.data.ProfileStore
 import org.orcapod.app.data.ProfileSync
@@ -34,6 +35,7 @@ import org.orcapod.app.data.ProjectStore
 import org.orcapod.app.data.RecentProject
 import org.orcapod.app.data.Recovery
 import org.orcapod.app.data.SafProfileFolder
+import org.orcapod.app.data.VendorNames
 import org.orcapod.app.engine.BedTypeState
 import org.orcapod.app.engine.BooleanOperation
 import org.orcapod.app.engine.MeshErrors
@@ -122,6 +124,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = ProfileStore(app)
     private val projects = ProjectStore(app)
     private val prefs = app.getSharedPreferences("session", Context.MODE_PRIVATE)
+    private val choicePrefs = app.getSharedPreferences("preset_choices", Context.MODE_PRIVATE)
     private var engine: Engine? = null
     private var sliceJob: Job? = null
 
@@ -218,6 +221,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var lastSync by mutableStateOf(0L)
         private set
 
+    /** Printers and filaments the user picked to show in the pickers, by kind. */
+    var choices by mutableStateOf(loadChoices())
+        private set
+
     /** The installed brand whose profiles are loaded; the others load when picked. */
     var activeVendor by mutableStateOf<String?>(null)
     // --- the open project (desktop's project title, dirty mark and recent list) ---
@@ -309,7 +316,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Switches the loaded profiles to [vendor]'s, restoring the presets last used with it. */
     fun switchBrand(vendor: String) {
         if (vendor == activeVendor) return
-        engineAction("Loading $vendor profiles…") { e ->
+        engineAction("Loading ${VendorNames.display(vendor)} profiles…") { e ->
             val previous = activeVendor
             try {
                 activateBrand(vendor)
@@ -598,6 +605,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         } catch (_: SecurityException) {
             // Already gone.
         }
+    }
+
+    /** Shows only [picked] of [entries] in the [kind] picker; nothing picked shows them all. */
+    fun choosePresets(kind: PresetKind, entries: List<PresetEntry>, picked: Set<String>) {
+        val choice = (choices[kind] ?: PresetChoice()).pick(entries, picked)
+        choices = choices + (kind to choice)
+        choicePrefs.edit()
+            .putStringSet("shown/${kind.name}", choice.shown)
+            .putStringSet("seen/${kind.name}", choice.seen)
+            .apply()
+    }
+
+    private fun loadChoices(): Map<PresetKind, PresetChoice> = CHOOSABLE.associateWith { kind ->
+        PresetChoice(
+            shown = choicePrefs.getStringSet("shown/${kind.name}", null).orEmpty().toSet(),
+            seen = choicePrefs.getStringSet("seen/${kind.name}", null).orEmpty().toSet(),
+        )
     }
 
     // --- document ---
@@ -1814,6 +1838,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private const val KEY_NAMES_SHOW_DIALOG = "import_names_cleanup_show_dialog"
         const val NAME_REPLACEMENT_DEFAULT = "_"
 
+        /** Preset kinds whose picker lists only the presets the user picked. */
+        val CHOOSABLE = listOf(PresetKind.PRINTER, PresetKind.FILAMENT)
         /** Colours for new filament slots, like desktop's default palette. */
         val NEW_SLOT_COLOURS = listOf("#00AE42", "#F4EE2A", "#2850E0", "#EC008C", "#FF6A13", "#FFFFFF", "#161616", "#A3D8E1")
     }

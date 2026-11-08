@@ -310,6 +310,19 @@ and process last used with that brand. User presets whose parent belongs to a
 parked brand are skipped by the engine until that brand is loaded again; their
 files are left untouched.
 
+Brands are named in the UI through `VendorNames`, which maps the cryptic
+vendor folder ids and vendor-profile names (`BBL`, `Bambulab`, `iQ`) to the
+brand's full name. The ids themselves stay as they are, since the engine and
+the profile tree address vendors by them.
+
+The printer and filament pickers can list only the presets the user ticked
+(`PresetChoice`, kept per kind in preferences). With nothing ticked among the
+loaded presets, as before any choice or after switching to a brand with no
+ticks, everything is listed, so a choice never leaves a picker empty. The
+choice also remembers every preset listed when it was made, so presets that
+appear later (imported filaments, profile updates) are listed until the user
+decides on them, and the selected preset is always listed.
+
 The settings sheet edits a handful of common process and filament options on
 top of the selected presets through the engine's edited-preset mechanism, so
 slicing picks them up exactly as desktop does; they can be saved as user

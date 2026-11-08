@@ -55,6 +55,32 @@ project (`engine_build_tbb`), because it is the engine's source of
 parallelism: profile loading and every slicing step run on all cores through
 it, as on the desktop.
 
+OpenCASCADE is the other one (`engine_build_occt`), for STEP import. It is
+fetched at the desktop's `deps/OCCT` tag (`OCCT_VER`) and gets the same patch
+and CMake options, with one difference: instead of whole modules, only the
+toolkits `Format/STEP.cpp` needs are built (`TKDESTEP`, `TKXCAF`, `TKMesh` and
+what they depend on, `OCCT_TOOLKITS`), which skips the other formats' readers. The
+toolkits are static archives, so `Format/STEP.cpp` is compiled into the
+closure as on the desktop and only the code STEP import reaches is linked.
+`ORCAPOD_STEP=stub` builds without OpenCASCADE: `engine-cxx/step_stubs.cpp`
+then replaces `Format/STEP.cpp` and STEP import fails loudly.
+
+STEP import mirrors the desktop's staged flow, one `orca_step` handle carrying
+the document from stage to stage so the file is read once. `orca_step_load`
+reads and parses it; `orca_step_triangle_count` tells the import dialog how
+many facets a meshing quality gives; `orca_step_mesh` meshes it with the
+dialog's choices (linear and angular deflection, Split compound, Keep original
+names, Sort parts by name, assembly or single object); `orca_step_name_changes`
+previews the desktop's cleanup of names a 3MF project cannot hold
+(`Format/ImportNames.cpp`), and `orca_plater_import_step` adds the meshed
+document to the plater with the chosen cleanup. Loading and meshing report
+their progress through `orca_step_progress`, and `orca_step_cancel` stops a
+load, count or mesh from another thread: it sets the flag the Step's progress
+callback hands back to the reader and mesher, and the Step's own stop flag that
+the triangle count polls. Sorting sets `ModelVolume::import_display_order`, the
+object-list order desktop saves in 3MF, which snapshots report per volume.
+`orca_plater_import_model` takes STEP files too, with the desktop defaults.
+
 ## Android
 
 `build-android.sh` cross-compiles the same closure with the NDK's clang for
@@ -95,10 +121,11 @@ filled in one of two ways, and never with a silent fake success:
   platform where oneTBB is not built yet. Parallelism is a speed
   optimization, not semantics, so both builds produce the same output.
   The OCCT headers in `shim/occt-stub/` exist only so `Format/STEP.hpp`, which
-  `Model.hpp` includes unconditionally, parses.
+  `Model.hpp` includes unconditionally, parses in an `ORCAPOD_STEP=stub`
+  build.
 - **Loud adapters** (`engine-cxx/format_stubs.cpp`, `jpeg_stubs.cpp`) define
   engine functions whose real implementation needs a dependency that is not
-  ported yet: STEP import (OCCT), textured-model import (Assimp), PNG decoding
+  ported yet: textured-model import (Assimp), PNG decoding
   for texture displacement maps (libpng), mesh booleans and UV
   parameterization (CGAL mesh processing, MCUT) and JPEG thumbnails. Each one
   throws, which the bridge turns into a typed failure, so a missing feature

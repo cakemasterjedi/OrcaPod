@@ -51,6 +51,9 @@
                 <data android:mimeType="application/sla" />
                 <data android:mimeType="application/vnd.ms-pki.stl" />
                 <data android:mimeType="application/vnd.ms-3mfdocument" />
+                <data android:mimeType="model/step" />
+                <data android:mimeType="application/step" />
+                <data android:mimeType="application/x-step" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
@@ -60,6 +63,8 @@
                 <data android:mimeType="application/sla" />
                 <data android:mimeType="application/vnd.ms-pki.stl" />
                 <data android:mimeType="application/vnd.ms-3mfdocument" />
+                <data android:mimeType="application/step" />
+                <data android:mimeType="application/x-step" />
             </intent-filter>
             <!-- A model page shared from a browser opens in the model library. -->
             <intent-filter>

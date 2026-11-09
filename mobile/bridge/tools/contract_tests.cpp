@@ -4119,6 +4119,27 @@ static void test_measure_and_mesh_ops(const std::string &dir) {
     // The plane round-trips as (normal, point): the bottom corner is 20 mm below the top face.
     CHECK(plane_to_point.has_distance);
     CHECK_NEAR(plane_to_point.distance, 20.0, 0.05);
+    // A vertical side edge against the top face is neither parallel nor
+    // square to it; this used to dereference the plane's null edge list.
+    orca_surface_feature side_edge{};
+    side_edge.type = ORCA_MEASURE_EDGE;
+    side_edge.point_a[0] = 10.0; side_edge.point_a[1] = 10.0; side_edge.point_a[2] = -10.0;
+    side_edge.point_b[0] = 10.0; side_edge.point_b[1] = 10.0; side_edge.point_b[2] = 10.0;
+    orca_measurement edge_to_plane;
+    memset(&edge_to_plane, 0, sizeof edge_to_plane);
+    GUARD(m6, orca_measure_between(measure, &side_edge, &plane, &edge_to_plane));
+    expect_ok(m6, "edge to plane");
+    CHECK(edge_to_plane.has_angle);
+    orca_surface_feature hole{};
+    hole.type = ORCA_MEASURE_CIRCLE;
+    hole.point_a[0] = 0.0; hole.point_a[1] = -10.0; hole.point_a[2] = 0.0;
+    hole.normal[1] = 1.0;
+    hole.radius = 3.0;
+    orca_measurement circle_to_plane;
+    memset(&circle_to_plane, 0, sizeof circle_to_plane);
+    GUARD(m7, orca_measure_between(measure, &hole, &plane, &circle_to_plane));
+    expect_ok(m7, "circle to plane");
+    CHECK(circle_to_plane.has_distance);
     orca_measure_dispose(measure);
 
     // --- simplify: quadric edge collapse on the single volume

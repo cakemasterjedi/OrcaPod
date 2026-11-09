@@ -3915,11 +3915,20 @@ static Slic3r::Measure::SurfaceFeature orcapad_feature_from_abi(
             Slic3r::Measure::SurfaceFeatureType::Circle, a, normal,
             std::nullopt, feature->radius);
     case ORCA_MEASURE_PLANE:
-    default:
-        return Slic3r::Measure::SurfaceFeature(
+    default: {
+        Slic3r::Measure::SurfaceFeature plane(
             Slic3r::Measure::SurfaceFeatureType::Plane, normal, a,
             std::nullopt,
             static_cast<double>(feature->plane_index));
+        // get_measurement walks the plane's world-space edges for an edge or
+        // circle that is not square to it; desktop fills them from the
+        // instance transform, which the ABI feature does not carry. An empty
+        // list makes it fall back to the plane itself instead of
+        // dereferencing a null list.
+        plane.world_plane_features =
+            std::make_shared<std::vector<Slic3r::Measure::SurfaceFeature>>();
+        return plane;
+    }
     }
 }
 

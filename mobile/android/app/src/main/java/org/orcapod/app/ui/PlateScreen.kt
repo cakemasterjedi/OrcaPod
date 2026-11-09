@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -109,6 +108,8 @@ fun PlateScreen(vm: AppViewModel) {
     // The phone's transform panel opens with each newly picked object and can be closed.
     var transformOpen by rememberSaveable { mutableStateOf(true) }
     var previewDetails by rememberSaveable { mutableStateOf(false) }
+    // Whether the tool column shows each tool's name beside its icon.
+    var toolLabels by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(vm.selection) { if (vm.selection != null) transformOpen = true }
     // Picking an object in the viewport brings its controls into view.
     LaunchedEffect(vm.selection) { if (vm.selection != null) paneTab = PaneTab.OBJECTS }
@@ -227,7 +228,7 @@ fun PlateScreen(vm: AppViewModel) {
             "Printers",
             listOf(
                 MenuEntry("My printers", AppIcons.Print) { printersOpen = true },
-                MenuEntry("Print queue", AppIcons.Queue) { queueOpen = true },
+                MenuEntry("Printer dashboard and queue", AppIcons.Queue) { queueOpen = true },
                 MenuEntry("Printer brands", Icons.Filled.Star) { vm.manageVendors() },
                 MenuEntry("Choose listed printers and filaments", Icons.Filled.Check) { vm.manageModels() },
                 MenuEntry("Back up and sync profiles", AppIcons.CloudDownload) { profilesOpen = true },
@@ -255,26 +256,6 @@ fun PlateScreen(vm: AppViewModel) {
             ),
         ),
     )
-    val stage = when {
-        previewing -> Stage.PREVIEW
-        vm.paint != null -> Stage.PAINT
-        else -> Stage.PREPARE
-    }
-    fun onStage(target: Stage) {
-        when (target) {
-            Stage.PREPARE -> { vm.paint = null; vm.showPreview = false }
-            Stage.PAINT -> {
-                vm.showPreview = false
-                if (vm.paint == null) {
-                    val id = vm.selection?.objectId ?: vm.scene.snapshot.objects.firstOrNull()?.id
-                    if (id != null) vm.startPaint(id)
-                }
-            }
-            Stage.PREVIEW -> { vm.paint = null; vm.showPreview = true }
-            // The printers' dashboard is a sheet over whichever stage is showing.
-            Stage.DEVICE -> queueOpen = true
-        }
-    }
     val shareGcode: (SliceState.Done) -> Unit = { result ->
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", result.gcode)
         val send = Intent(Intent.ACTION_SEND)
@@ -314,16 +295,6 @@ fun PlateScreen(vm: AppViewModel) {
                         }
                     },
                 )
-            } else {
-                Column(Modifier.background(MaterialTheme.colorScheme.background).statusBarsPadding()) {
-                    WorkbenchBar(
-                        vm,
-                        showUndo = !previewing,
-                        onMenu = { scope.launch { drawer.open() } },
-                        onFilaments = { filamentSlots = true },
-                    ) { picker = it }
-                    StageTabRow(stage, canPaint = hasObjects && vm.slice !is SliceState.Running, canPreview = done != null) { onStage(it) }
-                }
             }
         },
     ) { padding ->
@@ -368,7 +339,8 @@ fun PlateScreen(vm: AppViewModel) {
         )
         }
         val status: @Composable () -> Unit = {
-            if (!previewing) PlateStrip(vm)
+            // The phone shows the plate strip in its top row.
+            if (!previewing && twoPane) PlateStrip(vm)
             vm.busy?.let { label ->
                 Spacer(Modifier.height(6.dp))
                 val percent = vm.busyProgress
@@ -473,6 +445,16 @@ fun PlateScreen(vm: AppViewModel) {
                     onTransform = { transformOpen = it },
                     previewDetails = previewDetails,
                     onPreviewDetails = { previewDetails = !previewDetails },
+                    toolLabels = toolLabels,
+                    onToolLabels = { toolLabels = !toolLabels },
+                    topRow = {
+                        WorkbenchTopRow(
+                            vm,
+                            previewing = previewing,
+                            onMenu = { scope.launch { drawer.open() } },
+                            onFilaments = { filamentSlots = true },
+                        ) { picker = it }
+                    },
                     status = status,
                     previewPanel = { controls(true, {}, {}) },
                     onEditObject = { objectSheet = it },

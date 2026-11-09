@@ -10,6 +10,10 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE.txt)
 ![Platform: Android 8.0+](https://img.shields.io/badge/platform-Android%208.0%2B-3DDC84?logo=android&logoColor=white)
 
+<a href="https://github.com/cakemasterjedi/OrcaPod/releases/latest/download/OrcaPod.apk"><img alt="Download the APK" src="https://img.shields.io/badge/Download-OrcaPod.apk-3DDC84?style=for-the-badge&logo=android&logoColor=white" height="40"></a>
+
+[All releases](https://github.com/cakemasterjedi/OrcaPod/releases) · [Install and update](#download)
+
 </div>
 
 OrcaPod puts a full desktop-grade slicer in your pocket. Import a model, place

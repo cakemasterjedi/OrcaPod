@@ -166,7 +166,12 @@ jobs:
             echo "::add-mask::$password"
             keystore="$RUNNER_TEMP/orcapod.keystore"
             printf '%s' "$KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > "$keystore"
-            if ! keytool -list -keystore "$keystore" -storepass "$password" -alias orcapod > /dev/null; then
+            if ! check="$(keytool -list -keystore "$keystore" -storepass "$password" -alias orcapod 2>&1)"; then
+              # Enough to tell a mangled keystore from a wrong password
+              # without revealing either: the decoded size and hash prefix,
+              # the password length, and keytool's own message.
+              echo "Decoded keystore: $(wc -c < "$keystore") bytes, sha256 $(sha256sum "$keystore" | cut -c1-16); password: ${#password} characters"
+              echo "keytool: $(printf '%s' "$check" | grep -m1 -i error)"
               echo "::error::The ORCAPOD_KEYSTORE_BASE64 and ORCAPOD_KEYSTORE_PASSWORD secrets do not open a keystore with the key 'orcapod'; paste both again."
               exit 1
             fi

@@ -105,6 +105,8 @@ fun PlateScreen(vm: AppViewModel) {
     var viewRef by remember { mutableStateOf<PlateView?>(null) }
     val config = LocalConfiguration.current
     val twoPane = usesTwoPane(config.screenWidthDp, config.screenHeightDp)
+    // Closed for the rest of the session once dismissed; the Add button does the same job.
+    var emptyCardClosed by rememberSaveable { mutableStateOf(false) }
     var paneTab by rememberSaveable { mutableStateOf(PaneTab.OBJECTS) }
     // The phone's transform panel opens with each newly picked object and can be closed.
     var transformOpen by rememberSaveable { mutableStateOf(true) }
@@ -343,12 +345,13 @@ fun PlateScreen(vm: AppViewModel) {
         },
     ) { padding ->
         val emptyCard: @Composable BoxScope.() -> Unit = {
-            if (!hasObjects && !previewing && vm.busy == null) {
+            if (!hasObjects && !previewing && vm.busy == null && !emptyCardClosed) {
                 EmptyPlateCard(
                     onImport = { importModels.launch(MODEL_TYPES) },
                     onLibrary = { vm.openLibrary() },
                     onShape = { shapeMenu = true },
                     onOpenProject = { guarded { openProject.launch(MODEL_TYPES) } },
+                    onDismiss = { emptyCardClosed = true },
                     modifier = Modifier.align(Alignment.Center).padding(24.dp),
                 )
             }

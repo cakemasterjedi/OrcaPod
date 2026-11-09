@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -161,12 +164,17 @@ fun EmptyPlateCard(
     onLibrary: () -> Unit,
     onShape: () -> Unit,
     onOpenProject: () -> Unit,
+    onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(
         modifier.widthIn(max = 420.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.96f)),
     ) {
+        Box {
+        IconButton(onClick = onDismiss, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp)) {
+            Icon(Icons.Filled.Close, "Close")
+        }
         Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) {
                 Icon(AppIcons.ViewInAr, null, Modifier.size(44.dp), tint = MaterialTheme.colorScheme.primary)
@@ -197,6 +205,7 @@ fun EmptyPlateCard(
                 OutlinedButton(onClick = onShape, Modifier.weight(1f)) { Text("Add a shape") }
                 OutlinedButton(onClick = onOpenProject, Modifier.weight(1f)) { Text("Open project") }
             }
+        }
         }
     }
 }

@@ -1235,7 +1235,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         engineAction { e ->
-            e.paintFill(objectId, volumeId, p.layer, hit, view, if (p.tool == PaintTool.SMART_FILL) p.angle.toDouble() else 0.0, p.state)
+            try {
+                e.paintFill(objectId, volumeId, p.layer, hit, view, if (p.tool == PaintTool.SMART_FILL) p.angle.toDouble() else 0.0, p.state)
+            } catch (ex: OrcaException) {
+                // A tap on the very edge of the part can miss its surface in
+                // the engine's own hit test: nothing to fill, like desktop.
+                if (ex.code != OrcaException.NOT_FOUND) throw ex
+                return@engineAction
+            }
             refreshScene()
             invalidateSlice()
         }

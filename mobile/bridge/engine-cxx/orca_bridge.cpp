@@ -4768,7 +4768,6 @@ orca_result orca_plater_volume_paint_fill(orca_plater *plater,
             volume, hit_local, view_local, operation, &facet_failure);
         if (facet < 0) return facet_failure;
 
-        OrcapadMutation mutation(*plater, "Paint");
         Slic3r::TriangleSelector selector(volume->mesh());
         selector.deserialize(annotation->get_data(), false);
         Slic3r::Transform3d trafo_no_translate = Slic3r::Transform3d::Identity();
@@ -4786,9 +4785,14 @@ orca_result orca_plater_volume_paint_fill(orca_plater *plater,
         }
         selector.seed_fill_apply_on_triangles(
             static_cast<Slic3r::EnforcerBlockerType>(state));
-        if (!annotation->set(selector))
-            return orcapad_fail(ORCA_STATUS_NOT_FOUND, operation,
-                                "the fill selected nothing at that position");
+        // Filling an area already in this state changes nothing: not an
+        // error (a second tap on a filled face), and no undo step.
+        if (selector.serialize() == annotation->get_data()) {
+            *out_revision = plater->revision;
+            return orcapad_ok();
+        }
+        OrcapadMutation mutation(*plater, "Paint");
+        annotation->set(selector);
         orcapad_touch_object(*plater, object_id);
         *out_revision = mutation.commit();
         return orcapad_ok();

@@ -23,12 +23,20 @@ class PresetChoiceTest {
     }
 
     @Test
-    fun presetsAddedAfterPickingAreListedUntilDecidedOn() {
+    fun userPresetsAddedAfterPickingAreListedUntilDecidedOn() {
         val choice = PresetChoice().pick(entries("A1", "P1S"), setOf("P1S"))
-        val later = entries("A1", "P1S", "My PLA")
+        val later = entries("A1", "P1S") + PresetEntry("My PLA", "", true, 1)
         assertEquals(listOf("P1S", "My PLA"), names(choice.filter(later, "P1S")))
         val decided = choice.pick(later, setOf("P1S"))
         assertEquals(listOf("P1S"), names(decided.filter(later, "P1S")))
+    }
+
+    @Test
+    fun systemPresetsOutsideThePicksStayHiddenEvenWhenNeverSeen() {
+        // Another brand's printers loaded alongside: only the picks are listed.
+        val choice = PresetChoice().pick(entries("A1", "P1S"), setOf("P1S"))
+        val loaded = entries("A1", "P1S") + PresetEntry("Artillery X1", "Artillery", true, 0)
+        assertEquals(listOf("P1S"), names(choice.filter(loaded, "P1S")))
     }
 
     @Test

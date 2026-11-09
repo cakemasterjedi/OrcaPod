@@ -56,4 +56,17 @@ class ProfileCatalogTest {
             choice.filter(loaded, "Bambu Lab P1S 0.4 nozzle").map { it.name }.toSet(),
         )
     }
+
+    @Test
+    fun filamentTypesAreReadFromTheProductName() {
+        mapOf(
+            "Bambu PLA Basic" to "PLA",
+            "Overture PETG-CF" to "PETG",
+            "Bambu PA6-CF" to "PA",
+            "eSUN ePLA-LW" to "PLA",
+            "Generic TPU 95A" to "TPU",
+            "Prusament PVB" to "Other",
+        ).forEach { (product, type) -> assertEquals(product, type, ProfileCatalog.typeOf(product)) }
+        assertEquals("PLA", catalog.filaments.first { it.name == "Generic PLA" }.type)
+    }
 }

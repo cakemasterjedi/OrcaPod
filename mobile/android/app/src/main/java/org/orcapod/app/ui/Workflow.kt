@@ -1,6 +1,5 @@
 package org.orcapod.app.ui
 
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -162,7 +161,6 @@ fun ToolButton(label: String, icon: ImageVector, enabled: Boolean = true, modifi
 fun EmptyPlateCard(
     onImport: () -> Unit,
     onLibrary: () -> Unit,
-    onShape: () -> Unit,
     onOpenProject: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
@@ -201,10 +199,7 @@ fun EmptyPlateCard(
                 Text("Browse the model library")
             }
             Spacer(Modifier.height(8.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onShape, Modifier.weight(1f)) { Text("Add a shape") }
-                OutlinedButton(onClick = onOpenProject, Modifier.weight(1f)) { Text("Open project") }
-            }
+            OutlinedButton(onClick = onOpenProject, Modifier.fillMaxWidth()) { Text("Open project") }
         }
         }
     }

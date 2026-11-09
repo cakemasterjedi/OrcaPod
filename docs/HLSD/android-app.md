@@ -326,10 +326,14 @@ the profile tree address vendors by them.
 The printer and filament pickers can list only the presets the user ticked
 (`PresetChoice`, kept per kind in preferences). With nothing ticked among the
 loaded presets, as before any choice or after switching to a brand with no
-ticks, everything is listed, so a choice never leaves a picker empty. The
-choice also remembers every preset listed when it was made, so presets that
-appear later (imported filaments, profile updates) are listed until the user
-decides on them, and the selected preset is always listed.
+ticks, everything is listed, so a choice never leaves a picker empty.
+Otherwise unticked system presets are hidden, even ones the engine loaded
+that the choice never listed, so the list stays short whatever the engine
+holds. User presets that appear after the choice (imported filaments) are
+listed until the user decides on them, and the selected preset is always
+listed. When the selected printer is gone, the app starts on a ticked one
+rather than the first alphabetically, which would also narrow the filament
+list to that printer.
 
 Right after the brand step, and from the menu later, a model step sets the
 same choices one level up. It lists the printer models and filament products
@@ -337,6 +341,11 @@ of the installed brands, read from the bundled profile files by
 `ProfileCatalog` rather than from the engine, which only holds the active
 brand. A model stands for all its nozzle variants (`printer_model`), and a
 filament product for all its per-printer variants (the name before ` @`).
+Filaments carry a material read from the product name (`ProfileCatalog.typeOf`),
+which the step filters by: chips for the common materials, the rest under a
+menu. Brands follow the same split: the most common filament brands are
+listed first and the others are folded under "More brands", which opens
+while searching.
 
 The settings sheet edits a handful of common process and filament options on
 top of the selected presets through the engine's edited-preset mechanism, so

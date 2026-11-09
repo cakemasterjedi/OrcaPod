@@ -133,6 +133,14 @@ settings, and the selected printer, filament and process with their unsaved
 edits. Desktop OrcaSlicer opens the same file, and opening one replaces the
 plate and adopts its settings (`load_config_model`).
 
+"Export 3MF for printer" writes the same project for another printer preset
+(`orca_project_export_for_machine`) without changing the plate's own
+printer: a copy of the preset session switches to that printer the way a
+printer change would, keeping the process and filaments that suit it and
+swapping the rest, and each instance keeps its place relative to its plate's
+centre on that printer's plates. The file names the printer model, so
+desktop OrcaSlicer or Bambu Studio opens it set up for that printer.
+
 The app keeps desktop's project workflow around that: the title shows the
 project name with a `*` while the plate or settings differ from the last
 save; "Save" writes back to the same document and "Save as" picks a new one;

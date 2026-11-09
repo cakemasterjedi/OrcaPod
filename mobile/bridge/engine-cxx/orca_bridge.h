@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 /// Version of the C ABI contract in this header. Callers verify it at runtime.
-#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)46)
+#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)47)
 
 typedef int32_t orca_status_code;
 #define ORCA_STATUS_OK                     ((orca_status_code)0)
@@ -1666,6 +1666,20 @@ orca_result orca_plater_fill_bed(orca_plater *plater, orca_presets *presets,
 orca_result orca_project_save(orca_plater *plater, orca_presets *presets,
                               const char *path, uint32_t thumbnail_size,
                               const uint8_t *thumbnail_rgba);
+
+/// Printer-specific project export (ABI v47): writes the document like
+/// orca_project_save, but for `machine` (a listed printer preset) with the
+/// process and filaments a printer change to it would resolve
+/// (orca_presets_select_machine semantics), so desktop OrcaSlicer or Bambu
+/// Studio opens it set up for that printer. Each instance keeps its place
+/// relative to its plate's centre on that printer's plates. The session's
+/// selection and the document are left untouched (not a mutation).
+orca_result orca_project_export_for_machine(orca_plater *plater,
+                                            orca_presets *presets,
+                                            const char *machine,
+                                            const char *path,
+                                            uint32_t thumbnail_size,
+                                            const uint8_t *thumbnail_rgba);
 
 // --- exports (ABI v33) ------------------------------------------------------
 

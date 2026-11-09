@@ -377,6 +377,13 @@ class EngineHostTest {
         val project = File(work, "project.3mf")
         e.saveProject(project.path)
         assertTrue(project.length() > 1_000)
+        // A project for another printer leaves the session's printer as it was.
+        val printer = e.current(PresetKind.PRINTER)
+        val other = e.list(PresetKind.PRINTER).first { it.name != printer }.name
+        val forOther = File(work, "for-other.3mf")
+        e.exportProjectFor(other, forOther.path)
+        assertTrue(forOther.length() > 1_000)
+        assertEquals(printer, e.current(PresetKind.PRINTER))
         val stl = File(work, "all.stl")
         e.exportStl(null, stl.path)
         assertTrue(stl.length() > 84)

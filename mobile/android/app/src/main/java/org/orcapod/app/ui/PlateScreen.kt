@@ -146,6 +146,14 @@ fun PlateScreen(vm: AppViewModel) {
     val export3mf = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/3mf")) { uri ->
         if (uri != null) vm.exportGeneric3mf(uri)
     }
+    // The printer a "3MF for printer" export is being written for.
+    var exportPrinter by remember { mutableStateOf<String?>(null) }
+    var exportPrinterPicker by remember { mutableStateOf(false) }
+    val exportFor = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/3mf")) { uri ->
+        val machine = exportPrinter
+        exportPrinter = null
+        if (uri != null && machine != null) vm.exportProjectFor(machine, uri)
+    }
     val exportStl = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/stl")) { uri ->
         if (uri != null) vm.exportStl(null, uri)
     }
@@ -211,6 +219,7 @@ fun PlateScreen(vm: AppViewModel) {
                 if (vm.scene.snapshot.plates.size > 1) MenuEntry("Export all plates sliced file", AppIcons.Export, enabled = canExport) {
                     slicedAll = true; exportSliced.launch("plates.gcode.3mf")
                 } else null,
+                MenuEntry("Export 3MF for printer", AppIcons.Export, enabled = hasObjects) { exportPrinterPicker = true },
                 MenuEntry("Export generic 3MF", AppIcons.Export, enabled = hasObjects) { export3mf.launch("plate.3mf") },
                 MenuEntry("Export all objects as STL", AppIcons.Export, enabled = hasObjects) { exportStl.launch("plate.stl") },
             ),
@@ -525,6 +534,21 @@ fun PlateScreen(vm: AppViewModel) {
             onBrand = vm::switchBrand,
             choice = vm.choices[kind],
             onChoose = { vm.choosePresets(kind, entries, it) },
+        )
+    }
+    if (exportPrinterPicker) {
+        PresetPickerSheet(
+            title = "Export 3MF for printer",
+            entries = vm.printers,
+            current = vm.printer,
+            onPick = { machine ->
+                exportPrinter = machine
+                exportFor.launch(projectFileName)
+            },
+            onDelete = null,
+            onDismiss = { exportPrinterPicker = false },
+            choice = vm.choices[PresetKind.PRINTER],
+            onChoose = { vm.choosePresets(PresetKind.PRINTER, vm.printers, it) },
         )
     }
     if (profilesOpen) ProfilesSheet(vm) { profilesOpen = false }

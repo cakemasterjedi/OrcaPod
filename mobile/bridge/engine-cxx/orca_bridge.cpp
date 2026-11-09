@@ -509,7 +509,67 @@ orca_result orca_presets_select(orca_presets *presets, const char *machine,
 // presets selected (not listed, not passable to orca_presets_select); a
 // printer switch must instead let the engine resolve the process and
 // filament, exactly like the desktop Sidebar combo (PresetBundle.cpp
-// load_selections + update_compatible(Always)).
+// load_selections + update_compatible(Always)). Works on a candidate copy
+// so callers adopt it (printer change) or only read it (project export).
+static orca_result orcapad_select_machine_into(Slic3r::PresetBundle &candidate,
+                                               const char *machine,
+                                               const char *operation) {
+    candidate.printers.select_preset_by_name(machine, false);
+    const Slic3r::Preset &printer = candidate.printers.get_selected_preset();
+    if (printer.name != machine)
+        return orcapad_fail(ORCA_STATUS_INVALID_CONFIGURATION, operation,
+                            "machine preset is not selectable");
+
+    // While the process/filament selection is still a default preset,
+    // adopt the machine's declared defaults (upstream load_selections,
+    // the ConfigWizard "BBS: set default print/filament profiles" path).
+    if (candidate.prints.get_selected_preset().is_default &&
+        printer.config.has("default_print_profile")) {
+        const std::string preferred =
+            printer.config.opt_string("default_print_profile");
+        if (!preferred.empty() &&
+            candidate.prints.find_preset(preferred, false, true) != nullptr)
+            candidate.prints.select_preset_by_name(preferred, true);
+    }
+    if (candidate.filaments.get_selected_preset().is_default &&
+        printer.config.has("default_filament_profile")) {
+        const auto &preferred = printer.config.option<
+            Slic3r::ConfigOptionStrings>("default_filament_profile")->values;
+        if (!preferred.empty() &&
+            candidate.filaments.find_preset(preferred.front(), false, true) != nullptr)
+            candidate.filaments.select_preset_by_name(preferred.front(), true);
+    }
+
+    // Desktop printer change: swap any incompatible process/filament for
+    // a compatible one (printer-preferred when declared).
+    candidate.update_compatible(Slic3r::PresetSelectCompatibleType::Always);
+
+    // Some machines declare no default process and nothing forces a swap;
+    // never leave a "- default -" process selected (it slices with unsafe
+    // engine defaults, e.g. relative E without a per-layer reset).
+    if (candidate.prints.get_selected_preset().is_default) {
+        Slic3r::Preset &compatible = candidate.prints.first_compatible();
+        if (!compatible.is_default)
+            candidate.prints.select_preset_by_name(compatible.name, true);
+    }
+    if (candidate.filaments.get_selected_preset().is_default) {
+        Slic3r::Preset &compatible = candidate.filaments.first_compatible();
+        if (!compatible.is_default)
+            candidate.filaments.select_preset_by_name(compatible.name, true);
+    }
+
+    // Keep the per-extruder filament list valid (upstream fix-up).
+    if (candidate.filament_presets.empty())
+        candidate.set_filament_preset(
+            0, candidate.filaments.get_selected_preset_name());
+    else
+        for (std::string &name : candidate.filament_presets)
+            if (candidate.filaments.find_preset(name, false) == nullptr)
+                name = candidate.filaments.get_selected_preset_name();
+
+    return orcapad_ok();
+}
+
 orca_result orca_presets_select_machine(orca_presets *presets,
                                          const char *machine) {
     constexpr const char *operation = "orca_presets_select_machine";
@@ -526,58 +586,9 @@ orca_result orca_presets_select_machine(orca_presets *presets,
                                 "machine preset was not found");
         auto candidate =
             std::make_unique<Slic3r::PresetBundle>(*presets->bundle);
-        candidate->printers.select_preset_by_name(machine, false);
-        const Slic3r::Preset &printer = candidate->printers.get_selected_preset();
-        if (printer.name != machine)
-            return orcapad_fail(ORCA_STATUS_INVALID_CONFIGURATION, operation,
-                                "machine preset is not selectable");
-
-        // While the process/filament selection is still a default preset,
-        // adopt the machine's declared defaults (upstream load_selections,
-        // the ConfigWizard "BBS: set default print/filament profiles" path).
-        if (candidate->prints.get_selected_preset().is_default &&
-            printer.config.has("default_print_profile")) {
-            const std::string preferred =
-                printer.config.opt_string("default_print_profile");
-            if (!preferred.empty() &&
-                candidate->prints.find_preset(preferred, false, true) != nullptr)
-                candidate->prints.select_preset_by_name(preferred, true);
-        }
-        if (candidate->filaments.get_selected_preset().is_default &&
-            printer.config.has("default_filament_profile")) {
-            const auto &preferred = printer.config.option<
-                Slic3r::ConfigOptionStrings>("default_filament_profile")->values;
-            if (!preferred.empty() &&
-                candidate->filaments.find_preset(preferred.front(), false, true) != nullptr)
-                candidate->filaments.select_preset_by_name(preferred.front(), true);
-        }
-
-        // Desktop printer change: swap any incompatible process/filament for
-        // a compatible one (printer-preferred when declared).
-        candidate->update_compatible(Slic3r::PresetSelectCompatibleType::Always);
-
-        // Some machines declare no default process and nothing forces a swap;
-        // never leave a "- default -" process selected (it slices with unsafe
-        // engine defaults, e.g. relative E without a per-layer reset).
-        if (candidate->prints.get_selected_preset().is_default) {
-            Slic3r::Preset &compatible = candidate->prints.first_compatible();
-            if (!compatible.is_default)
-                candidate->prints.select_preset_by_name(compatible.name, true);
-        }
-        if (candidate->filaments.get_selected_preset().is_default) {
-            Slic3r::Preset &compatible = candidate->filaments.first_compatible();
-            if (!compatible.is_default)
-                candidate->filaments.select_preset_by_name(compatible.name, true);
-        }
-
-        // Keep the per-extruder filament list valid (upstream fix-up).
-        if (candidate->filament_presets.empty())
-            candidate->set_filament_preset(
-                0, candidate->filaments.get_selected_preset_name());
-        else
-            for (std::string &name : candidate->filament_presets)
-                if (candidate->filaments.find_preset(name, false) == nullptr)
-                    name = candidate->filaments.get_selected_preset_name();
+        const orca_result selected =
+            orcapad_select_machine_into(*candidate, machine, operation);
+        if (selected.code != ORCA_STATUS_OK) return selected;
 
         if (presets->bundle->printers.get_selected_preset().name != machine)
             orcapad_apply_default_bed_type(*candidate);
@@ -10362,10 +10373,13 @@ orca_result orca_project_open(orca_plater *plater, orca_presets *presets,
     });
 }
 
-orca_result orca_project_save(orca_plater *plater, orca_presets *presets,
-                              const char *path, uint32_t thumbnail_size,
-                              const uint8_t *thumbnail_rgba) {
-    constexpr const char *operation = "orca_project_save";
+/// Argument checks shared by project save and printer-specific export.
+static orca_result orcapad_check_project_target(orca_plater *plater,
+                                                orca_presets *presets,
+                                                const char *path,
+                                                uint32_t thumbnail_size,
+                                                const uint8_t *thumbnail_rgba,
+                                                const char *operation) {
     if (!plater)
         return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, operation, "plater handle is null");
     if (!presets)
@@ -10382,75 +10396,188 @@ orca_result orca_project_save(orca_plater *plater, orca_presets *presets,
     if (thumbnail_rgba && (thumbnail_size < 16 || thumbnail_size > 2048))
         return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
                             "thumbnail must be 16..2048 px square RGBA");
+    return orcapad_ok();
+}
+
+/// Writes the document with `bundle`'s settings as an Orca project 3MF.
+static orca_result orcapad_store_project(orca_plater *plater,
+                                         Slic3r::PresetBundle &bundle,
+                                         const std::string &target,
+                                         uint32_t thumbnail_size,
+                                         const uint8_t *thumbnail_rgba,
+                                         const char *operation) {
+    // desktop Plater::export_3mf: secure full config, embedded presets,
+    // one plate (PartPlateList::store_to_3mf_structure, plate_index 0)
+    Slic3r::DynamicPrintConfig config = bundle.full_config_secure();
+    struct EmbeddedPresets {
+        std::vector<Slic3r::Preset *> list;
+        ~EmbeddedPresets() { for (Slic3r::Preset *p : list) delete p; }
+    } embedded{bundle.get_current_project_embedded_presets()};
+
+    Slic3r::PlateDataPtrs plates;
+    struct PlateGuard {
+        Slic3r::PlateDataPtrs &plates;
+        ~PlateGuard() { Slic3r::release_PlateData_list(plates); }
+    } plate_guard{plates};
+    // One PlateData per document plate (names, locks, membership by
+    // derived assignment) so desktop OrcaSlicer reads the same plates.
+    for (size_t plate_index = 0; plate_index < plater->plates.size();
+         ++plate_index) {
+        const OrcapadPlate &source = plater->plates[plate_index];
+        auto *data = new Slic3r::PlateData();
+        plates.push_back(data);
+        data->plate_index = static_cast<int>(plate_index);
+        data->locked = source.locked;
+        data->config = source.config;
+        data->plate_name = source.name;
+        for (size_t object = 0; object < plater->model.objects.size(); ++object) {
+            const Slic3r::ModelObject *model_object =
+                plater->model.objects[object];
+            const orca_object_id object_id =
+                static_cast<orca_object_id>(model_object->id().id);
+            for (size_t instance = 0; instance < model_object->instances.size();
+                 ++instance) {
+                const int plate = orcapad_instance_plate(
+                    *plater, object_id,
+                    static_cast<orca_instance_id>(
+                        model_object->instances[instance]->id().id),
+                    orcapad_instance_box(*model_object->instances[instance]));
+                if (plate == static_cast<int>(plate_index))
+                    data->objects_and_instances.emplace_back(
+                        int(object), int(instance));
+            }
+        }
+        data->printer_model_id =
+            bundle.printers.get_edited_preset().get_printer_type(&bundle);
+        if (const auto *nozzles =
+                config.option<Slic3r::ConfigOptionFloats>("nozzle_diameter"))
+            data->nozzle_diameters = nozzles->serialize();
+    }
+    Slic3r::StoreParams params;
+    params.path = target.c_str();
+    params.model = &plater->model;
+    params.plate_data_list = plates;
+    params.project_presets = embedded.list;
+    params.config = &config;
+    // desktop plate thumbnail (PartPlate::thumbnail_data, 512²)
+    Slic3r::ThumbnailData plate_thumbnail;
+    if (thumbnail_rgba) {
+        const std::vector<uint8_t> source(
+            thumbnail_rgba, thumbnail_rgba + size_t(thumbnail_size) * thumbnail_size * 4);
+        plate_thumbnail = orcapad_thumbnail(thumbnail_size, source, 512, 512);
+        params.thumbnail_data.push_back(&plate_thumbnail);
+    }
+    params.strategy = Slic3r::SaveStrategy::Zip64;
+    if (!Slic3r::store_bbs_3mf(params))
+        return orcapad_fail(ORCA_STATUS_IO_FAILURE, operation,
+                            "engine failed to write the project file");
+    return orcapad_ok();
+}
+
+orca_result orca_project_save(orca_plater *plater, orca_presets *presets,
+                              const char *path, uint32_t thumbnail_size,
+                              const uint8_t *thumbnail_rgba) {
+    constexpr const char *operation = "orca_project_save";
+    const orca_result checked = orcapad_check_project_target(
+        plater, presets, path, thumbnail_size, thumbnail_rgba, operation);
+    if (checked.code != ORCA_STATUS_OK) return checked;
+    return orcapad_guard(operation, [&]() -> orca_result {
+        return orcapad_store_project(plater, *presets->bundle, path,
+                                     thumbnail_size, thumbnail_rgba, operation);
+    });
+}
+
+orca_result orca_project_export_for_machine(orca_plater *plater,
+                                            orca_presets *presets,
+                                            const char *machine,
+                                            const char *path,
+                                            uint32_t thumbnail_size,
+                                            const uint8_t *thumbnail_rgba) {
+    constexpr const char *operation = "orca_project_export_for_machine";
+    const orca_result checked = orcapad_check_project_target(
+        plater, presets, path, thumbnail_size, thumbnail_rgba, operation);
+    if (checked.code != ORCA_STATUS_OK) return checked;
+    if (!machine || !machine[0])
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "machine name is empty");
 
     return orcapad_guard(operation, [&]() -> orca_result {
-        Slic3r::PresetBundle &bundle = *presets->bundle;
-        // desktop Plater::export_3mf: secure full config, embedded presets,
-        // one plate (PartPlateList::store_to_3mf_structure, plate_index 0)
-        Slic3r::DynamicPrintConfig config = bundle.full_config_secure();
-        struct EmbeddedPresets {
-            std::vector<Slic3r::Preset *> list;
-            ~EmbeddedPresets() { for (Slic3r::Preset *p : list) delete p; }
-        } embedded{bundle.get_current_project_embedded_presets()};
+        if (!orcapad_has_listed_preset(presets->bundle->printers, machine))
+            return orcapad_fail(ORCA_STATUS_NOT_FOUND, operation,
+                                "machine preset was not found");
+        // The session's own selection stays untouched: the chosen printer
+        // (with the process and filaments a printer change would resolve)
+        // is selected on a copy that only this export reads.
+        Slic3r::PresetBundle candidate(*presets->bundle);
+        const orca_result selected =
+            orcapad_select_machine_into(candidate, machine, operation);
+        if (selected.code != ORCA_STATUS_OK) return selected;
+        if (presets->bundle->printers.get_selected_preset().name != machine)
+            orcapad_apply_default_bed_type(candidate);
 
-        Slic3r::PlateDataPtrs plates;
-        struct PlateGuard {
-            Slic3r::PlateDataPtrs &plates;
-            ~PlateGuard() { Slic3r::release_PlateData_list(plates); }
-        } plate_guard{plates};
-        // One PlateData per document plate (names, locks, membership by
-        // derived assignment) so desktop OrcaSlicer reads the same plates.
-        for (size_t plate_index = 0; plate_index < plater->plates.size();
-             ++plate_index) {
-            const OrcapadPlate &source = plater->plates[plate_index];
-            auto *data = new Slic3r::PlateData();
-            plates.push_back(data);
-            data->plate_index = static_cast<int>(plate_index);
-            data->locked = source.locked;
-            data->config = source.config;
-            data->plate_name = source.name;
-            for (size_t object = 0; object < plater->model.objects.size(); ++object) {
-                const Slic3r::ModelObject *model_object =
-                    plater->model.objects[object];
-                const orca_object_id object_id =
-                    static_cast<orca_object_id>(model_object->id().id);
-                for (size_t instance = 0; instance < model_object->instances.size();
-                     ++instance) {
-                    const int plate = orcapad_instance_plate(
-                        *plater, object_id,
-                        static_cast<orca_instance_id>(
-                            model_object->instances[instance]->id().id),
-                        orcapad_instance_box(*model_object->instances[instance]));
-                    if (plate == static_cast<int>(plate_index))
-                        data->objects_and_instances.emplace_back(
-                            int(object), int(instance));
+        const Slic3r::DynamicPrintConfig &printer =
+            candidate.printers.get_selected_preset().config;
+        const auto *area = printer.option<Slic3r::ConfigOptionPoints>("printable_area");
+        if (!area || area->values.empty())
+            return orcapad_fail(ORCA_STATUS_INVALID_CONFIGURATION, operation,
+                                "machine defines no printable area");
+        Slic3r::BoundingBoxf bed;
+        for (const auto &point : area->values) bed.merge(point);
+        if (!(bed.max.x() > bed.min.x()) || !(bed.max.y() > bed.min.y()))
+            return orcapad_fail(ORCA_STATUS_INVALID_CONFIGURATION, operation,
+                                "printable area is degenerate");
+        const auto *height = printer.option<Slic3r::ConfigOptionFloat>("printable_height");
+
+        // Each instance keeps its place relative to its plate's centre on
+        // the chosen printer's (differently sized) plates, so desktop
+        // OrcaSlicer shows the same plates. Placement and bed are restored
+        // once the file is written: the export is not a mutation.
+        struct Restore {
+            orca_plater &plater;
+            double origin_x, origin_y, width, depth, height;
+            std::vector<std::pair<Slic3r::ModelInstance *, Slic3r::Vec3d>> offsets;
+            ~Restore() {
+                for (auto &entry : offsets) {
+                    entry.first->set_offset(entry.second);
+                    entry.first->get_object()->invalidate_bounding_box();
                 }
+                plater.bed_origin_x = origin_x;
+                plater.bed_origin_y = origin_y;
+                plater.bed_width = width;
+                plater.bed_depth = depth;
+                plater.bed_height = height;
             }
-            data->printer_model_id =
-                bundle.printers.get_edited_preset().get_printer_type(&bundle);
-            if (const auto *nozzles =
-                    config.option<Slic3r::ConfigOptionFloats>("nozzle_diameter"))
-                data->nozzle_diameters = nozzles->serialize();
+        } restore{*plater, plater->bed_origin_x, plater->bed_origin_y,
+                  plater->bed_width, plater->bed_depth, plater->bed_height, {}};
+        std::vector<std::pair<Slic3r::ModelInstance *, int>> placed;
+        for (Slic3r::ModelObject *object : plater->model.objects)
+            for (Slic3r::ModelInstance *instance : object->instances)
+                placed.emplace_back(instance, orcapad_instance_plate(
+                    *plater, static_cast<orca_object_id>(object->id().id),
+                    static_cast<orca_instance_id>(instance->id().id),
+                    orcapad_instance_box(*instance)));
+        auto plate_centre = [&](int index) -> Slic3r::Vec3d {
+            return orcapad_plate_origin(*plater, index) +
+                   Slic3r::Vec3d(plater->bed_width / 2, plater->bed_depth / 2, 0.0);
+        };
+        std::vector<Slic3r::Vec3d> old_centres;
+        for (size_t index = 0; index < plater->plates.size(); ++index)
+            old_centres.push_back(plate_centre(static_cast<int>(index)));
+
+        plater->bed_origin_x = bed.min.x();
+        plater->bed_origin_y = bed.min.y();
+        plater->bed_width = bed.max.x() - bed.min.x();
+        plater->bed_depth = bed.max.y() - bed.min.y();
+        if (height && height->value > 0.0) plater->bed_height = height->value;
+        for (const auto &[instance, plate] : placed) {
+            restore.offsets.emplace_back(instance, instance->get_offset());
+            if (plate < 0) continue; // off every plate: left where it is
+            instance->set_offset(instance->get_offset() + plate_centre(plate) -
+                                 old_centres[static_cast<size_t>(plate)]);
+            instance->get_object()->invalidate_bounding_box();
         }
-        Slic3r::StoreParams params;
-        params.path = target.c_str();
-        params.model = &plater->model;
-        params.plate_data_list = plates;
-        params.project_presets = embedded.list;
-        params.config = &config;
-        // desktop plate thumbnail (PartPlate::thumbnail_data, 512²)
-        Slic3r::ThumbnailData plate_thumbnail;
-        if (thumbnail_rgba) {
-            const std::vector<uint8_t> source(
-                thumbnail_rgba, thumbnail_rgba + size_t(thumbnail_size) * thumbnail_size * 4);
-            plate_thumbnail = orcapad_thumbnail(thumbnail_size, source, 512, 512);
-            params.thumbnail_data.push_back(&plate_thumbnail);
-        }
-        params.strategy = Slic3r::SaveStrategy::Zip64;
-        if (!Slic3r::store_bbs_3mf(params))
-            return orcapad_fail(ORCA_STATUS_IO_FAILURE, operation,
-                                "engine failed to write the project file");
-        return orcapad_ok();
+        return orcapad_store_project(plater, candidate, path, thumbnail_size,
+                                     thumbnail_rgba, operation);
     });
 }
 

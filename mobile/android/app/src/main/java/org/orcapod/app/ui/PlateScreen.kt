@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Star
@@ -215,6 +216,7 @@ fun PlateScreen(vm: AppViewModel) {
                 MenuEntry("My printers", AppIcons.Print) { printersOpen = true },
                 MenuEntry("Print queue", AppIcons.Queue) { queueOpen = true },
                 MenuEntry("Printer brands", Icons.Filled.Star) { vm.manageVendors() },
+                MenuEntry("Choose listed printers and filaments", Icons.Filled.Check) { vm.manageModels() },
                 MenuEntry("Back up and sync profiles", AppIcons.CloudDownload) { profilesOpen = true },
             ),
         ),

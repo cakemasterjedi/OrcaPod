@@ -29,8 +29,10 @@ data class PresetChoice(val shown: Set<String> = emptySet(), val seen: Set<Strin
      * other entries (other brands, incompatible filaments) are kept; picking
      * nothing lists every entry again.
      */
-    fun pick(entries: List<PresetEntry>, picked: Set<String>): PresetChoice {
-        val names = entries.mapTo(HashSet()) { it.name }
-        return PresetChoice(shown = shown - names + (picked intersect names), seen = seen + names)
-    }
+    fun pick(entries: List<PresetEntry>, picked: Set<String>): PresetChoice =
+        pick(entries.mapTo(HashSet()) { it.name }, picked)
+
+    /** As [pick], over preset names that need not be loaded, such as a whole brand's. */
+    fun pick(names: Set<String>, picked: Set<String>): PresetChoice =
+        PresetChoice(shown = shown - names + (picked intersect names), seen = seen + names)
 }

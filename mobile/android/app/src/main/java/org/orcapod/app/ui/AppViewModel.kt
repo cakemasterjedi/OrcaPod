@@ -28,6 +28,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.orcapod.app.data.LocalProfileFolder
 import org.orcapod.app.data.PresetChoice
+import org.orcapod.app.data.ProfileCatalog
 import org.orcapod.app.data.ProfileBackup
 import org.orcapod.app.data.ProfileStore
 import org.orcapod.app.data.ProfileSync
@@ -77,6 +78,8 @@ import java.io.File
 sealed interface Phase {
     data class Loading(val message: String) : Phase
     data class VendorSetup(val vendors: List<String>, val firstRun: Boolean) : Phase
+    /** Which printer models and filaments of the installed brands the pickers list. */
+    data class ModelSetup(val catalog: ProfileCatalog) : Phase
     data object Ready : Phase
     data class Failed(val message: String) : Phase
 }
@@ -306,11 +309,41 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 invalidateSlice()
                 phase = Phase.Ready
             }
+            showModelSetup()
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
             Log.e(TAG, "install failed", e)
             phase = Phase.Failed(e.message ?: e.toString())
         }
+    }
+
+    /** Opens the step that picks which printer models and filaments the pickers list. */
+    fun manageModels() = viewModelScope.launch { showModelSetup() }
+
+    private suspend fun showModelSetup() {
+        phase = Phase.Loading("Reading printer models…")
+        phase = try {
+            Phase.ModelSetup(store.catalog(installedVendors))
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w(TAG, "catalog failed", e)
+            _messages.tryEmit("Could not read the printer models; every printer and filament stays listed")
+            Phase.Ready
+        }
+    }
+
+    /**
+     * Lists only the [printers] and [filaments] picked from [catalog] in the
+     * pickers; picking none of a kind lists all of it.
+     */
+    fun finishModelSetup(catalog: ProfileCatalog, printers: Set<ProfileCatalog.Group>, filaments: Set<ProfileCatalog.Group>) {
+        saveChoice(PresetKind.PRINTER, choice(PresetKind.PRINTER).pick(catalog.printerPresets, printers.flatMapTo(HashSet()) { it.presets }))
+        saveChoice(PresetKind.FILAMENT, choice(PresetKind.FILAMENT).pick(catalog.filamentPresets, filaments.flatMapTo(HashSet()) { it.presets }))
+        phase = Phase.Ready
+    }
+
+    fun skipModelSetup() {
+        phase = Phase.Ready
     }
 
     /** Switches the loaded profiles to [vendor]'s, restoring the presets last used with it. */
@@ -608,8 +641,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Shows only [picked] of [entries] in the [kind] picker; nothing picked shows them all. */
-    fun choosePresets(kind: PresetKind, entries: List<PresetEntry>, picked: Set<String>) {
-        val choice = (choices[kind] ?: PresetChoice()).pick(entries, picked)
+    fun choosePresets(kind: PresetKind, entries: List<PresetEntry>, picked: Set<String>) =
+        saveChoice(kind, choice(kind).pick(entries, picked))
+
+    fun choice(kind: PresetKind): PresetChoice = choices[kind] ?: PresetChoice()
+
+    private fun saveChoice(kind: PresetKind, choice: PresetChoice) {
         choices = choices + (kind to choice)
         choicePrefs.edit()
             .putStringSet("shown/${kind.name}", choice.shown)

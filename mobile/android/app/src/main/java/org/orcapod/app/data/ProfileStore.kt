@@ -97,6 +97,17 @@ class ProfileStore(private val context: Context) {
         }
     }
 
+    /** The printer models and filaments that [vendors] (plus the shared filament library) bring. */
+    suspend fun catalog(vendors: Set<String>): ProfileCatalog = withContext(Dispatchers.IO) {
+        ZipFile(bundle()).use { zip ->
+            val owners = vendors + ALWAYS
+            val files = zip.entries().asSequence()
+                .filter { !it.isDirectory && it.name.endsWith(".json") && it.name.substringBefore('/') in owners && '/' in it.name }
+                .map { e -> e.name to zip.getInputStream(e).use { String(it.readBytes(), Charsets.UTF_8) } }
+            ProfileCatalog.parse(files)
+        }
+    }
+
     /** True when profiles are installed and match this app build's bundle. */
     fun isInstalled(): Boolean = prefs.getLong(KEY_STAMP, -1L) == appStamp() && systemDir.isDirectory
 

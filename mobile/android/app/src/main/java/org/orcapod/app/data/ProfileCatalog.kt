@@ -11,8 +11,11 @@ import org.json.JSONObject
  * the engine has not loaded.
  */
 class ProfileCatalog(val printers: List<Group>, val filaments: List<Group>) {
-    /** A pickable item: [name] shown, [brand] it is listed under, [presets] it stands for. */
-    data class Group(val brand: String, val name: String, val presets: Set<String>)
+    /**
+     * A pickable item: [name] shown, [brand] it is listed under, [presets] it
+     * stands for, and for a filament its material [type] ("PLA", "PETG", ...).
+     */
+    data class Group(val brand: String, val name: String, val presets: Set<String>, val type: String = "")
 
     val printerPresets: Set<String> get() = printers.flatMapTo(HashSet()) { it.presets }
     val filamentPresets: Set<String> get() = filaments.flatMapTo(HashSet()) { it.presets }
@@ -52,14 +55,52 @@ class ProfileCatalog(val printers: List<Group>, val filaments: List<Group>) {
                 }
             }
             val byMaker = filaments.mapKeys { (product, _) -> (makers[product] ?: product.substringBefore(' ')) to product }
-            return ProfileCatalog(groups(printers), groups(byMaker))
+            return ProfileCatalog(groups(printers, filaments = false), groups(byMaker, filaments = true))
+        }
+
+        /** Filament makers most people buy from, listed first; the rest go under "More brands". */
+        val COMMON_MAKERS = listOf(
+            "Generic", "Bambu", "Polymaker", "Overture", "eSUN", "Elegoo", "SUNLU", "Prusament",
+            "Creality", "Anycubic", "Hatchbox", "Inland", "Jayo", "Sovol", "Qidi", "Kingroon",
+        )
+
+        /** Materials most prints use, offered first; the rest go under "More types". */
+        val COMMON_TYPES = listOf("PLA", "PETG", "ABS", "ASA", "TPU", "PA", "PC")
+
+        // Longer names first, so "PETG" wins over "PET" and "PCTG" over "PC".
+        private val TYPES = listOf(
+            "PETG", "PCTG", "PLA", "ABS", "ASA", "TPU", "TPE", "PVA", "BVOH", "HIPS", "PPS", "PPA",
+            "PEEK", "PEKK", "PEI", "PET", "PHA", "SBS", "EVA", "COPE", "PA", "PC", "PP", "PE",
+        )
+
+        /**
+         * The material of a filament product, read from its name: "Bambu PLA
+         * Basic" → PLA, "Overture PETG-CF" → PETG, "Bambu PA6-CF" → PA, "PolyMax
+         * Nylon" → PA; "Other" when no known material is named.
+         */
+        fun typeOf(product: String): String {
+            for (raw in product.split(' ', '-', '_')) {
+                // A lowercase lead letter marks a variant: "ePLA", "rPETG", "rABS".
+                val word = (if (raw.length > 3 && raw[0].isLowerCase()) raw.substring(1) else raw).uppercase()
+                if (word.startsWith("NYLON")) return "PA"
+                if (word.startsWith("FLEX")) return "TPU"
+                for (t in TYPES) {
+                    if (!word.startsWith(t)) continue
+                    val rest = word.substring(t.length)
+                    // "PLA", "PLA+", "PA6", "PA12", "PAHT", "PACF" match; "PLAY" or "PEBA" do not.
+                    val ok = rest.isEmpty() || !rest[0].isLetter() ||
+                        (t == "PA" && (rest.startsWith("HT") || rest.startsWith("CF") || rest.startsWith("GF")))
+                    if (ok) return if (t == "COPE") "CoPE" else t
+                }
+            }
+            return "Other"
         }
 
         /** "Bambu PLA Basic @BBL X1C" → "Bambu PLA Basic". */
         fun productOf(preset: String): String = preset.substringBefore(" @").trim()
 
-        private fun groups(map: Map<Pair<String, String>, Set<String>>): List<Group> =
-            map.map { (k, v) -> Group(k.first, k.second, v) }
+        private fun groups(map: Map<Pair<String, String>, Set<String>>, filaments: Boolean): List<Group> =
+            map.map { (k, v) -> Group(k.first, k.second, v, if (filaments) typeOf(k.second) else "") }
                 .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER, Group::brand).thenBy(String.CASE_INSENSITIVE_ORDER, Group::name))
     }
 }

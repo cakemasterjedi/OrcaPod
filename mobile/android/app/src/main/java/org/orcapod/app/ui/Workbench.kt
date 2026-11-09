@@ -284,7 +284,6 @@ fun ObjectStrip(
     vm: AppViewModel,
     onImport: () -> Unit,
     onLibrary: () -> Unit,
-    onShape: () -> Unit,
     onOpenProject: () -> Unit,
 ) {
     val objects = vm.scene.snapshot.objects
@@ -297,7 +296,6 @@ fun ObjectStrip(
         if (objects.isEmpty()) {
             StripButton("Import", AppIcons.FileOpen, accent = true, onClick = onImport)
             StripButton("Library", AppIcons.CloudDownload, onClick = onLibrary)
-            StripButton("Shape", AppIcons.Category, onClick = onShape)
             StripButton("Project", AppIcons.FolderOpen, onClick = onOpenProject)
         } else {
             for (obj in objects) {
@@ -337,7 +335,6 @@ fun ObjectStrip(
                 DropdownMenu(expanded = addMenu, onDismissRequest = { addMenu = false }) {
                     DropdownMenuItem(text = { Text("Import models") }, leadingIcon = { Icon(AppIcons.FileOpen, null) }, onClick = { addMenu = false; onImport() })
                     DropdownMenuItem(text = { Text("Online model library") }, leadingIcon = { Icon(AppIcons.CloudDownload, null) }, onClick = { addMenu = false; onLibrary() })
-                    DropdownMenuItem(text = { Text("Add shape") }, leadingIcon = { Icon(AppIcons.Category, null) }, onClick = { addMenu = false; onShape() })
                 }
             }
         }
@@ -655,7 +652,6 @@ fun WorkbenchPhone(
     previewPanel: @Composable () -> Unit,
     onEditObject: (Selection) -> Unit,
     onImport: () -> Unit,
-    onShape: () -> Unit,
     onOpenProject: () -> Unit,
     exports: (SliceState.Done) -> List<Pair<String, () -> Unit>>,
     onPrint: () -> Unit,
@@ -704,7 +700,7 @@ fun WorkbenchPhone(
                     Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) { CalibrationBanner(vm) }
                     Spacer(Modifier.height(8.dp))
                 }
-                ObjectStrip(vm, onImport = onImport, onLibrary = { vm.openLibrary() }, onShape = onShape, onOpenProject = onOpenProject)
+                ObjectStrip(vm, onImport = onImport, onLibrary = { vm.openLibrary() }, onOpenProject = onOpenProject)
                 Spacer(Modifier.height(8.dp))
                 SliceBar(vm, done, onSlice = { vm.startSlice(allPlates = it) }, onShowResult = { vm.showPreview = true })
             }

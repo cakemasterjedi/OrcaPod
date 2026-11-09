@@ -6,9 +6,11 @@ import org.orcapod.app.engine.PresetEntry
  * The presets of one kind the user picked to show in its picker, so a long
  * printer or filament list shrinks to what they own.
  *
- * [seen] holds every preset that was listed when the user last picked, so a
- * preset that appears later (an imported filament, a profile update, another
- * brand's printers) is shown until the user decides on it.
+ * Once something is picked, only the picks are listed: system presets the
+ * user did not tick stay hidden however they came to be loaded. [seen] holds
+ * every preset that was listed when the user last picked, so one of the
+ * user's own presets that appears later (an imported filament) is listed
+ * until they decide on it.
  */
 data class PresetChoice(val shown: Set<String> = emptySet(), val seen: Set<String> = emptySet()) {
     /**
@@ -18,7 +20,7 @@ data class PresetChoice(val shown: Set<String> = emptySet(), val seen: Set<Strin
      */
     fun filter(entries: List<PresetEntry>, current: String): List<PresetEntry> {
         if (entries.none { it.name in shown }) return entries
-        return entries.filter { it.name in shown || it.name !in seen || it.name == current }
+        return entries.filter { it.name in shown || it.name == current || (it.isUser && it.name !in seen) }
     }
 
     /** True when [filter] hides some of [entries]. */

@@ -411,7 +411,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 e.selectPrinter(saved)
             }
         } else if (machines.isNotEmpty()) {
-            e.selectPrinter(machines.first().name)
+            // Start on a printer the user ticked, not the first one alphabetically.
+            val start = choice(PresetKind.PRINTER).filter(machines, "").first()
+            e.selectPrinter(start.name)
             _messages.tryEmit("Pick your printer from the bar at the top")
         }
         refreshPresets()
@@ -1206,12 +1208,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun objectOf(id: Long): SceneObject? = scene.snapshot.objects.firstOrNull { it.id == id }
 
     fun renameObject(objectId: Long, name: String) = mutate { it.renameObject(objectId, name) }
-
-    fun addShape(shape: Shape) = mutate { e ->
-        val id = e.addShapeObject(shape)
-        refreshScene()
-        objectOf(id)?.instances?.firstOrNull()?.let { selection = Selection(id, it.id) }
-    }
 
     /** Desktop "Add part / modifier / negative part / support blocker or enforcer" with a built-in shape. */
     fun addVolume(sel: Selection, type: VolumeType, shape: Shape) = mutate { e ->

@@ -76,7 +76,6 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.orcapod.app.data.VendorNames
 import org.orcapod.app.engine.PresetKind
-import org.orcapod.app.engine.Shape
 import org.orcapod.app.ui.viewport.PlateView
 import org.orcapod.app.ui.viewport.Selection
 import org.orcapod.app.ui.viewport.ViewportListener
@@ -99,7 +98,6 @@ fun PlateScreen(vm: AppViewModel) {
     var objectList by remember { mutableStateOf(false) }
     var objectSheet by remember { mutableStateOf<Selection?>(null) }
     var filamentSlots by remember { mutableStateOf(false) }
-    var shapeMenu by remember { mutableStateOf(false) }
     var calibrating by remember { mutableStateOf(false) }
     var layFlat by remember { mutableStateOf(false) }
     var viewRef by remember { mutableStateOf<PlateView?>(null) }
@@ -209,7 +207,6 @@ fun PlateScreen(vm: AppViewModel) {
             listOf(
                 MenuEntry("Import models", AppIcons.FileOpen) { importModels.launch(MODEL_TYPES) },
                 MenuEntry("Online model library", AppIcons.CloudDownload) { vm.openLibrary() },
-                MenuEntry("Add shape", AppIcons.Category) { shapeMenu = true },
             ),
         ),
         MenuGroup(
@@ -315,13 +312,6 @@ fun PlateScreen(vm: AppViewModel) {
                             IconButton(onClick = vm::undo, enabled = vm.scene.snapshot.undoCount > 0) { Icon(AppIcons.Undo, "Undo") }
                             IconButton(onClick = vm::redo, enabled = vm.scene.snapshot.redoCount > 0) { Icon(AppIcons.Redo, "Redo") }
                         }
-                        Box {
-                            DropdownMenu(expanded = shapeMenu, onDismissRequest = { shapeMenu = false }) {
-                                for (shape in Shape.entries) if (shape != Shape.SLAB) {
-                                    DropdownMenuItem(text = { Text(shape.label) }, onClick = { shapeMenu = false; vm.addShape(shape) })
-                                }
-                            }
-                        }
                     },
                 )
             } else {
@@ -333,13 +323,6 @@ fun PlateScreen(vm: AppViewModel) {
                         onFilaments = { filamentSlots = true },
                     ) { picker = it }
                     StageTabRow(stage, canPaint = hasObjects && vm.slice !is SliceState.Running, canPreview = done != null) { onStage(it) }
-                    Box {
-                        DropdownMenu(expanded = shapeMenu, onDismissRequest = { shapeMenu = false }) {
-                            for (shape in Shape.entries) if (shape != Shape.SLAB) {
-                                DropdownMenuItem(text = { Text(shape.label) }, onClick = { shapeMenu = false; vm.addShape(shape) })
-                            }
-                        }
-                    }
                 }
             }
         },
@@ -349,7 +332,6 @@ fun PlateScreen(vm: AppViewModel) {
                 EmptyPlateCard(
                     onImport = { importModels.launch(MODEL_TYPES) },
                     onLibrary = { vm.openLibrary() },
-                    onShape = { shapeMenu = true },
                     onOpenProject = { guarded { openProject.launch(MODEL_TYPES) } },
                     onDismiss = { emptyCardClosed = true },
                     modifier = Modifier.align(Alignment.Center).padding(24.dp),
@@ -443,7 +425,6 @@ fun PlateScreen(vm: AppViewModel) {
                             onImport = { importModels.launch(MODEL_TYPES) },
                             onObjects = onObjects,
                             onLibrary = { vm.openLibrary() },
-                            onShape = { shapeMenu = true },
                             onArrange = vm::arrange,
                             onSettings = onSettings,
                             onSlice = { vm.startSlice(allPlates = it) },
@@ -496,7 +477,6 @@ fun PlateScreen(vm: AppViewModel) {
                     previewPanel = { controls(true, {}, {}) },
                     onEditObject = { objectSheet = it },
                     onImport = { importModels.launch(MODEL_TYPES) },
-                    onShape = { shapeMenu = true },
                     onOpenProject = { guarded { openProject.launch(MODEL_TYPES) } },
                     exports = { result ->
                         listOf(
@@ -675,7 +655,6 @@ internal fun ActionBar(
     onImport: () -> Unit,
     onObjects: () -> Unit,
     onLibrary: () -> Unit,
-    onShape: () -> Unit,
     onArrange: () -> Unit,
     onSettings: () -> Unit,
     onSlice: (allPlates: Boolean) -> Unit,
@@ -700,11 +679,6 @@ internal fun ActionBar(
                         text = { Text("Online model library") },
                         leadingIcon = { Icon(AppIcons.CloudDownload, null) },
                         onClick = { addMenu = false; onLibrary() },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Add shape") },
-                        leadingIcon = { Icon(AppIcons.Category, null) },
-                        onClick = { addMenu = false; onShape() },
                     )
                 }
             }

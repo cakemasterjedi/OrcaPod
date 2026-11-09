@@ -1069,6 +1069,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }.getOrNull()
 
+    /**
+     * Desktop project export for another printer: the plate as an OrcaSlicer 3MF set up for
+     * the printer preset [machine], so it opens ready for that printer in OrcaSlicer or Bambu
+     * Studio. The plate here keeps its own printer and settings.
+     */
+    fun exportProjectFor(machine: String, uri: Uri) = engineAction("Exporting…") { e ->
+        val thumbnail = renderThumbnail()
+        val tmp = File(getApplication<Application>().cacheDir, "export-project.3mf")
+        e.exportProjectFor(machine, tmp.path, thumbnail?.size ?: 0, thumbnail?.rgba())
+        copyFromFile(tmp, uri)
+        _messages.tryEmit("Exported the plate as 3MF for $machine")
+    }
+
     /** Geometry-only 3MF that any slicer reads. */
     fun exportGeneric3mf(uri: Uri) = engineAction("Exporting…") { e ->
         val tmp = File(getApplication<Application>().cacheDir, "export.3mf")

@@ -1532,9 +1532,12 @@ JNI_FN(void, exportStlAll)(JNIEnv *env, jobject, jlong pl, jstring path)
     check(env, orca_plater_export_stl_all(plater_of(pl), utf8(env, path).c_str(), 1));
 }
 
-/** [thumbnail] is a top-down RGBA8 square of [thumbnailSize] pixels, or null for none. */
+/**
+ * [thumbnail] is a top-down RGBA8 square of [thumbnailSize] pixels, or null for none.
+ * A non-null [machine] writes the project for that printer instead of the selected one.
+ */
 JNI_FN(void, projectSave)(JNIEnv *env, jobject, jlong pl, jlong p, jstring path, jint thumbnailSize,
-                          jbyteArray thumbnail)
+                          jbyteArray thumbnail, jstring machine)
 {
     std::vector<uint8_t> rgba;
     // A thumbnail of the wrong size is dropped rather than failing the save.
@@ -1542,8 +1545,13 @@ JNI_FN(void, projectSave)(JNIEnv *env, jobject, jlong pl, jlong p, jstring path,
         rgba.resize(size_t(thumbnailSize) * size_t(thumbnailSize) * 4);
         env->GetByteArrayRegion(thumbnail, 0, jsize(rgba.size()), reinterpret_cast<jbyte *>(rgba.data()));
     }
-    check(env, orca_project_save(plater_of(pl), presets_of(p), utf8(env, path).c_str(),
-                                 uint32_t(rgba.empty() ? 0 : thumbnailSize), rgba.empty() ? nullptr : rgba.data()));
+    const uint32_t size = uint32_t(rgba.empty() ? 0 : thumbnailSize);
+    const uint8_t *pixels = rgba.empty() ? nullptr : rgba.data();
+    if (machine)
+        check(env, orca_project_export_for_machine(plater_of(pl), presets_of(p), utf8(env, machine).c_str(),
+                                                   utf8(env, path).c_str(), size, pixels));
+    else
+        check(env, orca_project_save(plater_of(pl), presets_of(p), utf8(env, path).c_str(), size, pixels));
 }
 
 // --- height range modifiers -------------------------------------------------

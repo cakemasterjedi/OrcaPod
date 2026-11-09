@@ -240,7 +240,16 @@ class Engine private constructor(private var presets: Long, private val plater: 
      * [thumbnail] (top-down RGBA8, [thumbnailSize] square) as the plate picture.
      */
     suspend fun saveProject(path: String, thumbnailSize: Int = 0, thumbnail: ByteArray? = null) = onEngine {
-        Native.projectSave(plater, presets, path, thumbnailSize, thumbnail)
+        Native.projectSave(plater, presets, path, thumbnailSize, thumbnail, null)
+    }
+
+    /**
+     * Like [saveProject], but set up for the printer preset [machine] (with the process and
+     * filaments a change to it would pick), so desktop OrcaSlicer or Bambu Studio opens it
+     * ready for that printer. The plate's own settings stay as they are.
+     */
+    suspend fun exportProjectFor(machine: String, path: String, thumbnailSize: Int = 0, thumbnail: ByteArray? = null) = onEngine {
+        Native.projectSave(plater, presets, path, thumbnailSize, thumbnail, machine)
     }
 
     suspend fun exportStl(objectId: Long?, path: String) = onEngine {

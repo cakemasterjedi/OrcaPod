@@ -314,7 +314,7 @@ static void test_md5_shim() {
 
 static void test_abi_version() {
     CHECK_EQ(orca_bridge_abi_version(), ORCA_BRIDGE_ABI_VERSION);
-    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 46);
+    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 47);
 }
 
 struct ProgressRecord {
@@ -4775,6 +4775,110 @@ static void test_project_roundtrip(const std::string &dir, const std::string &da
     orca_presets_free(presets);
 }
 
+// ABI v47: the project written for another printer carries that printer's
+// settings and re-centres each plate's instances on its (smaller) plates,
+// leaving the session and the document as they were.
+static void test_project_export_for_machine(const std::string &dir,
+                                            const std::string &data_dir) {
+    orca_presets *presets = nullptr;
+    GUARD(gp, orca_presets_new(data_dir.c_str(), &presets));
+    expect_ok(gp, "presets_new");
+    GUARD(gs, orca_presets_select(presets, "Bambu Lab X1 Carbon 0.4 nozzle",
+                                  "Bambu PLA Basic @BBL X1C", "0.20mm Standard @BBL X1C"));
+    expect_ok(gs, "select X1C");
+
+    const std::string cube = write_cube_stl(dir, "orcapad-cube-export.stl");
+    orca_plater *plater = nullptr;
+    GUARD(g0, orca_plater_new(&plater));
+    expect_ok(g0, "plater_new");
+    orca_scene_snapshot bed_snap;
+    GUARD(g1, orca_plater_set_bed(plater, 0, 0, 256, 256, 250, &bed_snap));
+    expect_ok(g1, "X1C bed");
+    orca_scene_snapshot_dispose(&bed_snap);
+    orca_object_id object_id = 0;
+    orca_revision revision = 0;
+    GUARD(g2, import_one(plater, cube.c_str(), 118.0, 128.0, &object_id, &revision));
+    expect_ok(g2, "import cube");
+    // a second instance on a second plate (plate 1 sits at x = 256 * 1.2)
+    orca_plate_id plate2 = 0;
+    GUARD(g3, orca_plater_plate_add(plater, &plate2, &revision));
+    expect_ok(g3, "second plate");
+    orca_instance_id second = 0;
+    GUARD(g4, orca_plater_instance_add(plater, object_id, &second, &revision));
+    expect_ok(g4, "second instance");
+    {
+        orca_scene_snapshot snap = take_snapshot(plater);
+        orca_instance_transform moved = snap.objects[0].instances[1].transform;
+        moved.offset_x = 256 * 1.2 + 128 + 20;
+        moved.offset_y = 128;
+        orca_scene_snapshot_dispose(&snap);
+        GUARD(g5, orca_plater_instance_set(plater, object_id, second, &moved, "Move", &revision));
+        expect_ok(g5, "move to plate 2");
+    }
+    orca_scene_snapshot before = take_snapshot(plater);
+
+    const std::string project = dir + "/for-a1-mini.3mf";
+    const char *a1_mini = "Bambu Lab A1 mini 0.4 nozzle";
+    GUARD(e1, orca_project_export_for_machine(plater, presets, "No such printer",
+                                              project.c_str(), 0, nullptr));
+    expect_code(e1, ORCA_STATUS_NOT_FOUND, "export(unknown printer)");
+    GUARD(e2, orca_project_export_for_machine(plater, presets, nullptr,
+                                              project.c_str(), 0, nullptr));
+    expect_code(e2, ORCA_STATUS_INVALID_ARGUMENT, "export(null printer)");
+    GUARD(e3, orca_project_export_for_machine(plater, presets, a1_mini,
+                                              (dir + "/x.stl").c_str(), 0, nullptr));
+    expect_code(e3, ORCA_STATUS_INVALID_ARGUMENT, "export(non-3mf)");
+    GUARD(g6, orca_project_export_for_machine(plater, presets, a1_mini,
+                                              project.c_str(), 0, nullptr));
+    expect_ok(g6, "export for A1 mini");
+
+    // the session and the document are untouched
+    CHECK(current_preset(presets, 0) == "Bambu Lab X1 Carbon 0.4 nozzle");
+    CHECK(current_preset(presets, 2) == "0.20mm Standard @BBL X1C");
+    CHECK_EQ(snapshot_revision(plater), revision);
+    orca_scene_snapshot kept = take_snapshot(plater);
+    for (int32_t i = 0; i < 2; ++i) {
+        CHECK_EQ(kept.objects[0].instances[i].transform.offset_x,
+                 before.objects[0].instances[i].transform.offset_x);
+        CHECK_EQ(kept.objects[0].instances[i].transform.offset_y,
+                 before.objects[0].instances[i].transform.offset_y);
+        CHECK_EQ(kept.objects[0].instances[i].plate,
+                 before.objects[0].instances[i].plate);
+    }
+    orca_scene_snapshot_dispose(&kept);
+
+    orca_presets *presets2 = nullptr;
+    GUARD(gp2, orca_presets_new(data_dir.c_str(), &presets2));
+    expect_ok(gp2, "presets_new 2");
+    orca_plater *plater2 = nullptr;
+    GUARD(g7, orca_plater_new(&plater2));
+    expect_ok(g7, "plater_new 2");
+    orca_project_info info;
+    GUARD(g8, orca_project_open(plater2, presets2, project.c_str(), &info));
+    expect_ok(g8, "open exported project");
+    CHECK_EQ(info.plate_count, 2u);
+    CHECK(current_preset(presets2, 0) == a1_mini);
+    CHECK(current_preset(presets2, 2).find("A1M") != std::string::npos);
+    orca_scene_snapshot after = take_snapshot(plater2);
+    if (after.object_count == 1 && after.objects[0].instance_count == 2) {
+        // plate 0 centre 128 -> 90; plate 1 centre 435.2 -> 180 * 1.2 + 90
+        const auto &a = after.objects[0].instances[0].transform;
+        const auto &b = after.objects[0].instances[1].transform;
+        CHECK_NEAR(a.offset_x, 80.0, 1e-4);
+        CHECK_NEAR(a.offset_y, 90.0, 1e-4);
+        CHECK_NEAR(b.offset_x, 180 * 1.2 + 90 + 20, 1e-4);
+        CHECK_NEAR(b.offset_y, 90.0, 1e-4);
+    } else {
+        CHECK(false);
+    }
+    orca_scene_snapshot_dispose(&after);
+    orca_scene_snapshot_dispose(&before);
+    orca_plater_free(plater2);
+    orca_presets_free(presets2);
+    orca_plater_free(plater);
+    orca_presets_free(presets);
+}
+
 static bool listed_with_origin(orca_presets *presets, int32_t kind,
                                const std::string &name, uint8_t origin) {
     int32_t count = 0;
@@ -6149,6 +6253,7 @@ int main() {
     test_svg(dir);
     test_height_ranges(dir);
     test_project_roundtrip(dir, data_dir);
+    test_project_export_for_machine(dir, data_dir);
     test_user_presets(data_dir);
     test_physical_printers(data_dir);
     test_arrange_orient(dir, data_dir);

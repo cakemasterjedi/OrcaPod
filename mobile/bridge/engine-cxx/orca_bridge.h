@@ -799,8 +799,10 @@ orca_result orca_plater_plate_set_settings(
 /// angle_deg > 0 flood-selects facets around the hit whose mutual angle
 /// stays under the threshold (seed fill); angle_deg == 0 fills the hit
 /// facet plus same-state neighbors (bucket fill, `propagate` extends to
-/// all connected same-state facets). One undo step; typed NOT_FOUND when
-/// the selection is empty.
+/// all connected same-state facets). One undo step; a fill that changes
+/// nothing (the area already has that state) succeeds without one, leaving
+/// *out_revision at the current revision. NOT_FOUND when the hit misses
+/// the volume.
 orca_result orca_plater_volume_paint_fill(orca_plater *plater,
                                           orca_object_id object_id,
                                           orca_volume_id volume_id,

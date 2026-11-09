@@ -502,6 +502,8 @@ class EngineHostTest {
         assertEquals(undoBefore + 1, e.scene().snapshot.undoCount)
         e.paintStroke(obj.id, part.id, PaintLayer.SUPPORT, doubleArrayOf(cx, cy, top), down.copyOf(3), 3.0, 2, false)
         e.paintFill(obj.id, part.id, PaintLayer.FUZZY, floatArrayOf(b[3], cy.toFloat(), (b[2] + b[5]) / 2), floatArrayOf(-1f, 0f, 0f), 30.0, 1)
+        // Filling the same face again is not an error.
+        e.paintFill(obj.id, part.id, PaintLayer.FUZZY, floatArrayOf(b[3], cy.toFloat(), (b[2] + b[5]) / 2), floatArrayOf(-1f, 0f, 0f), 30.0, 1)
         val counts = PaintLayer.entries.associateWith { e.paint(obj.id, part.id, it).count }
         assertTrue(counts.toString(), counts.getValue(PaintLayer.SEAM) > 0 && counts.getValue(PaintLayer.SUPPORT) > 0 && counts.getValue(PaintLayer.FUZZY) > 0)
 

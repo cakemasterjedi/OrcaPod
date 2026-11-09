@@ -4,9 +4,20 @@ package org.orcapod.app.engine
 // The JNI layer constructs these by their primary constructors, so keep the
 // parameter lists in sync with app/src/main/cpp/orcapod_jni.cpp.
 
-/** A failed bridge call; [code] is the bridge's ORCA_STATUS_* value. */
-class OrcaException(val code: Int, message: String) : Exception(message) {
+/**
+ * A failed engine call; [code] is the bridge's ORCA_STATUS_* value. [diagnostic] is the engine's text, which starts with
+ * the bridge function's name (`orca_…: what went wrong`); [message] drops
+ * that name so the text can be shown to people.
+ */
+class OrcaException(val code: Int, val diagnostic: String) : Exception(readable(diagnostic)) {
+    override fun toString() = "OrcaException($code): $diagnostic"
+
     companion object {
+        private val OPERATION = Regex("^orca_[a-z0-9_]+:\\s*")
+
+        fun readable(diagnostic: String): String =
+            diagnostic.replace(OPERATION, "").replaceFirstChar { it.uppercaseChar() }
+
         const val INVALID_ARGUMENT = 1
         const val NOT_FOUND = 3
         const val CANCELLED = 5

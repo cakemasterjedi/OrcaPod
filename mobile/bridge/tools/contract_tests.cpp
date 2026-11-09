@@ -4637,6 +4637,13 @@ static void test_v42_features(const std::string &dir,
     expect_ok(f02, "read painted triangles");
     CHECK(painted.count >= 2u); // the coplanar top face
     orca_paint_mesh_dispose(&painted);
+    // A second tap on the filled face changes nothing: not an error.
+    const orca_revision filled = revision;
+    GUARD(f04, orca_plater_volume_paint_fill(
+                  plater, object_id, fill_volume, ORCA_PAINT_SUPPORT,
+                  100.0, 100.0, 20.0, 0.0, 0.0, -1.0, 30.0, 0, 1, &revision));
+    expect_ok(f04, "refilling a filled face");
+    CHECK_EQ(revision, filled);
     GUARD(f03, orca_plater_volume_paint_fill(
                   plater, object_id, fill_volume, ORCA_PAINT_SUPPORT,
                   100.0, 100.0, 20.0, 0.0, 0.0, -1.0, -5.0, 0, 1, &revision));

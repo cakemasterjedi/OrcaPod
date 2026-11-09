@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -105,6 +106,10 @@ fun PlateScreen(vm: AppViewModel) {
     val config = LocalConfiguration.current
     val twoPane = usesTwoPane(config.screenWidthDp, config.screenHeightDp)
     var paneTab by rememberSaveable { mutableStateOf(PaneTab.OBJECTS) }
+    // The phone's transform panel opens with each newly picked object and can be closed.
+    var transformOpen by rememberSaveable { mutableStateOf(true) }
+    var previewDetails by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(vm.selection) { if (vm.selection != null) transformOpen = true }
     // Picking an object in the viewport brings its controls into view.
     LaunchedEffect(vm.selection) { if (vm.selection != null) paneTab = PaneTab.OBJECTS }
 
@@ -234,6 +239,7 @@ fun PlateScreen(vm: AppViewModel) {
             listOf(
                 MenuEntry("Print settings", AppIcons.Tune) { settingsFor = PresetKind.PROCESS },
                 MenuEntry("Calibration", Icons.Filled.Build) { calibrating = true },
+                MenuEntry("Object list", Icons.AutoMirrored.Filled.List, enabled = hasObjects) { objectList = true },
                 MenuEntry("Reset view", AppIcons.ViewInAr) { viewRef?.resetView() },
                 MenuEntry("Check for updates", AppIcons.CloudDownload) {
                     UpdateController.check(context.applicationContext, scope, manual = true)
@@ -241,6 +247,34 @@ fun PlateScreen(vm: AppViewModel) {
             ),
         ),
     )
+    val stage = when {
+        previewing -> Stage.PREVIEW
+        vm.paint != null -> Stage.PAINT
+        else -> Stage.PREPARE
+    }
+    fun onStage(target: Stage) {
+        when (target) {
+            Stage.PREPARE -> { vm.paint = null; vm.showPreview = false }
+            Stage.PAINT -> {
+                vm.showPreview = false
+                if (vm.paint == null) {
+                    val id = vm.selection?.objectId ?: vm.scene.snapshot.objects.firstOrNull()?.id
+                    if (id != null) vm.startPaint(id)
+                }
+            }
+            Stage.PREVIEW -> { vm.paint = null; vm.showPreview = true }
+            // The printers' dashboard is a sheet over whichever stage is showing.
+            Stage.DEVICE -> queueOpen = true
+        }
+    }
+    val shareGcode: (SliceState.Done) -> Unit = { result ->
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", result.gcode)
+        val send = Intent(Intent.ACTION_SEND)
+            .setType("text/x-gcode")
+            .putExtra(Intent.EXTRA_STREAM, uri)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        context.startActivity(Intent.createChooser(send, "Send G-code"))
+    }
     val projectTitle = vm.projectName?.let { if (vm.projectDirty) "$it*" else it }
 
     ModalNavigationDrawer(
@@ -252,23 +286,42 @@ fun PlateScreen(vm: AppViewModel) {
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
-            CenterAlignedTopAppBar(
-                navigationIcon = {
-                    IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Filled.Menu, "Menu") }
-                },
-                title = {
-                    StageTabs(
-                        previewing = previewing,
-                        canPreview = done != null,
-                        onPrepare = { vm.showPreview = false },
-                        onPreview = { vm.showPreview = true },
-                    )
-                },
-                actions = {
-                    if (!previewing) {
-                        IconButton(onClick = vm::undo, enabled = vm.scene.snapshot.undoCount > 0) { Icon(AppIcons.Undo, "Undo") }
-                        IconButton(onClick = vm::redo, enabled = vm.scene.snapshot.redoCount > 0) { Icon(AppIcons.Redo, "Redo") }
-                    }
+            if (twoPane) {
+                CenterAlignedTopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Filled.Menu, "Menu") }
+                    },
+                    title = {
+                        StageTabs(
+                            previewing = previewing,
+                            canPreview = done != null,
+                            onPrepare = { vm.showPreview = false },
+                            onPreview = { vm.showPreview = true },
+                        )
+                    },
+                    actions = {
+                        if (!previewing) {
+                            IconButton(onClick = vm::undo, enabled = vm.scene.snapshot.undoCount > 0) { Icon(AppIcons.Undo, "Undo") }
+                            IconButton(onClick = vm::redo, enabled = vm.scene.snapshot.redoCount > 0) { Icon(AppIcons.Redo, "Redo") }
+                        }
+                        Box {
+                            DropdownMenu(expanded = shapeMenu, onDismissRequest = { shapeMenu = false }) {
+                                for (shape in Shape.entries) if (shape != Shape.SLAB) {
+                                    DropdownMenuItem(text = { Text(shape.label) }, onClick = { shapeMenu = false; vm.addShape(shape) })
+                                }
+                            }
+                        }
+                    },
+                )
+            } else {
+                Column(Modifier.background(MaterialTheme.colorScheme.background).statusBarsPadding()) {
+                    WorkbenchBar(
+                        vm,
+                        showUndo = !previewing,
+                        onMenu = { scope.launch { drawer.open() } },
+                        onFilaments = { filamentSlots = true },
+                    ) { picker = it }
+                    StageTabRow(stage, canPaint = hasObjects && vm.slice !is SliceState.Running, canPreview = done != null) { onStage(it) }
                     Box {
                         DropdownMenu(expanded = shapeMenu, onDismissRequest = { shapeMenu = false }) {
                             for (shape in Shape.entries) if (shape != Shape.SLAB) {
@@ -276,8 +329,8 @@ fun PlateScreen(vm: AppViewModel) {
                             }
                         }
                     }
-                },
-            )
+                }
+            }
         },
     ) { padding ->
         val emptyCard: @Composable BoxScope.() -> Unit = {
@@ -353,14 +406,7 @@ fun PlateScreen(vm: AppViewModel) {
                     previewing -> PreviewPanel(
                         vm = vm,
                         done = done!!,
-                        onShare = {
-                            val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", done.gcode)
-                            val send = Intent(Intent.ACTION_SEND)
-                                .setType("text/x-gcode")
-                                .putExtra(Intent.EXTRA_STREAM, uri)
-                                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            context.startActivity(Intent.createChooser(send, "Send G-code"))
-                        },
+                        onShare = { shareGcode(done) },
                         onSave = { saveGcode.launch(done.gcode.name) },
                         onPrint = { sendOpen = true },
                     )
@@ -416,14 +462,39 @@ fun PlateScreen(vm: AppViewModel) {
         } else {
             Box(Modifier.fillMaxSize().padding(padding)) {
                 viewport()
-                emptyCard()
-                Column(Modifier.fillMaxWidth().padding(8.dp)) {
-                    PresetBar(vm, onFilaments = { filamentSlots = true }) { picker = it }
-                    status()
+                if (!hasObjects && !previewing && vm.busy == null) {
+                    Text(
+                        "Plate is empty · import a model to start",
+                        Modifier.align(Alignment.Center).padding(24.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(8.dp)) {
-                    controls(true, { objectList = true }, { settingsFor = PresetKind.PROCESS })
-                }
+                WorkbenchPhone(
+                    vm = vm,
+                    done = done,
+                    previewing = previewing,
+                    layFlat = layFlat,
+                    onLayFlat = { layFlat = !layFlat },
+                    transformOpen = transformOpen,
+                    onTransform = { transformOpen = it },
+                    previewDetails = previewDetails,
+                    onPreviewDetails = { previewDetails = !previewDetails },
+                    status = status,
+                    previewPanel = { controls(true, {}, {}) },
+                    onEditObject = { objectSheet = it },
+                    onImport = { importModels.launch(MODEL_TYPES) },
+                    onShape = { shapeMenu = true },
+                    onOpenProject = { guarded { openProject.launch(MODEL_TYPES) } },
+                    exports = { result ->
+                        listOf(
+                            "Save G-code" to { saveGcode.launch(result.gcode.name) },
+                            "Share G-code" to { shareGcode(result) },
+                            "Export plate sliced file" to { slicedAll = false; exportSliced.launch("plate.gcode.3mf") },
+                        )
+                    },
+                    onPrint = { sendOpen = true },
+                )
             }
         }
     }

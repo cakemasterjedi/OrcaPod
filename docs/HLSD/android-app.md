@@ -337,10 +337,20 @@ presets.
 
 ## Screen layout
 
-On a phone the viewport fills the screen and everything else floats over it:
-the preset bar and plate strip at the top, the selected object's controls
-and the plate actions at the bottom, and the object list and settings in a
-sheet and a full-screen dialog. A window that is at least 840 dp wide, or at
+On a phone the viewport fills the screen under a top bar of compact
+printer, filament and process chips and the Prepare, Paint, Preview and
+Device tabs (Device opens the printers' dashboard). Everything else floats
+over the viewport in fixed places, so each control is always where the
+thumb expects it: a tool column on the left (the object tools in Prepare,
+the paint layers in Paint), a small options panel on the right (position
+and scale of the selected object, or what the painter paints and with which
+tool), and at the bottom the object strip above a fixed Slice bar. The strip
+lists the plate's objects for selection, or the ways to add one while the
+plate is empty, so nothing covers an empty plate. Preview has a vertical
+top-layer slider on the right, estimate tiles and an Export and Print bar,
+with the full preview controls one tap away. Tools that need a whole panel
+(cut, measure, layer heights) take the bottom area while they are open. A
+window that is at least 840 dp wide, or at
 least 600 dp wide in landscape, and at least 480 dp tall (tablets, unfolded
 foldables, desktop-mode windows) puts the viewport next to a fixed side pane
 instead, so the controls don't cover the model: presets on top, an Objects

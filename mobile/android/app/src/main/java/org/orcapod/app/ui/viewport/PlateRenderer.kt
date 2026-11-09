@@ -86,7 +86,7 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
         toolVbo = 0
         overlayVbo = 0
         glEnable(GL_DEPTH_TEST)
-        glClearColor(0.13f, 0.14f, 0.16f, 1f)
+        glClearColor(0.043f, 0.071f, 0.125f, 1f)
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -213,7 +213,7 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
             while (gx < x1) { v(lines, gx, y0, grid, grid, grid); v(lines, gx, y1, grid, grid, grid); gx += 10f }
             var gy = y0 + 10f
             while (gy < y1) { v(lines, x0, gy, grid, grid, grid); v(lines, x1, gy, grid, grid, grid); gy += 10f }
-            val (r, g, b) = if (i == current) Triple(0f, 0.68f, 0.26f) else Triple(0.5f, 0.5f, 0.5f)
+            val (r, g, b) = if (i == current) Triple(0.13f, 0.83f, 0.93f) else Triple(0.5f, 0.5f, 0.5f)
             for ((a, c) in listOf((x0 to y0) to (x1 to y0), (x1 to y0) to (x1 to y1), (x1 to y1) to (x0 to y1), (x0 to y1) to (x0 to y0))) {
                 v(lines, a.first, a.second, r, g, b); v(lines, c.first, c.second, r, g, b)
             }

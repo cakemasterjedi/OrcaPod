@@ -359,7 +359,8 @@ in a fixed place, so the model keeps as much room as possible. A slim top row
 holds the menu, the plate strip and one button that opens the printer,
 filament and process pickers; the printers' dashboard is in the menu. A tool
 column on the left holds the object tools (painting is one of them, and turns
-the column into the paint layers) with undo and redo at its foot, a small
+the column into the paint layers) with undo and redo at its foot; a long
+press names a tool and the toggle on top shows every name. A small
 options panel on the right shows the selected object's position and scale or
 what the painter paints, and at the bottom the object strip sits above a
 fixed Slice bar. The strip lists the plate's objects for selection, or the

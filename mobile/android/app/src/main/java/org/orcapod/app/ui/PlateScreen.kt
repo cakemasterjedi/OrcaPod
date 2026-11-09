@@ -108,6 +108,8 @@ fun PlateScreen(vm: AppViewModel) {
     // The phone's transform panel opens with each newly picked object and can be closed.
     var transformOpen by rememberSaveable { mutableStateOf(true) }
     var previewDetails by rememberSaveable { mutableStateOf(false) }
+    // Whether the tool column shows each tool's name beside its icon.
+    var toolLabels by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(vm.selection) { if (vm.selection != null) transformOpen = true }
     // Picking an object in the viewport brings its controls into view.
     LaunchedEffect(vm.selection) { if (vm.selection != null) paneTab = PaneTab.OBJECTS }
@@ -443,6 +445,8 @@ fun PlateScreen(vm: AppViewModel) {
                     onTransform = { transformOpen = it },
                     previewDetails = previewDetails,
                     onPreviewDetails = { previewDetails = !previewDetails },
+                    toolLabels = toolLabels,
+                    onToolLabels = { toolLabels = !toolLabels },
                     topRow = {
                         WorkbenchTopRow(
                             vm,

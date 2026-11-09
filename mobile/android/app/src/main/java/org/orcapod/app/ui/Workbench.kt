@@ -1,5 +1,15 @@
 package org.orcapod.app.ui
 
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.material3.rememberTooltipState
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -164,39 +174,63 @@ data class ColumnTool(
     val onClick: () -> Unit = {},
 )
 
-/** The vertical tool column at the left edge of the plate. */
+/**
+ * The vertical tool column at the left edge of the plate. A long press on a
+ * button names it; the toggle on top shows every name beside its icon.
+ */
 @Composable
-fun ToolColumn(tools: List<ColumnTool>, modifier: Modifier = Modifier) {
+fun ToolColumn(tools: List<ColumnTool>, labels: Boolean, onLabels: () -> Unit, modifier: Modifier = Modifier) {
     Column(
         modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.94f))
-            .verticalScroll(rememberScrollState()).padding(4.dp),
+            .verticalScroll(rememberScrollState()).padding(4.dp)
+            .width(IntrinsicSize.Max),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        for (t in tools) ColumnToolButton(t)
+        ColumnToolButton(
+            ColumnTool(if (labels) "Hide names" else "Show names", if (labels) AppIcons.ChevronLeft else AppIcons.ChevronRight, onClick = onLabels),
+            labels,
+            dim = true,
+        )
+        for (t in tools) ColumnToolButton(t, labels)
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-private fun ColumnToolButton(t: ColumnTool) {
+private fun ColumnToolButton(t: ColumnTool, showLabel: Boolean, dim: Boolean = false) {
     var open by remember { mutableStateOf(false) }
+    val tooltip = rememberTooltipState()
+    val scope = rememberCoroutineScope()
     val colors = MaterialTheme.colorScheme
+    val tint = when {
+        !t.enabled -> colors.onSurface.copy(alpha = 0.3f)
+        t.active -> colors.primary
+        dim -> colors.onSurfaceVariant
+        else -> colors.onSurface
+    }
     Box {
-        Box(
-            Modifier.size(44.dp).clip(RoundedCornerShape(9.dp))
-                .background(if (t.active) colors.primary.copy(alpha = 0.16f) else Color.Transparent)
-                .clickable(enabled = t.enabled) { if (t.menu.isNotEmpty()) open = true else t.onClick() },
-            contentAlignment = Alignment.Center,
+        TooltipBox(
+            positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+            tooltip = { PlainTooltip { Text(t.label) } },
+            state = tooltip,
+            enableUserInput = false,
         ) {
-            Icon(
-                t.icon,
-                t.label,
-                Modifier.size(21.dp),
-                tint = when {
-                    !t.enabled -> colors.onSurface.copy(alpha = 0.3f)
-                    t.active -> colors.primary
-                    else -> colors.onSurface
-                },
-            )
+            Row(
+                Modifier.fillMaxWidth().height(44.dp).widthIn(min = 44.dp).clip(RoundedCornerShape(9.dp))
+                    .background(if (t.active) colors.primary.copy(alpha = 0.16f) else Color.Transparent)
+                    .combinedClickable(
+                        enabled = t.enabled || !showLabel,
+                        onLongClick = { if (!showLabel) scope.launch { tooltip.show() } },
+                    ) { if (t.enabled) { if (t.menu.isNotEmpty()) open = true else t.onClick() } }
+                    .padding(horizontal = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(t.icon, t.label, Modifier.size(21.dp), tint = tint)
+                if (showLabel) {
+                    Spacer(Modifier.width(10.dp))
+                    Text(t.label, style = MaterialTheme.typography.labelLarge, color = tint, maxLines = 1, modifier = Modifier.padding(end = 6.dp))
+                }
+            }
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             Text(t.label, Modifier.padding(horizontal = 16.dp, vertical = 6.dp), style = MaterialTheme.typography.labelMedium, color = colors.primary)
@@ -634,6 +668,8 @@ fun WorkbenchPhone(
     onTransform: (Boolean) -> Unit,
     previewDetails: Boolean,
     onPreviewDetails: () -> Unit,
+    toolLabels: Boolean,
+    onToolLabels: () -> Unit,
     topRow: @Composable () -> Unit,
     status: @Composable () -> Unit,
     previewPanel: @Composable () -> Unit,
@@ -657,13 +693,13 @@ fun WorkbenchPhone(
                     if (!previewDetails) LayerColumnSlider(vm, done, Modifier.width(48.dp).fillMaxHeight().padding(vertical = 4.dp))
                 }
                 paint != null -> {
-                    ToolColumn(paintLayerTools(vm, paint))
+                    ToolColumn(paintLayerTools(vm, paint), toolLabels, onToolLabels)
                     Spacer(Modifier.weight(1f))
                     PaintSidePanel(vm, paint)
                 }
                 toolOpen || slicing != null -> Unit
                 else -> {
-                    ToolColumn(prepareTools(vm, sel, layFlat, onLayFlat, transformOpen, onTransform, onEditObject))
+                    ToolColumn(prepareTools(vm, sel, layFlat, onLayFlat, transformOpen, onTransform, onEditObject), toolLabels, onToolLabels)
                     Spacer(Modifier.weight(1f))
                     if (sel != null && transformOpen) TransformPanel(vm, sel) { onTransform(false) }
                 }

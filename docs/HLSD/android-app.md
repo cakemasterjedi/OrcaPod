@@ -354,19 +354,21 @@ presets.
 
 ## Screen layout
 
-On a phone the viewport fills the screen under a top bar of compact
-printer, filament and process chips and the Prepare, Paint, Preview and
-Device tabs (Device opens the printers' dashboard). Everything else floats
-over the viewport in fixed places, so each control is always where the
-thumb expects it: a tool column on the left (the object tools in Prepare,
-the paint layers in Paint), a small options panel on the right (position
-and scale of the selected object, or what the painter paints and with which
-tool), and at the bottom the object strip above a fixed Slice bar. The strip
-lists the plate's objects for selection, or the ways to add one while the
-plate is empty, so nothing covers an empty plate. Preview has a vertical
-top-layer slider on the right, estimate tiles and an Export and Print bar,
-with the full preview controls one tap away. Tools that need a whole panel
-(cut, measure, layer heights) take the bottom area while they are open. A
+On a phone the viewport fills the screen and every control floats over it
+in a fixed place, so the model keeps as much room as possible. A slim top row
+holds the menu, the plate strip and one button that opens the printer,
+filament and process pickers; the printers' dashboard is in the menu. A tool
+column on the left holds the object tools (painting is one of them, and turns
+the column into the paint layers) with undo and redo at its foot, a small
+options panel on the right shows the selected object's position and scale or
+what the painter paints, and at the bottom the object strip sits above a
+fixed Slice bar. The strip lists the plate's objects for selection, or the
+ways to add one while the plate is empty, so nothing covers an empty plate.
+Preview, reached from the Slice bar, has a back button in the top row, a
+vertical top-layer slider on the right, estimate tiles and an Export and
+Print bar, with the full preview controls one tap away. Tools that need a
+whole panel (cut, measure, layer heights) take the bottom area while they
+are open. A
 window that is at least 840 dp wide, or at
 least 600 dp wide in landscape, and at least 480 dp tall (tablets, unfolded
 foldables, desktop-mode windows) puts the viewport next to a fixed side pane

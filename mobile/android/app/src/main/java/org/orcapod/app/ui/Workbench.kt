@@ -1,10 +1,8 @@
 package org.orcapod.app.ui
 
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,6 +24,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -40,8 +39,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -67,109 +64,92 @@ import org.orcapod.app.engine.PresetKind
 import org.orcapod.app.ui.viewport.Selection
 import java.util.Locale
 
-// The phone's Workbench layout: profile chips and stage tabs on top, a tool
+// The phone's Workbench layout: a slim row of round buttons on top, a tool
 // column on the left, option panels on the right, and the object strip above
 // a fixed Slice bar at the bottom. Large screens keep the side-pane layout.
 
-/** The stages the Workbench tabs switch between. */
-enum class Stage(val label: String) { PREPARE("Prepare"), PAINT("Paint"), PREVIEW("Preview"), DEVICE("Device") }
-
-/** Menu button, the printer, filament and process chips, undo and redo. */
+/**
+ * The phone's top row over the plate: the menu, the plate strip (or the way
+ * back from the preview) and one button that opens the printer, filament and
+ * process pickers, so the presets take no permanent space.
+ */
 @Composable
-fun WorkbenchBar(
+fun WorkbenchTopRow(
     vm: AppViewModel,
-    showUndo: Boolean,
+    previewing: Boolean,
     onMenu: () -> Unit,
     onFilaments: () -> Unit,
     onPick: (PresetKind) -> Unit,
 ) {
-    val slots = vm.filamentSlots.map { it.colour }
-    Row(
-        Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        IconButton(onClick = onMenu) { Icon(Icons.Filled.Menu, "Menu") }
-        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            ProfileChip(vm.printer, Modifier.weight(1.25f), icon = AppIcons.Print) { onPick(PresetKind.PRINTER) }
-            if (slots.size > 1) {
-                ProfileChip("${slots.size} filaments", Modifier.weight(1f), swatches = slots, onClick = onFilaments)
+    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        RoundButton(Icons.Filled.Menu, "Menu", onClick = onMenu)
+        Spacer(Modifier.width(8.dp))
+        Box(Modifier.weight(1f)) {
+            if (previewing) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    RoundButton(Icons.AutoMirrored.Filled.ArrowBack, "Back to plate") { vm.showPreview = false }
+                    Spacer(Modifier.width(8.dp))
+                    Text("Preview", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                }
             } else {
-                ProfileChip(vm.filament, Modifier.weight(1f), swatches = slots.take(1), onLongClick = onFilaments) { onPick(PresetKind.FILAMENT) }
+                PlateStrip(vm)
             }
-            ProfileChip(vm.process, Modifier.weight(1f), icon = AppIcons.Tune) { onPick(PresetKind.PROCESS) }
         }
-        if (showUndo) {
-            IconButton(onClick = vm::undo, enabled = vm.scene.snapshot.undoCount > 0, modifier = Modifier.size(40.dp)) {
-                Icon(AppIcons.Undo, "Undo", Modifier.size(20.dp))
+        Spacer(Modifier.width(8.dp))
+        PresetsButton(vm, onFilaments, onPick)
+    }
+}
+
+@Composable
+private fun RoundButton(icon: ImageVector, label: String, enabled: Boolean = true, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Box(
+        Modifier.size(40.dp).clip(CircleShape).background(colors.surfaceContainer.copy(alpha = 0.94f))
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, label, Modifier.size(20.dp), tint = if (enabled) colors.onSurface else colors.onSurface.copy(alpha = 0.3f))
+    }
+}
+
+/** The printer, filament and process in use, behind one button. */
+@Composable
+private fun PresetsButton(vm: AppViewModel, onFilaments: () -> Unit, onPick: (PresetKind) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val slots = vm.filamentSlots.map { it.colour }
+    Box {
+        RoundButton(AppIcons.Print, "Printer, filament and process") { open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            PresetItem("Printer", vm.printer, { Icon(AppIcons.Print, null) }) { open = false; onPick(PresetKind.PRINTER) }
+            if (slots.size > 1) {
+                PresetItem("Filaments", "${slots.size} slots", { Swatches(slots) }) { open = false; onFilaments() }
+            } else {
+                PresetItem("Filament", vm.filament, { Swatches(slots) }) { open = false; onPick(PresetKind.FILAMENT) }
             }
-            IconButton(onClick = vm::redo, enabled = vm.scene.snapshot.redoCount > 0, modifier = Modifier.size(40.dp)) {
-                Icon(AppIcons.Redo, "Redo", Modifier.size(20.dp))
-            }
+            PresetItem("Process", vm.process, { Icon(AppIcons.Tune, null) }) { open = false; onPick(PresetKind.PROCESS) }
         }
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ProfileChip(
-    text: String,
-    modifier: Modifier = Modifier,
-    icon: ImageVector? = null,
-    swatches: List<String> = emptyList(),
-    onLongClick: (() -> Unit)? = null,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier.height(34.dp).clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (icon != null) {
-            Icon(icon, null, Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.width(5.dp))
-        }
-        for ((i, c) in swatches.take(4).withIndex()) {
-            Box(
-                Modifier.size(10.dp)
-                    .background(parseColor(c) ?: Color.Gray, CircleShape)
-                    .border(1.dp, MaterialTheme.colorScheme.surfaceContainerHigh, CircleShape),
-            )
-            Spacer(Modifier.width(if (i == swatches.take(4).lastIndex) 5.dp else 1.dp))
-        }
-        Text(
-            text.ifEmpty { "—" },
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
+private fun PresetItem(label: String, value: String, lead: @Composable () -> Unit, onClick: () -> Unit) {
+    DropdownMenuItem(
+        leadingIcon = lead,
+        text = {
+            Column(Modifier.widthIn(max = 240.dp)) {
+                Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                Text(value.ifEmpty { "—" }, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+        },
+        onClick = onClick,
+    )
 }
 
-/** Prepare, Paint, Preview and Device; a tab that has nothing to show yet is greyed out. */
 @Composable
-fun StageTabRow(stage: Stage, canPaint: Boolean, canPreview: Boolean, onStage: (Stage) -> Unit) {
-    TabRow(
-        selectedTabIndex = stage.ordinal,
-        containerColor = MaterialTheme.colorScheme.background,
-        divider = { HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant) },
-    ) {
-        for (s in Stage.entries) {
-            val enabled = when (s) {
-                Stage.PAINT -> canPaint
-                Stage.PREVIEW -> canPreview
-                else -> true
-            }
-            Tab(
-                selected = s == stage,
-                onClick = { onStage(s) },
-                enabled = enabled,
-                selectedContentColor = MaterialTheme.colorScheme.primary,
-                unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                text = { Text(s.label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, maxLines = 1) },
-            )
+private fun Swatches(colours: List<String>) {
+    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        for (c in colours.take(4).ifEmpty { listOf("#808080") }) {
+            Box(Modifier.size(12.dp).background(parseColor(c) ?: Color.Gray, CircleShape))
         }
     }
 }
@@ -438,7 +418,13 @@ fun paintLayerTools(vm: AppViewModel, paint: PaintState): List<ColumnTool> =
             },
             active = paint.layer == l,
         ) { vm.choosePaintLayer(l) }
-    }
+    } + undoTools(vm)
+
+/** Undo and redo, at the foot of the tool column instead of the top bar. */
+private fun undoTools(vm: AppViewModel): List<ColumnTool> = listOf(
+    ColumnTool("Undo", AppIcons.Undo, enabled = vm.scene.snapshot.undoCount > 0) { vm.undo() },
+    ColumnTool("Redo", AppIcons.Redo, enabled = vm.scene.snapshot.redoCount > 0) { vm.redo() },
+)
 
 /** What the painter paints and with which tool, beside the plate. */
 @Composable
@@ -648,6 +634,7 @@ fun WorkbenchPhone(
     onTransform: (Boolean) -> Unit,
     previewDetails: Boolean,
     onPreviewDetails: () -> Unit,
+    topRow: @Composable () -> Unit,
     status: @Composable () -> Unit,
     previewPanel: @Composable () -> Unit,
     onEditObject: (Selection) -> Unit,
@@ -661,7 +648,8 @@ fun WorkbenchPhone(
     val toolOpen = vm.cut != null || vm.measure != null || vm.layerHeights != null
     val slicing = vm.slice as? SliceState.Running
     Column(Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxWidth().padding(8.dp)) { status() }
+        topRow()
+        Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) { status() }
         Row(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
             when {
                 previewing && done != null -> {
@@ -737,5 +725,5 @@ private fun prepareTools(
         ColumnTool("Measure", AppIcons.Ruler, enabled = has) { sel?.let { vm.startMeasure(it.objectId) } },
         ColumnTool("Layer heights", AppIcons.Layers, enabled = has) { sel?.let(vm::startLayerHeights) },
         ColumnTool("Parts and settings", AppIcons.Tune, enabled = has) { sel?.let(onEditObject) },
-    )
+    ) + undoTools(vm)
 }

@@ -356,15 +356,21 @@ presets.
 
 On a phone the viewport fills the screen and every control floats over it
 in a fixed place, so the model keeps as much room as possible. A slim top row
-holds the menu, the plate strip and one button that opens the printer,
-filament and process pickers; the printers' dashboard is in the menu. A tool
-column on the left holds the object tools (painting is one of them, and turns
-the column into the paint layers) with undo and redo at its foot; a long
-press names a tool and the toggle on top shows every name. A small
-options panel on the right shows the selected object's position and scale or
-what the painter paints, and at the bottom the object strip sits above a
-fixed Slice bar. The strip lists the plate's objects for selection, or the
-ways to add one while the plate is empty, so nothing covers an empty plate.
+holds the menu, the plate strip and the print settings; the printers'
+dashboard is in the menu. A tool column on the left holds the object tools
+(painting is one of them, and turns the column into the paint layers) with
+undo and redo at its foot; a long press names a tool and the toggle on top
+shows every name. The column only lists what can be used: the object tools
+appear once a model is picked, Arrange once the plate has models, so an
+empty plate has no column. A small options panel on the right shows the
+selected object's position, rotation and scale or what the painter paints,
+and at the bottom the object strip sits above a fixed Slice bar. The strip
+lists the plate's objects for selection, or the ways to add one while the
+plate is empty, so nothing covers an empty plate. The Slice bar names the
+printer, filament and process the slice will use, and a tap on them opens
+their pickers, so what will be sliced is always in view; after a slice it
+also shows the print time, which opens the preview. Messages show under the
+top row, where they cover neither the tools nor the Slice bar.
 Preview, reached from the Slice bar, has a back button in the top row, a
 vertical top-layer slider on the right, estimate tiles and an Export and
 Print bar, with the full preview controls one tap away. Tools that need a

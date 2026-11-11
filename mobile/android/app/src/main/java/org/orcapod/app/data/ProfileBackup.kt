@@ -29,8 +29,17 @@ enum class ProfileKind(val dir: String, val bundleDir: String, val idKey: String
  * single preset `.json` files.
  */
 object ProfileBackup {
-    data class ImportResult(val added: List<String>, val replaced: List<String>, val skipped: List<String>) {
+    /** [filaments] maps each imported filament to the preset it inherits ("" when it stands alone). */
+    data class ImportResult(
+        val added: List<String>,
+        val replaced: List<String>,
+        val skipped: List<String>,
+        val filaments: Map<String, String> = emptyMap(),
+    ) {
         val imported get() = added.size + replaced.size
+
+        operator fun plus(o: ImportResult) =
+            ImportResult(added + o.added, replaced + o.replaced, skipped + o.skipped, filaments + o.filaments)
     }
 
     /** The user's preset files under [userDir], in kind and name order. */
@@ -64,6 +73,7 @@ object ProfileBackup {
         val added = ArrayList<String>()
         val replaced = ArrayList<String>()
         val skipped = ArrayList<String>()
+        val filaments = LinkedHashMap<String, String>()
         for ((path, data) in entries) {
             val leaf = path.substringAfterLast('/')
             if (!leaf.endsWith(JSON, ignoreCase = true) || leaf == BUNDLE_STRUCTURE) continue
@@ -81,11 +91,12 @@ object ProfileBackup {
             }
             val target = File(File(userDir, kind.dir), "$name$JSON")
             if (target.exists()) replaced += name else added += name
+            if (kind == ProfileKind.FILAMENT) filaments[name] = json.optString("inherits")
             writeAtomically(target, data)
             // A stale sync record would describe the preset that was replaced.
             File(target.parentFile, "$name.info").delete()
         }
-        return ImportResult(added, replaced, skipped)
+        return ImportResult(added, replaced, skipped, filaments)
     }
 
     /** The preset kind: by its settings id key, its `type`, then the folder it came from. */

@@ -11,15 +11,24 @@ import org.orcapod.app.engine.PresetEntry
  * every preset that was listed when the user last picked, so one of the
  * user's own presets that appears later (an imported filament) is listed
  * until they decide on it.
+ *
+ * With [emptyShowsAll] (printers), a choice with nothing picked lists every
+ * entry. Without it (filaments, whose library runs to thousands), nothing
+ * picked lists only the current preset and the user's own new presets.
  */
-data class PresetChoice(val shown: Set<String> = emptySet(), val seen: Set<String> = emptySet()) {
+data class PresetChoice(
+    val shown: Set<String> = emptySet(),
+    val seen: Set<String> = emptySet(),
+    val emptyShowsAll: Boolean = true,
+) {
     /**
-     * The entries to list. With nothing picked among [entries] (no choice
-     * yet, or none of the picks is compatible or loaded) every entry is
-     * listed; [current] is always listed.
+     * The entries to list: the picks, [current], and the user's own presets
+     * they have not decided on yet. With [emptyShowsAll] and nothing picked
+     * among [entries] (no choice yet, or none of the picks is compatible or
+     * loaded) every entry is listed.
      */
     fun filter(entries: List<PresetEntry>, current: String): List<PresetEntry> {
-        if (entries.none { it.name in shown }) return entries
+        if (emptyShowsAll && entries.none { it.name in shown }) return entries
         return entries.filter { it.name in shown || it.name == current || (it.isUser && it.name !in seen) }
     }
 
@@ -28,13 +37,12 @@ data class PresetChoice(val shown: Set<String> = emptySet(), val seen: Set<Strin
 
     /**
      * The choice after the user picked [picked] out of [entries]. Picks among
-     * other entries (other brands, incompatible filaments) are kept; picking
-     * nothing lists every entry again.
+     * other entries (other brands, incompatible filaments) are kept.
      */
     fun pick(entries: List<PresetEntry>, picked: Set<String>): PresetChoice =
         pick(entries.mapTo(HashSet()) { it.name }, picked)
 
     /** As [pick], over preset names that need not be loaded, such as a whole brand's. */
     fun pick(names: Set<String>, picked: Set<String>): PresetChoice =
-        PresetChoice(shown = shown - names + (picked intersect names), seen = seen + names)
+        copy(shown = shown - names + (picked intersect names), seen = seen + names)
 }

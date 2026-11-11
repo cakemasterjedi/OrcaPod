@@ -42,6 +42,7 @@ class ProfileBackupTest {
         val other = tmp.newFolder("other")
         val result = ProfileBackup.import(ByteArrayInputStream(zip.toByteArray()), other)
         assertEquals(listOf("My Printer", "My PLA", "0.2 Strong"), result.added)
+        assertEquals(mapOf("My PLA" to "Base"), result.filaments)
         assertTrue(File(other, "machine/My Printer.json").isFile)
         assertEquals(File(phone, "filament/My PLA.json").readText(), File(other, "filament/My PLA.json").readText())
     }

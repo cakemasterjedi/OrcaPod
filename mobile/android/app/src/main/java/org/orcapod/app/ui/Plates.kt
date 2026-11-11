@@ -203,6 +203,8 @@ fun FilamentSlotsSheet(vm: AppViewModel, onEdit: () -> Unit, onDismiss: () -> Un
             onPick = { vm.selectFilamentSlot(slot, it) },
             onDelete = { name -> vm.deleteUserPreset(PresetKind.FILAMENT, name) },
             onDismiss = { picking = null },
+            choice = vm.choices[PresetKind.FILAMENT],
+            onChoose = { vm.choosePresets(PresetKind.FILAMENT, vm.filaments, it) },
         )
     }
     colouring?.let { slot ->

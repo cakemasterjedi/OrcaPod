@@ -361,7 +361,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Lists only the [printers] and [filaments] picked from [catalog] in the
-     * pickers; picking none of a kind lists all of it.
+     * pickers; picking no printer lists them all, picking no filament lists none.
      */
     fun finishModelSetup(catalog: ProfileCatalog, printers: Set<ProfileCatalog.Group>, filaments: Set<ProfileCatalog.Group>) {
         saveChoice(PresetKind.PRINTER, choice(PresetKind.PRINTER).pick(catalog.printerPresets, printers.flatMapTo(HashSet()) { it.presets }))
@@ -564,22 +564,48 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _messages.tryEmit(if (count == 1) "Exported 1 profile" else "Exported $count profiles")
     }
 
-    /** Adds the presets in [uri] (a preset zip or JSON file) to the user's presets. */
-    fun importProfiles(uri: Uri) = engineAction("Importing profiles…") { e ->
+    /**
+     * Adds the presets in [uris] (preset zips, desktop's .orca_filament and
+     * .orca_printer exports, or the JSON files from its user preset folder)
+     * to the user's presets, and says which filaments did not come through.
+     */
+    fun importProfiles(uris: List<Uri>) = engineAction("Importing profiles…") { e ->
+        if (uris.isEmpty()) return@engineAction
         val ctx = getApplication<Application>()
         val result = withContext(Dispatchers.IO) {
-            ctx.contentResolver.openInputStream(uri)?.use { ProfileBackup.import(it, userDir) }
-                ?: throw java.io.IOException("Cannot read the file")
+            uris.map { uri ->
+                ctx.contentResolver.openInputStream(uri)?.use { ProfileBackup.import(it, userDir) }
+                    ?: throw java.io.IOException("Cannot read the file")
+            }.reduce(ProfileBackup.ImportResult::plus)
         }
         if (result.imported > 0) reloadUserPresets(e)
+        val loaded = if (result.filaments.isEmpty()) emptyList() else e.list(PresetKind.FILAMENT)
         _messages.tryEmit(
             when {
                 result.imported == 0 -> "No printer, filament or process profiles found in that file"
                 result.skipped.isEmpty() -> if (result.imported == 1) "Imported 1 profile" else "Imported ${result.imported} profiles"
                 else -> "Imported ${result.imported} of ${result.imported + result.skipped.size} files; the rest are not profiles"
-            },
+            } + importProblems(result.filaments, loaded),
         )
         if (result.imported > 0) syncProfiles(quiet = true)
+    }
+
+    // The engine drops a preset whose parent is not installed, and lists one made for another printer as incompatible.
+    private fun importProblems(filaments: Map<String, String>, loaded: List<PresetEntry>): String {
+        val byName = loaded.associateBy { it.name }
+        val missing = filaments.filterKeys { it !in byName }
+        val other = filaments.keys.filter { byName[it]?.compatible == false }
+        val notes = ArrayList<String>()
+        missing.entries.firstOrNull()?.let { (name, parent) ->
+            val more = if (missing.size > 1) " (and ${missing.size - 1} more)" else ""
+            notes += if (parent.isEmpty()) "\"$name\"$more could not be loaded"
+            else "\"$name\"$more is based on \"$parent\", which is not installed; add that printer brand"
+        }
+        if (other.isNotEmpty()) {
+            val more = if (other.size > 1) " (and ${other.size - 1} more)" else ""
+            notes += "\"${other.first()}\"$more is for another printer, so it is listed when you switch to it"
+        }
+        return notes.joinToString("") { ". $it" }
     }
 
     /** Starts syncing profiles with the folder at [treeUri], picked with ACTION_OPEN_DOCUMENT_TREE. */
@@ -669,11 +695,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Shows only [picked] of [entries] in the [kind] picker; nothing picked shows them all. */
+    /** Shows only [picked] of [entries] in the [kind] picker; nothing picked shows every printer, but no filaments. */
     fun choosePresets(kind: PresetKind, entries: List<PresetEntry>, picked: Set<String>) =
         saveChoice(kind, choice(kind).pick(entries, picked))
 
-    fun choice(kind: PresetKind): PresetChoice = choices[kind] ?: PresetChoice()
+    fun choice(kind: PresetKind): PresetChoice = choices[kind] ?: emptyChoice(kind)
 
     private fun saveChoice(kind: PresetKind, choice: PresetChoice) {
         choices = choices + (kind to choice)
@@ -684,11 +710,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun loadChoices(): Map<PresetKind, PresetChoice> = CHOOSABLE.associateWith { kind ->
-        PresetChoice(
+        emptyChoice(kind).copy(
             shown = choicePrefs.getStringSet("shown/${kind.name}", null).orEmpty().toSet(),
             seen = choicePrefs.getStringSet("seen/${kind.name}", null).orEmpty().toSet(),
         )
     }
+
+    // The filament library runs to thousands of presets, so only the ones the user ticked are listed.
+    private fun emptyChoice(kind: PresetKind) = PresetChoice(emptyShowsAll = kind != PresetKind.FILAMENT)
 
     // --- document ---
 

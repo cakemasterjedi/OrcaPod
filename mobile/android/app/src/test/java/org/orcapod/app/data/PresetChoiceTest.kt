@@ -51,6 +51,17 @@ class PresetChoiceTest {
     }
 
     @Test
+    fun filamentsListNothingButTheCurrentAndNewUserPresetsUntilPicked() {
+        val filaments = PresetChoice(emptyShowsAll = false)
+        val all = entries("Generic PLA", "Generic PETG") + PresetEntry("My PETG", "", true, 1)
+        assertEquals(listOf("Generic PLA", "My PETG"), names(filaments.filter(all, "Generic PLA")))
+        val picked = filaments.pick(all, setOf("Generic PETG"))
+        assertEquals(false, picked.emptyShowsAll)
+        assertEquals(listOf("Generic PETG"), names(picked.filter(all, "Generic PETG")))
+        assertEquals(listOf("Generic PLA"), names(picked.pick(all, emptySet()).filter(all, "Generic PLA")))
+    }
+
+    @Test
     fun vendorIdsAndProfileNamesShowTheFullBrandName() {
         assertEquals("Bambu Lab", VendorNames.display("BBL"))
         assertEquals("Bambu Lab", VendorNames.display("Bambulab"))

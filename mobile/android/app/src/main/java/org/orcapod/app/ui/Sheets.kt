@@ -62,7 +62,8 @@ import org.orcapod.app.engine.PresetKind
  * With more than one [brands], a row of chips above the list switches the loaded
  * brand through [onBrand]; [loading] shows while that brand loads. With a
  * [choice], the list holds only the presets the user picked to show, and
- * "Choose" lets them tick which ones through [onChoose].
+ * "Choose" lets them tick which ones through [onChoose]. With [onImport],
+ * an "Import" button adds the user's own presets from files.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -79,6 +80,7 @@ fun PresetPickerSheet(
     onBrand: (String) -> Unit = {},
     choice: PresetChoice? = null,
     onChoose: (Set<String>) -> Unit = {},
+    onImport: (() -> Unit)? = null,
 ) {
     var query by remember { mutableStateOf("") }
     // Ticked presets while choosing which to show; null when picking a preset.
@@ -94,6 +96,7 @@ fun PresetPickerSheet(
         Column(Modifier.fillMaxHeight(0.9f).padding(horizontal = 16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                if (onImport != null && ticked == null) TextButton(onClick = onImport) { Text("Import") }
                 if (choice != null) {
                     if (ticked == null) {
                         TextButton(onClick = {
@@ -108,8 +111,16 @@ fun PresetPickerSheet(
             }
             when {
                 ticked != null -> Text(
-                    if (ticked.isEmpty()) "Tick the ones you use; only those will be listed. With none ticked, all are listed."
-                    else "${ticked.size} ticked; only those will be listed.",
+                    when {
+                        ticked.isNotEmpty() -> "${ticked.size} ticked; only those will be listed."
+                        choice?.emptyShowsAll == false -> "Tick the ones you use; only those will be listed."
+                        else -> "Tick the ones you use; only those will be listed. With none ticked, all are listed."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                choice?.emptyShowsAll == false && listed.all { it.name == current } -> Text(
+                    "Only the ones you choose are listed. Tap Choose to tick the ones you use" +
+                        if (onImport != null) ", or Import to add your own." else ".",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 listed.size < entries.size -> Text(

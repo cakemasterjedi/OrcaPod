@@ -37,8 +37,8 @@ fun ProfilesSheet(vm: AppViewModel, onDismiss: () -> Unit) {
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
         if (uri != null) vm.exportProfiles(uri)
     }
-    val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) vm.importProfiles(uri)
+    val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        vm.importProfiles(uris)
     }
     val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) vm.chooseSyncFolder(uri)
@@ -64,7 +64,7 @@ fun ProfilesSheet(vm: AppViewModel, onDismiss: () -> Unit) {
             Text("Backup file", style = MaterialTheme.typography.titleMedium)
             Text(
                 "A zip in OrcaSlicer's preset format. Desktop OrcaSlicer can import it with File > Import > Import Configs, " +
-                    "and its exported .orca_printer, .orca_filament and .zip files can be imported here.",
+                    "and its exported .orca_printer, .orca_filament and .zip files, or the .json files in its user preset folder, can be imported here.",
                 style = MaterialTheme.typography.bodySmall,
             )
             Spacer(Modifier.height(8.dp))

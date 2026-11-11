@@ -63,11 +63,22 @@ data class LegendItem(val color: IntArray, val label: String, val detail: String
  * first marker of each layer.
  */
 class ToolpathGeometry(
-    val lines: FloatArray,
+    lines: FloatArray,
     val visibleBefore: IntArray,
-    val points: FloatArray,
+    points: FloatArray,
     val pointLayerStart: IntArray,
 ) {
+    var lines = lines
+        private set
+    var points = points
+        private set
+
+    /** Drops the vertices once they are in GL buffers: a big print's take much of the Java heap. */
+    fun releaseVertices() {
+        lines = FloatArray(0)
+        points = FloatArray(0)
+    }
+
     /** Visible-segment range drawn for [r], as [first, end). */
     fun lineRange(tp: Toolpath, r: PreviewRange): IntRange {
         if (tp.layerTotal == 0) return IntRange.EMPTY

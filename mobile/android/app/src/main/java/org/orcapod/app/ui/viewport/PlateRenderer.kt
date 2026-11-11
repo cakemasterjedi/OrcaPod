@@ -358,6 +358,7 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
                 val g = ToolpathGeometry.build(tp, style)
                 toolpathVbo = if (g.lines.isNotEmpty()) Gl.vbo(g.lines) else 0
                 pointVbo = if (g.points.isNotEmpty()) Gl.vbo(g.points) else 0
+                g.releaseVertices()
                 toolpathGeometry = g
             } catch (ex: OutOfMemoryError) {
                 Gl.deleteVbo(toolpathVbo)

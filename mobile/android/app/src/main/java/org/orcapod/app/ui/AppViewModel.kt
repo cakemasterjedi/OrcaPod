@@ -1933,13 +1933,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Lines the preview can have in the Java heap left now: each takes about
-     * 80 bytes in the toolpath and 52 in the renderer's geometry, and half the
-     * free heap is left for the rest of the app.
+     * 80 bytes in the toolpath, and 100 in the renderer's geometry while it is
+     * uploaded (its lines and their GL buffer copy, both on the Java heap on
+     * Android). Half the free heap is left for the rest of the app.
      */
     private fun previewLineBudget(): Int {
         val rt = Runtime.getRuntime()
         val free = rt.maxMemory() - (rt.totalMemory() - rt.freeMemory())
-        return (free / 2 / 140).coerceIn(100_000L, Int.MAX_VALUE.toLong()).toInt()
+        return (free / 2 / 180).coerceIn(100_000L, Int.MAX_VALUE.toLong()).toInt()
     }
 
     fun cancelSlice() {

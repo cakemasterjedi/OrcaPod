@@ -14,14 +14,14 @@ data class RecentProject(val uri: String, val name: String, val time: Long) {
     internal val key: String get() = sha1(uri)
 }
 
-/** The plate left unsaved when the app last went to the background. */
+/** The plate left unsaved when the app last closed. */
 data class Recovery(val file: File, val name: String?, val uri: String?, val time: Long)
 
 /**
  * Project bookkeeping outside the engine: the recent projects list (with a
- * thumbnail of each), and the recovery copy of an unsaved plate, written when
- * the app goes to the background so a killed process loses nothing (desktop's
- * project backup).
+ * thumbnail of each), and the recovery copy of an unsaved plate, refreshed a
+ * moment after each change and when the app goes to the background, so a crash
+ * or a killed process loses next to nothing (desktop's project backup).
  */
 class ProjectStore(context: Context) {
     private val prefs = context.getSharedPreferences("projects", Context.MODE_PRIVATE)

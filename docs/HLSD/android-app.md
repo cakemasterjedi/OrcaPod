@@ -443,11 +443,24 @@ Per-layer custom G-code follows desktop's layer slider:
   before the top layer shown (`orca_plater_custom_gcode_*`).
 - The shown slice stays until the next one, which applies the changes.
 
-A large print can need more memory than the app has. The JNI layer builds
-the preview's Java arrays one at a time and stops at the first that does not
-fit, so the `OutOfMemoryError` reaches Kotlin, which drops the preview and
-keeps the G-code; the renderer likewise draws nothing when the line buffer
-does not fit.
+A large print can need more memory than the app has. Kotlin gives the
+preview a line budget from the Java heap that is free, at about 140 bytes per
+line for the toolpath arrays and the renderer's geometry. Past the budget, the
+JNI layer joins runs of lines that carry on from one another with the same
+move type, role, extruder and settings, as long as every point a run passes
+stays within a tolerance of the joined line. It picks the smallest tolerance,
+from 0.01 mm up to 0.2 mm, that fits. Curves sliced into many short moves
+shrink most. Times add up and the actual speed and flow are weighted by
+length, so the legend and summary keep their totals; the preview then says
+that it is simplified. The JNI layer builds the Java arrays one at a time and
+stops at the first that does not fit, so an `OutOfMemoryError` reaches Kotlin,
+which tries again with a third of the budget, twice, before it drops the
+preview and keeps the G-code. The renderer likewise draws nothing when the
+line buffer does not fit.
+
+As on desktop, a slice whose toolpaths collide (the engine's
+`gcode_path_conflict` warning) cannot be printed, saved, shared or exported
+as a sliced 3MF until the objects are moved apart and sliced again.
 
 ## Crash reports
 

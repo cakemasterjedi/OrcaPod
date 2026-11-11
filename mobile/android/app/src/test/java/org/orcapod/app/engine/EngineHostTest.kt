@@ -208,6 +208,15 @@ class EngineHostTest {
         assertTrue(range[1] > range[0])
         assertEquals(ToolpathColours.RANGE_COLORS.first().toList(), ToolpathColours.rangeColor(range[0], range, false).toList())
         assertEquals(ToolpathColours.RANGE_COLORS.last().toList(), ToolpathColours.rangeColor(range[1], range, false).toList())
+        assertFalse(tp.simplified)
+
+        // Past its line budget the preview joins runs of moves, keeping every layer and the times.
+        val joined = e.loadToolpath(gcode.path, maxLines = tp.segmentCount / 2)
+        assertTrue(joined.simplified)
+        assertTrue(joined.segmentCount <= tp.segmentCount)
+        assertEquals(tp.layerTotal, joined.layerTotal)
+        assertEquals(joined.segmentCount, joined.layerFirst.last() + joined.layerCount.last())
+        assertTrue(abs(joined.times.sum() - tp.times.sum()) < tp.times.sum() * 0.01)
     }
 
     @Test

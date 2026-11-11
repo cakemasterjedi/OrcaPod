@@ -125,7 +125,10 @@ sealed interface SliceState {
         val toolpath: Toolpath?,
         val plate: Int,
         val plates: List<SlicedPlate> = emptyList(),
-    ) : SliceState
+    ) : SliceState {
+        /** Whether the G-code may be printed or exported: as on desktop, not when toolpaths collide. */
+        val printable get() = !report.hasPathConflict
+    }
 }
 
 /** The per-object or per-part settings target: [volumeId] 0 is the object itself. */
@@ -1839,9 +1842,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             slice = SliceState.Running(0, "Preparing")
             try {
                 val target = if (allPlates) SliceTarget.SLICED_3MF else SliceTarget.SLICED_3MF_PLATE
-                e.slice(tmp.path, target, scene.snapshot.currentPlate, progress())
-                copyFromFile(tmp, uri)
-                _messages.tryEmit("Sliced 3MF saved")
+                val report = e.slice(tmp.path, target, scene.snapshot.currentPlate, progress())
+                if (report.hasPathConflict) {
+                    _messages.tryEmit(COLLISION_BLOCKS_OUTPUT)
+                } else {
+                    copyFromFile(tmp, uri)
+                    _messages.tryEmit("Sliced 3MF saved")
+                }
             } catch (ex: OrcaException) {
                 _messages.tryEmit(if (ex.code == OrcaException.CANCELLED) "Slicing cancelled" else "Slicing failed: ${ex.message}")
             } catch (ex: java.io.IOException) {
@@ -1870,16 +1877,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun loadPreview(e: Engine, gcode: File, showProgress: Boolean = true): Toolpath? {
         if (showProgress) slice = SliceState.Running(100, "Loading preview")
         CrashReports.breadcrumb(getApplication(), "Loading the sliced preview")
-        return try {
-            e.loadToolpath(gcode.path)
-        } catch (ex: OrcaException) {
-            Log.w(TAG, "preview failed", ex)
-            null
-        } catch (ex: OutOfMemoryError) {
-            Log.w(TAG, "preview too large", ex)
-            _messages.tryEmit("This G-code is too large to preview on this device. It can still be printed.")
-            null
+        // A big print's lines may not all fit in the app's memory: the engine
+        // then joins runs of short moves, and joins more if it still runs out.
+        var maxLines = previewLineBudget()
+        repeat(3) {
+            try {
+                return e.loadToolpath(gcode.path, maxLines)
+            } catch (ex: OrcaException) {
+                Log.w(TAG, "preview failed", ex)
+                return null
+            } catch (ex: OutOfMemoryError) {
+                Log.w(TAG, "preview of $maxLines lines did not fit", ex)
+                maxLines /= 3
+            }
         }
+        _messages.tryEmit("This G-code is too large to preview on this device. It can still be printed.")
+        return null
+    }
+
+    /**
+     * Lines the preview can have in the Java heap left now: each takes about
+     * 80 bytes in the toolpath and 52 in the renderer's geometry, and half the
+     * free heap is left for the rest of the app.
+     */
+    private fun previewLineBudget(): Int {
+        val rt = Runtime.getRuntime()
+        val free = rt.maxMemory() - (rt.totalMemory() - rt.freeMemory())
+        return (free / 2 / 140).coerceIn(100_000L, Int.MAX_VALUE.toLong()).toInt()
     }
 
     fun cancelSlice() {
@@ -1956,6 +1980,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private const val TAG = "OrcaPod"
         /** Most dabs [fillGaps] adds between two finger samples. */
         private const val MAX_GAP_DABS = 64
+        const val COLLISION_BLOCKS_OUTPUT = "Some objects' toolpaths collide, so this slice can't be printed or exported. Move them apart and slice again."
         private const val KEY_SYNC_TREE = "sync_tree"
         private const val KEY_SYNC_STATE = "sync_state"
         private const val KEY_SYNC_LAST = "sync_last"

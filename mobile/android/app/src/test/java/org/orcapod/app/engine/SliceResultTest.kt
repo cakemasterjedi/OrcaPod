@@ -1,6 +1,7 @@
 package org.orcapod.app.engine
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -40,5 +41,9 @@ class SliceResultTest {
         assertEquals("Object floats above the bed: Cube", plain.text)
         val conflict = SliceWarning(2, "gcode_path_conflict", "", "Cube\nCylinder\n1.2\n6")
         assertEquals("The toolpaths of Cube and Cylinder collide at 1.20 mm. Move them apart.", conflict.text)
+
+        // A collision blocks printing; other warnings don't.
+        assertTrue(SliceReport(60.0, 1, arrayOf(coded, conflict)).hasPathConflict)
+        assertFalse(SliceReport(60.0, 1, arrayOf(coded, plain)).hasPathConflict)
     }
 }

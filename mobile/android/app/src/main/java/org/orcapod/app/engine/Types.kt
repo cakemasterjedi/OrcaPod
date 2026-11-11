@@ -268,6 +268,9 @@ class SliceWarning(val level: Int, val code: String, val message: String, val de
         return listOf(words, detail.replace('\n', ' ')).filter { it.isNotBlank() }.joinToString(": ")
     }
 
+    /** Whether two objects' toolpaths collide, which desktop does not let print. */
+    val isPathConflict get() = code == PATH_CONFLICT
+
     companion object {
         private const val PATH_CONFLICT = "gcode_path_conflict"
         private val ERROR_NUMBER = Regex("[0-9A-Fa-f]{8}")
@@ -288,7 +291,10 @@ class SliceWarning(val level: Int, val code: String, val message: String, val de
     }
 }
 
-class SliceReport(val timeEstimateSeconds: Double, val gcodeBytes: Long, val warnings: Array<SliceWarning>)
+class SliceReport(val timeEstimateSeconds: Double, val gcodeBytes: Long, val warnings: Array<SliceWarning>) {
+    /** Two objects' toolpaths collide: the print would knock one over or crash the nozzle into it. */
+    val hasPathConflict get() = warnings.any { it.isPathConflict }
+}
 
 fun interface ProgressListener {
     fun onProgress(percent: Int, message: String)
@@ -331,6 +337,8 @@ class Toolpath(
     val diameters: FloatArray,
     /** Filament cost per kg, per extruder. */
     val costs: FloatArray,
+    /** Whether runs of short moves were joined into longer lines so the preview fits in memory. */
+    val simplified: Boolean = false,
 ) {
     enum class Attr { SPEED, ACTUAL_SPEED, HEIGHT, WIDTH, FAN, TEMPERATURE, FLOW, ACTUAL_FLOW, LAYER_TIME, ACCELERATION, JERK, PRESSURE_ADVANCE;
         companion object { val COUNT = entries.size }

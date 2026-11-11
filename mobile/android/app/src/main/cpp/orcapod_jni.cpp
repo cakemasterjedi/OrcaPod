@@ -12,6 +12,7 @@
 #include <jni.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <new>
@@ -711,9 +712,140 @@ struct ToolpathGuard
     ~ToolpathGuard() { orca_toolpath_dispose(&tp); }
 };
 
-jobject load_toolpath(JNIEnv *env, jstring path, orca_toolpath &tp)
+constexpr uint8_t kMoveTravel = 8, kMoveExtrude = 10;
+
+bool is_line(const orca_tp_segment &s) { return s.move_type >= kMoveTravel && s.move_type <= kMoveExtrude; }
+
+// Whether `b` carries on from `a` as the same kind of move with the same settings.
+bool continues(const orca_tp_segment &a, const orca_tp_segment &b)
 {
-    constexpr uint8_t kMoveTravel = 8, kMoveExtrude = 10;
+    return a.move_type == b.move_type && a.role == b.role && a.extruder == b.extruder && a.flags == b.flags &&
+           a.layer_id == b.layer_id && a.end[0] == b.start[0] && a.end[1] == b.start[1] && a.end[2] == b.start[2] &&
+           a.feedrate == b.feedrate && a.width == b.width && a.height == b.height && a.mm3_per_mm == b.mm3_per_mm &&
+           a.fan_speed == b.fan_speed && a.temperature == b.temperature && a.acceleration == b.acceleration &&
+           a.jerk == b.jerk && a.pressure_advance == b.pressure_advance && a.print_z == b.print_z;
+}
+
+float length(const orca_tp_segment &s)
+{
+    const float dx = s.end[0] - s.start[0], dy = s.end[1] - s.start[1], dz = s.end[2] - s.start[2];
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// Squared distance of point `p` from the line segment a-b.
+float distance2(const float *p, const float *a, const float *b)
+{
+    float ab[3], ap[3];
+    for (int i = 0; i < 3; ++i) {
+        ab[i] = b[i] - a[i];
+        ap[i] = p[i] - a[i];
+    }
+    const float len2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    float t = len2 > 0.f ? (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / len2 : 0.f;
+    t = std::clamp(t, 0.f, 1.f);
+    float d2 = 0.f;
+    for (int i = 0; i < 3; ++i) {
+        const float d = ap[i] - t * ab[i];
+        d2 += d * d;
+    }
+    return d2;
+}
+
+// Hands `emit` the segments [first, end) of `tp` in order, each run of lines
+// that carry on from one another joined into one line while every point it
+// passes stays within `tolerance` mm of it. A print with many short moves
+// (curves) then previews with far fewer lines; times add up and the actual
+// speed and flow are length-weighted. A tolerance of 0 joins nothing.
+template <class Emit>
+void for_each_joined(const orca_toolpath &tp, uint32_t first, uint32_t end, float tolerance, Emit &&emit)
+{
+    if (tolerance <= 0.f) {
+        for (uint32_t s = first; s < end; ++s)
+            emit(tp.segments[s]);
+        return;
+    }
+    constexpr size_t kMaxJoined = 64;
+    const float tol2 = tolerance * tolerance;
+    orca_tp_segment run{};
+    bool open = false;
+    float run_length = 0.f, speed_sum = 0.f, flow_sum = 0.f;
+    float via[kMaxJoined][3];
+    size_t vias = 0;
+    auto flush = [&]() {
+        if (!open)
+            return;
+        if (run_length > 0.f) {
+            run.actual_feedrate = speed_sum / run_length;
+            run.actual_volumetric_rate = flow_sum / run_length;
+        }
+        emit(run);
+        open = false;
+    };
+    auto start = [&](const orca_tp_segment &s) {
+        run = s;
+        open = true;
+        vias = 0;
+        run_length = length(s);
+        speed_sum = s.actual_feedrate * run_length;
+        flow_sum = s.actual_volumetric_rate * run_length;
+    };
+    for (uint32_t i = first; i < end; ++i) {
+        const orca_tp_segment &s = tp.segments[i];
+        if (!is_line(s)) {
+            flush();
+            emit(s);
+            continue;
+        }
+        bool joins = open && vias < kMaxJoined && continues(run, s);
+        if (joins) {
+            const float *via_point = run.end;
+            joins = distance2(via_point, run.start, s.end) <= tol2;
+            for (size_t v = 0; joins && v < vias; ++v)
+                joins = distance2(via[v], run.start, s.end) <= tol2;
+        }
+        if (!joins) {
+            flush();
+            start(s);
+            continue;
+        }
+        std::copy(run.end, run.end + 3, via[vias++]);
+        std::copy(s.end, s.end + 3, run.end);
+        const float l = length(s);
+        run_length += l;
+        speed_sum += s.actual_feedrate * l;
+        flow_sum += s.actual_volumetric_rate * l;
+        run.time_seconds += s.time_seconds;
+        run.time_stealth += s.time_stealth;
+    }
+    flush();
+}
+
+// The smallest join tolerance at which the preview has at most `max_lines`
+// lines, up to a fifth of a millimetre; 0 when it fits as it is.
+float join_tolerance(const orca_toolpath &tp, int64_t max_lines)
+{
+    int64_t lines = 0;
+    for (uint32_t s = 0; s < tp.segment_count; ++s)
+        lines += is_line(tp.segments[s]);
+    if (lines <= max_lines)
+        return 0.f;
+    float tolerance = 0.f;
+    for (float t : {0.01f, 0.02f, 0.05f, 0.1f, 0.2f}) {
+        tolerance = t;
+        lines = 0;
+        for (uint32_t l = 0; l < tp.layer_count; ++l) {
+            const orca_tp_layer &layer = tp.layers[l];
+            const uint32_t end = std::min(layer.first_segment + layer.segment_count, tp.segment_count);
+            for_each_joined(tp, layer.first_segment, end, t, [&](const orca_tp_segment &s) { lines += is_line(s); });
+        }
+        if (lines <= max_lines)
+            break;
+    }
+    return tolerance;
+}
+
+jobject load_toolpath(JNIEnv *env, jstring path, jint max_lines, orca_toolpath &tp)
+{
     constexpr int kAttrs = 12; // keep in step with Toolpath.Attr
     orca_gcode *gcode = nullptr;
     if (!check(env, orca_gcode_load(utf8(env, path).c_str(), &gcode)))
@@ -722,6 +854,7 @@ jobject load_toolpath(JNIEnv *env, jstring path, orca_toolpath &tp)
     orca_gcode_free(gcode);
     if (!ok)
         return nullptr;
+    const float tolerance = join_tolerance(tp, max_lines);
 
     std::vector<float> pos, attrs, times, layer_z, layer_time, point_pos;
     std::vector<jbyte> moves, roles, extruders, point_types;
@@ -733,17 +866,16 @@ jobject load_toolpath(JNIEnv *env, jstring path, orca_toolpath &tp)
         const size_t first = moves.size(), first_point = point_types.size();
         bool extrudes = false;
         const uint32_t end = std::min(layer.first_segment + layer.segment_count, tp.segment_count);
-        for (uint32_t s = layer.first_segment; s < end; ++s) {
-            const orca_tp_segment &seg = tp.segments[s];
+        for_each_joined(tp, layer.first_segment, end, tolerance, [&](const orca_tp_segment &seg) {
             if (seg.move_type < kMoveTravel) {
                 if (seg.move_type == 0)
-                    continue;
+                    return;
                 point_pos.insert(point_pos.end(), {seg.end[0], seg.end[1], seg.end[2]});
                 point_types.push_back(jbyte(seg.move_type));
-                continue;
+                return;
             }
             if (seg.move_type > kMoveExtrude)
-                continue;
+                return;
             extrudes |= seg.move_type == kMoveExtrude;
             pos.insert(pos.end(), {seg.start[0], seg.start[1], seg.start[2], seg.end[0], seg.end[1], seg.end[2]});
             moves.push_back(jbyte(seg.move_type));
@@ -753,7 +885,7 @@ jobject load_toolpath(JNIEnv *env, jstring path, orca_toolpath &tp)
             attrs.insert(attrs.end(), {seg.feedrate, seg.actual_feedrate, seg.height, seg.width, seg.fan_speed,
                                        seg.temperature, seg.volumetric_rate, seg.actual_volumetric_rate,
                                        seg.layer_duration, seg.acceleration, seg.jerk, seg.pressure_advance});
-        }
+        });
         if (!extrudes) {
             // Roll the layer back: nothing in it is printed.
             pos.resize(first * 6);
@@ -845,19 +977,19 @@ jobject load_toolpath(JNIEnv *env, jstring path, orca_toolpath &tp)
     if (env->ExceptionCheck() || made != 18)
         return nullptr;
     jclass tp_cls = env->FindClass(cls("Toolpath").c_str());
-    jmethodID ctor = env->GetMethodID(tp_cls, "<init>", "([F[B[B[B[F[F[F[I[I[F[F[B[I[F[D[F[F[F)V");
+    jmethodID ctor = env->GetMethodID(tp_cls, "<init>", "([F[B[B[B[F[F[F[I[I[F[F[B[I[F[D[F[F[FZ)V");
     return env->NewObject(tp_cls, ctor, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
                           args[8], args[9], args[10], args[11], args[12], args[13], args[14], args[15], args[16],
-                          args[17]);
+                          args[17], jboolean(tolerance > 0.f));
 }
 
 } // namespace
 
-JNI_FN(jobject, toolpathLoad)(JNIEnv *env, jobject, jstring path)
+JNI_FN(jobject, toolpathLoad)(JNIEnv *env, jobject, jstring path, jint maxLines)
 {
     ToolpathGuard guard;
     try {
-        return load_toolpath(env, path, guard.tp);
+        return load_toolpath(env, path, maxLines, guard.tp);
     } catch (const std::bad_alloc &) {
         // A C++ exception must not unwind into the JVM: that aborts the app.
         if (!env->ExceptionCheck()) {

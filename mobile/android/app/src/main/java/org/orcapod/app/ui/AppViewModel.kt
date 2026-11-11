@@ -11,6 +11,7 @@ import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -21,10 +22,15 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.orcapod.app.data.LocalProfileFolder
@@ -285,6 +291,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         viewModelScope.launch { start() }
+        viewModelScope.launch { autoSaveRecovery() }
     }
 
     private suspend fun start() {
@@ -1098,32 +1105,61 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Refreshes the recovery copy of an unsaved plate shortly after each change, so a crash
+     * or a killed process loses at most the last few seconds of work. Changes that come in
+     * a burst (a drag, a run of setting edits) are written once, when they settle.
+     */
+    @OptIn(FlowPreview::class)
+    private suspend fun autoSaveRecovery() {
+        snapshotFlow {
+            listOf(
+                phase == Phase.Ready, slice is SliceState.Running, recovery != null,
+                scene.snapshot.revision, settingsFingerprint(), projectName, projectUri,
+                savedRevision, savedSettings,
+            )
+        }
+            .distinctUntilChanged()
+            .debounce(AUTOSAVE_DELAY_MS)
+            .collect { writeRecovery() }
+    }
+
+    /**
      * Keeps a copy of an unsaved plate when the app goes to the background, so a
      * process the system kills can be restored on the next start.
      */
     fun saveRecovery() {
-        val e = engine ?: return
-        if (phase != Phase.Ready || slice is SliceState.Running) return
+        viewModelScope.launch { writeRecovery() }
+    }
+
+    private val recoveryLock = Mutex()
+
+    private suspend fun writeRecovery() = recoveryLock.withLock<Unit> {
+        val e = engine ?: return@withLock
+        if (phase != Phase.Ready || slice is SliceState.Running) return@withLock
+        // The last session's copy is still waiting for the user's answer: keep it.
+        if (recovery != null) return@withLock
         if (!projectDirty) {
             projects.clearRecovery()
             recoveryState = null
-            return
+            return@withLock
         }
         // Opening a file picker stops the activity too: skip a copy that would not change.
         val state = listOf(scene.snapshot.revision, settingsFingerprint(), projectName, projectUri)
-        if (state == recoveryState && projects.recoveryFile.isFile) return
-        viewModelScope.launch {
-            try {
-                val thumbnail = renderThumbnail()
-                val tmp = File(projects.recoveryFile.path + ".tmp.3mf")
-                e.saveProject(tmp.path, thumbnail?.size ?: 0, thumbnail?.rgba())
+        if (state == recoveryState && projects.recoveryFile.isFile) return@withLock
+        try {
+            val thumbnail = renderThumbnail()
+            val tmp = File(projects.recoveryFile.path + ".tmp.3mf")
+            e.saveProject(tmp.path, thumbnail?.size ?: 0, thumbnail?.rgba())
+            val name = projectName
+            val uri = projectUri?.toString()
+            withContext(Dispatchers.IO) {
                 if (!tmp.renameTo(projects.recoveryFile)) throw java.io.IOException("Cannot keep the recovery copy")
-                projects.recoveryWritten(projectName, projectUri?.toString())
-                recoveryState = state
-            } catch (ex: Exception) {
-                if (ex is CancellationException) throw ex
-                Log.w(TAG, "recovery save failed", ex)
+                projects.recoveryWritten(name, uri)
             }
+            recoveryState = state
+        } catch (ex: Exception) {
+            if (ex is CancellationException) throw ex
+            Log.w(TAG, "recovery save failed", ex)
         }
     }
 
@@ -1957,13 +1993,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Lines the preview can have in the Java heap left now: each takes about
-     * 80 bytes in the toolpath and 52 in the renderer's geometry, and half the
-     * free heap is left for the rest of the app.
+     * 80 bytes in the toolpath, and 100 in the renderer's geometry while it is
+     * uploaded (its lines and their GL buffer copy, both on the Java heap on
+     * Android). Half the free heap is left for the rest of the app.
      */
     private fun previewLineBudget(): Int {
         val rt = Runtime.getRuntime()
         val free = rt.maxMemory() - (rt.totalMemory() - rt.freeMemory())
-        return (free / 2 / 140).coerceIn(100_000L, Int.MAX_VALUE.toLong()).toInt()
+        return (free / 2 / 180).coerceIn(100_000L, Int.MAX_VALUE.toLong()).toInt()
     }
 
     fun cancelSlice() {
@@ -2038,6 +2075,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val TAG = "OrcaPod"
+        /** Quiet time after an edit before the recovery copy is refreshed. */
+        private const val AUTOSAVE_DELAY_MS = 2_000L
         /** Most dabs [fillGaps] adds between two finger samples. */
         private const val MAX_GAP_DABS = 64
         const val COLLISION_BLOCKS_OUTPUT = "Some objects' toolpaths collide, so this slice can't be printed or exported. Move them apart and slice again."

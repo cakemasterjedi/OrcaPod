@@ -716,14 +716,20 @@ constexpr uint8_t kMoveTravel = 8, kMoveExtrude = 10;
 
 bool is_line(const orca_tp_segment &s) { return s.move_type >= kMoveTravel && s.move_type <= kMoveExtrude; }
 
-// Whether `b` carries on from `a` as the same kind of move with the same settings.
+// Whether `a` and `b` differ by at most `fraction` of the larger.
+bool close(float a, float b, float fraction) { return std::abs(a - b) <= fraction * std::max(std::abs(a), std::abs(b)); }
+
+// Whether `b` carries on from `a` as the same kind of move with about the
+// same settings. Width and flow vary a little from move to move on walls
+// (Arachne), and speed on slowed-down overhangs, so those only need to be close.
 bool continues(const orca_tp_segment &a, const orca_tp_segment &b)
 {
     return a.move_type == b.move_type && a.role == b.role && a.extruder == b.extruder && a.flags == b.flags &&
            a.layer_id == b.layer_id && a.end[0] == b.start[0] && a.end[1] == b.start[1] && a.end[2] == b.start[2] &&
-           a.feedrate == b.feedrate && a.width == b.width && a.height == b.height && a.mm3_per_mm == b.mm3_per_mm &&
-           a.fan_speed == b.fan_speed && a.temperature == b.temperature && a.acceleration == b.acceleration &&
-           a.jerk == b.jerk && a.pressure_advance == b.pressure_advance && a.print_z == b.print_z;
+           close(a.feedrate, b.feedrate, 0.05f) && close(a.width, b.width, 0.25f) && a.height == b.height &&
+           close(a.mm3_per_mm, b.mm3_per_mm, 0.25f) && a.fan_speed == b.fan_speed &&
+           a.temperature == b.temperature && a.acceleration == b.acceleration && a.jerk == b.jerk &&
+           a.pressure_advance == b.pressure_advance && a.print_z == b.print_z;
 }
 
 float length(const orca_tp_segment &s)
@@ -754,8 +760,8 @@ float distance2(const float *p, const float *a, const float *b)
 // Hands `emit` the segments [first, end) of `tp` in order, each run of lines
 // that carry on from one another joined into one line while every point it
 // passes stays within `tolerance` mm of it. A print with many short moves
-// (curves) then previews with far fewer lines; times add up and the actual
-// speed and flow are length-weighted. A tolerance of 0 joins nothing.
+// (curves) then previews with far fewer lines; times add up and speed, width
+// and flow are length-weighted. A tolerance of 0 joins nothing.
 template <class Emit>
 void for_each_joined(const orca_toolpath &tp, uint32_t first, uint32_t end, float tolerance, Emit &&emit)
 {
@@ -764,19 +770,34 @@ void for_each_joined(const orca_toolpath &tp, uint32_t first, uint32_t end, floa
             emit(tp.segments[s]);
         return;
     }
-    constexpr size_t kMaxJoined = 64;
+    constexpr size_t kMaxJoined = 32;
     const float tol2 = tolerance * tolerance;
     orca_tp_segment run{};
     bool open = false;
-    float run_length = 0.f, speed_sum = 0.f, flow_sum = 0.f;
+    // Length-weighted sums of the attributes that vary along a run.
+    enum { kSpeed, kActualSpeed, kWidth, kFlowArea, kFlow, kActualFlow, kSums };
+    float run_length = 0.f, sums[kSums] = {};
+    auto add = [&](const orca_tp_segment &s, float l) {
+        run_length += l;
+        sums[kSpeed] += s.feedrate * l;
+        sums[kActualSpeed] += s.actual_feedrate * l;
+        sums[kWidth] += s.width * l;
+        sums[kFlowArea] += s.mm3_per_mm * l;
+        sums[kFlow] += s.volumetric_rate * l;
+        sums[kActualFlow] += s.actual_volumetric_rate * l;
+    };
     float via[kMaxJoined][3];
     size_t vias = 0;
     auto flush = [&]() {
         if (!open)
             return;
         if (run_length > 0.f) {
-            run.actual_feedrate = speed_sum / run_length;
-            run.actual_volumetric_rate = flow_sum / run_length;
+            run.feedrate = sums[kSpeed] / run_length;
+            run.actual_feedrate = sums[kActualSpeed] / run_length;
+            run.width = sums[kWidth] / run_length;
+            run.mm3_per_mm = sums[kFlowArea] / run_length;
+            run.volumetric_rate = sums[kFlow] / run_length;
+            run.actual_volumetric_rate = sums[kActualFlow] / run_length;
         }
         emit(run);
         open = false;
@@ -785,9 +806,9 @@ void for_each_joined(const orca_toolpath &tp, uint32_t first, uint32_t end, floa
         run = s;
         open = true;
         vias = 0;
-        run_length = length(s);
-        speed_sum = s.actual_feedrate * run_length;
-        flow_sum = s.actual_volumetric_rate * run_length;
+        run_length = 0.f;
+        std::fill(std::begin(sums), std::end(sums), 0.f);
+        add(s, length(s));
     };
     for (uint32_t i = first; i < end; ++i) {
         const orca_tp_segment &s = tp.segments[i];
@@ -810,10 +831,7 @@ void for_each_joined(const orca_toolpath &tp, uint32_t first, uint32_t end, floa
         }
         std::copy(run.end, run.end + 3, via[vias++]);
         std::copy(s.end, s.end + 3, run.end);
-        const float l = length(s);
-        run_length += l;
-        speed_sum += s.actual_feedrate * l;
-        flow_sum += s.actual_volumetric_rate * l;
+        add(s, length(s));
         run.time_seconds += s.time_seconds;
         run.time_stealth += s.time_stealth;
     }
@@ -821,7 +839,7 @@ void for_each_joined(const orca_toolpath &tp, uint32_t first, uint32_t end, floa
 }
 
 // The smallest join tolerance at which the preview has at most `max_lines`
-// lines, up to a fifth of a millimetre; 0 when it fits as it is.
+// lines, up to a millimetre; 0 when it fits as it is.
 float join_tolerance(const orca_toolpath &tp, int64_t max_lines)
 {
     int64_t lines = 0;
@@ -830,7 +848,7 @@ float join_tolerance(const orca_toolpath &tp, int64_t max_lines)
     if (lines <= max_lines)
         return 0.f;
     float tolerance = 0.f;
-    for (float t : {0.01f, 0.02f, 0.05f, 0.1f, 0.2f}) {
+    for (float t : {0.01f, 0.02f, 0.05f, 0.1f, 0.2f, 0.5f, 1.f}) {
         tolerance = t;
         lines = 0;
         for (uint32_t l = 0; l < tp.layer_count; ++l) {

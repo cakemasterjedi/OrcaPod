@@ -59,6 +59,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
@@ -636,6 +637,7 @@ fun PreviewBottomBar(
     onDetails: () -> Unit,
     exports: List<Pair<String, () -> Unit>>,
     onPrint: () -> Unit,
+    printable: Boolean = true,
 ) {
     var exportMenu by remember { mutableStateOf(false) }
     BottomBar {
@@ -645,7 +647,8 @@ fun PreviewBottomBar(
         Box(Modifier.weight(1f)) {
             Row(
                 Modifier.fillMaxWidth().height(48.dp).clip(RoundedCornerShape(12.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh).clickable { exportMenu = true },
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh).clickable(enabled = printable) { exportMenu = true }
+                    .alpha(if (printable) 1f else 0.38f),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -657,7 +660,7 @@ fun PreviewBottomBar(
                 for ((label, action) in exports) DropdownMenuItem(text = { Text(label) }, onClick = { exportMenu = false; action() })
             }
         }
-        Button(onClick = onPrint, shape = RoundedCornerShape(12.dp), modifier = Modifier.weight(1.2f).height(48.dp)) {
+        Button(onClick = onPrint, enabled = printable, shape = RoundedCornerShape(12.dp), modifier = Modifier.weight(1.2f).height(48.dp)) {
             Icon(AppIcons.Print, null, Modifier.size(18.dp))
             Spacer(Modifier.width(6.dp))
             Text("Print", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
@@ -752,7 +755,7 @@ fun WorkbenchPhone(
                 Spacer(Modifier.height(6.dp))
                 PreviewStats(vm, done)
                 Spacer(Modifier.height(8.dp))
-                PreviewBottomBar(previewDetails, onPreviewDetails, exports(done), onPrint)
+                PreviewBottomBar(previewDetails, onPreviewDetails, exports(done), onPrint, done.printable)
             }
             slicing != null -> Box(bottom) { previewPanel() }
             vm.cut != null -> Box(bottom) { CutPanel(vm, vm.cut!!) }

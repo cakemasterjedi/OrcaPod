@@ -557,7 +557,7 @@ fun PlateScreen(vm: AppViewModel) {
     if (filamentSlots) {
         FilamentSlotsSheet(vm, onEdit = { filamentSlots = false; settingsFor = PresetKind.FILAMENT }) { filamentSlots = false }
     }
-    if (sendOpen && done != null) {
+    if (sendOpen && done != null && done.printable) {
         SendToPrinterSheet(printerVm, done.gcode, vm.printer, onOpenQueue = { sendOpen = false; queueOpen = true }) { sendOpen = false }
     }
     if (queueOpen) PrintQueueSheet(printerVm) { queueOpen = false }

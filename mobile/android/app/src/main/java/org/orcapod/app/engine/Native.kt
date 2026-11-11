@@ -82,7 +82,8 @@ internal object Native {
     external fun platerSlice(
         plater: Long, presets: Long, path: String, job: Long, listener: ProgressListener, target: Int, plateIndex: Int,
     ): SliceReport
-    external fun toolpathLoad(gcodePath: String): Toolpath
+    /** At most about [maxLines] lines: beyond that, runs of short moves are joined. */
+    external fun toolpathLoad(gcodePath: String, maxLines: Int): Toolpath
     external fun customGcodes(plater: Long): Array<CustomGcode>
     external fun customGcodeAdd(plater: Long, z: Double, type: Int, extruder: Int, colour: String, extra: String)
     external fun customGcodeDelete(plater: Long, z: Double)

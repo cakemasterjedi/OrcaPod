@@ -543,7 +543,9 @@ class Engine private constructor(private var presets: Long, private val plater: 
         }
     }
 
-    suspend fun loadToolpath(gcodePath: String): Toolpath = onEngine { Native.toolpathLoad(gcodePath) }
+    /** The preview of [gcodePath]; past [maxLines] lines, runs of short moves are joined (see [Toolpath.simplified]). */
+    suspend fun loadToolpath(gcodePath: String, maxLines: Int = Int.MAX_VALUE): Toolpath =
+        onEngine { Native.toolpathLoad(gcodePath, maxLines) }
 
     /** The current plate's per-layer custom G-code (desktop layer-slider ticks), by height. */
     suspend fun customGcodes(): List<CustomGcode> = onEngine { Native.customGcodes(plater).toList() }

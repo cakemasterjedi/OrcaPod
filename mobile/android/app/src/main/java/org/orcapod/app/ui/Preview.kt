@@ -102,6 +102,9 @@ fun PreviewPanel(vm: AppViewModel, done: SliceState.Done, onShare: () -> Unit, o
                 }
             }
             SlicedPlateChips(vm, done)
+            if (!done.printable) {
+                Text(AppViewModel.COLLISION_BLOCKS_OUTPUT, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
             if (warningsOpen) {
                 for (w in warnings.take(8)) Text("• $w", style = MaterialTheme.typography.bodySmall)
             }
@@ -133,15 +136,22 @@ fun PreviewPanel(vm: AppViewModel, done: SliceState.Done, onShare: () -> Unit, o
                         }
                     }
                 }
+                if (tp.simplified) {
+                    Text(
+                        "Short moves are joined in this preview so it fits in memory. The G-code itself is unchanged.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Sliders(vm, tp)
             } else {
                 Text("The toolpath preview is not available for this G-code.", style = MaterialTheme.typography.bodySmall)
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onShare) { Icon(Icons.Filled.Share, "Share G-code") }
-                OutlinedButton(onClick = onSave) { Text("Save") }
+                IconButton(onClick = onShare, enabled = done.printable) { Icon(Icons.Filled.Share, "Share G-code") }
+                OutlinedButton(onClick = onSave, enabled = done.printable) { Text("Save") }
                 Spacer(Modifier.width(8.dp))
-                Button(onClick = onPrint) {
+                Button(onClick = onPrint, enabled = done.printable) {
                     Icon(AppIcons.Print, null)
                     Spacer(Modifier.width(6.dp))
                     Text("Print")

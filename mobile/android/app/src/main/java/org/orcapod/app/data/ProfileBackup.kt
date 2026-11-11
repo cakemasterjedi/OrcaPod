@@ -29,8 +29,17 @@ enum class ProfileKind(val dir: String, val bundleDir: String, val idKey: String
  * single preset `.json` files.
  */
 object ProfileBackup {
-    data class ImportResult(val added: List<String>, val replaced: List<String>, val skipped: List<String>) {
+    /** [filaments] maps each imported filament to the preset it inherits ("" when it stands alone). */
+    data class ImportResult(
+        val added: List<String>,
+        val replaced: List<String>,
+        val skipped: List<String>,
+        val filaments: Map<String, String> = emptyMap(),
+    ) {
         val imported get() = added.size + replaced.size
+
+        operator fun plus(o: ImportResult) =
+            ImportResult(added + o.added, replaced + o.replaced, skipped + o.skipped, filaments + o.filaments)
     }
 
     /** The user's preset files under [userDir], in kind and name order. */
@@ -60,10 +69,18 @@ object ProfileBackup {
      */
     fun import(input: InputStream, userDir: File): ImportResult {
         val bytes = input.readBytes()
-        val entries = if (isZip(bytes)) unzip(bytes) else listOf("preset.json" to bytes)
+        return importEntries(if (isZip(bytes)) unzip(bytes) else listOf("preset.json" to bytes), userDir)
+    }
+
+    /**
+     * As [import], over files given by their path, such as those read out of
+     * desktop OrcaSlicer's `user/<id>/` folder.
+     */
+    fun importEntries(entries: List<Pair<String, ByteArray>>, userDir: File): ImportResult {
         val added = ArrayList<String>()
         val replaced = ArrayList<String>()
         val skipped = ArrayList<String>()
+        val filaments = LinkedHashMap<String, String>()
         for ((path, data) in entries) {
             val leaf = path.substringAfterLast('/')
             if (!leaf.endsWith(JSON, ignoreCase = true) || leaf == BUNDLE_STRUCTURE) continue
@@ -81,11 +98,12 @@ object ProfileBackup {
             }
             val target = File(File(userDir, kind.dir), "$name$JSON")
             if (target.exists()) replaced += name else added += name
+            if (kind == ProfileKind.FILAMENT) filaments[name] = json.optString("inherits")
             writeAtomically(target, data)
             // A stale sync record would describe the preset that was replaced.
             File(target.parentFile, "$name.info").delete()
         }
-        return ImportResult(added, replaced, skipped)
+        return ImportResult(added, replaced, skipped, filaments)
     }
 
     /** The preset kind: by its settings id key, its `type`, then the folder it came from. */
@@ -105,6 +123,18 @@ object ProfileBackup {
         val name = json.optString("name").ifEmpty { leaf.removeSuffix(JSON).removeSuffix(".JSON") }.trim()
         if (name.isEmpty() || name == "." || name == ".." || name.any { it in "/\\" || it.code < 0x20 }) return null
         return name
+    }
+
+    /**
+     * True for a file worth reading when importing a whole folder: a preset
+     * JSON under a `filament`, `machine`/`printer` or `process` folder, and not
+     * under desktop's `system` folder, whose presets the app ships itself.
+     */
+    fun isFolderPreset(path: String): Boolean {
+        val parts = path.split('/')
+        if (parts.size < 2 || !parts.last().endsWith(JSON, ignoreCase = true) || parts.last() == BUNDLE_STRUCTURE) return false
+        if (parts.dropLast(1).any { it.equals("system", true) }) return false
+        return ProfileKind.entries.any { k -> parts[parts.size - 2].let { it == k.dir || it == k.bundleDir } }
     }
 
     internal fun writeAtomically(target: File, data: ByteArray) {

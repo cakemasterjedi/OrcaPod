@@ -42,6 +42,7 @@ class ProfileBackupTest {
         val other = tmp.newFolder("other")
         val result = ProfileBackup.import(ByteArrayInputStream(zip.toByteArray()), other)
         assertEquals(listOf("My Printer", "My PLA", "0.2 Strong"), result.added)
+        assertEquals(mapOf("My PLA" to "Base"), result.filaments)
         assertTrue(File(other, "machine/My Printer.json").isFile)
         assertEquals(File(phone, "filament/My PLA.json").readText(), File(other, "filament/My PLA.json").readText())
     }
@@ -87,5 +88,20 @@ class ProfileBackupTest {
         val bad = ProfileBackup.import(ByteArrayInputStream("""{"name":"../../evil","filament_settings_id":"x"}""".toByteArray()), dir)
         assertEquals(0, bad.imported)
         assertFalse(File(dir.parentFile, "evil.json").exists())
+    }
+
+    @Test
+    fun folderImportTakesDesktopUserPresetsButNotSystemOnes() {
+        assertTrue(ProfileBackup.isFolderPreset("OrcaSlicer/user/123/filament/Overture PETG.json"))
+        assertTrue(ProfileBackup.isFolderPreset("filament/Overture PETG.json"))
+        assertTrue(ProfileBackup.isFolderPreset("user/default/machine/My P1S.json"))
+        assertFalse(ProfileBackup.isFolderPreset("OrcaSlicer/user/123/filament/Overture PETG.info"))
+        assertFalse(ProfileBackup.isFolderPreset("OrcaSlicer/system/BBL/filament/Generic PLA.json"))
+        assertFalse(ProfileBackup.isFolderPreset("OrcaSlicer/OrcaSlicer.conf.json"))
+        val dir = tmp.newFolder("phone")
+        val petg = """{"name":"Overture PETG","inherits":"Generic PETG @BBL X1C","filament_settings_id":"Overture PETG"}"""
+        val result = ProfileBackup.importEntries(listOf("filament/Overture PETG.json" to petg.toByteArray()), dir)
+        assertEquals(mapOf("Overture PETG" to "Generic PETG @BBL X1C"), result.filaments)
+        assertTrue(File(dir, "filament/Overture PETG.json").isFile)
     }
 }

@@ -46,7 +46,8 @@ import org.orcapod.app.data.ProfileCatalog.Group
 
 /**
  * The step after picking brands: which printer models, then which filaments,
- * the pickers list. Nothing ticked on a page lists everything of that kind.
+ * the pickers list. No printer ticked lists every printer; no filament
+ * ticked lists none, so the filament picker holds only what the user owns.
  */
 @Composable
 fun ModelSetupScreen(
@@ -84,7 +85,7 @@ fun ModelSetupScreen(
         Text(
             if (onFilaments) {
                 "Tick the filaments you use; only those are listed in the filament picker. Your own " +
-                    "imported filaments are listed too. With none ticked, every filament is listed."
+                    "imported filaments are listed too. You can change them later with Choose in the filament picker."
             } else {
                 "Tick the printers you own; only those are listed in the printer picker. " +
                     "With none ticked, every printer of your brands is listed."
@@ -154,7 +155,11 @@ fun ModelSetupScreen(
             }
         }
         Text(
-            if (picked.isEmpty()) "None ticked: all are listed" else "${picked.size} ticked",
+            when {
+                picked.isNotEmpty() -> "${picked.size} ticked"
+                onFilaments -> "None ticked: only your own filaments are listed"
+                else -> "None ticked: all are listed"
+            },
             Modifier.padding(top = 8.dp),
             style = MaterialTheme.typography.bodySmall,
         )

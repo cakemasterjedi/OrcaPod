@@ -65,10 +65,17 @@ dropped then).
   `process/` folders, the layout of desktop's preset bundle export. It has no
   `bundle_structure.json` on purpose: with one, desktop imports the presets
   as a read-only local bundle instead of editable user presets. Import takes
-  desktop's `.orca_printer`, `.orca_filament` and `.zip` exports or a single
-  preset JSON, classifies each file by its `*_settings_id` key, `type` or
+  desktop's `.orca_printer`, `.orca_filament` and `.zip` exports or preset
+  JSON files (several at once, such as desktop's `user/<id>/filament`
+  folder; the filament picker has its own Import button), or a whole folder
+  (a copy of desktop's OrcaSlicer or `user` folder, read through the Storage
+  Access Framework: every JSON under a `filament`, `machine`/`printer` or
+  `process` folder, leaving out `system/`), classifies each file by its `*_settings_id` key, `type` or
   folder, names it after its `name` key (the engine loads a user preset under
-  its file name), and replaces a preset of the same name.
+  its file name), and replaces a preset of the same name. The engine drops a
+  user preset whose `inherits` parent is not installed, so after the reload
+  the import names any filament that did not load and the parent it needs,
+  and any that loaded only for another printer.
 - **Sync folder** (`ProfileSync`, `SafProfileFolder`): a folder picked with
   the Storage Access Framework, kept with a persistable permission, that a
   cloud or sync app mirrors to other devices. Presets go in an
@@ -326,10 +333,12 @@ brand's full name. The ids themselves stay as they are, since the engine and
 the profile tree address vendors by them.
 
 The printer and filament pickers can list only the presets the user ticked
-(`PresetChoice`, kept per kind in preferences). With nothing ticked among the
-loaded presets, as before any choice or after switching to a brand with no
-ticks, everything is listed, so a choice never leaves a picker empty.
-Otherwise unticked system presets are hidden, even ones the engine loaded
+(`PresetChoice`, kept per kind in preferences). For printers, with nothing
+ticked among the loaded presets, as before any choice or after switching to a
+brand with no ticks, everything is listed, so the printer picker is never
+empty. Filaments run to thousands across the library, so with none ticked the
+filament picker lists only the selected filament and the user's own new
+presets, and says how to choose more. Otherwise unticked system presets are hidden, even ones the engine loaded
 that the choice never listed, so the list stays short whatever the engine
 holds. User presets that appear after the choice (imported filaments) are
 listed until the user decides on them, and the selected preset is always

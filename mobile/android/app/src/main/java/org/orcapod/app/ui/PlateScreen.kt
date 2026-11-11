@@ -141,6 +141,9 @@ fun PlateScreen(vm: AppViewModel) {
     val importPresets = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         vm.importProfiles(uris)
     }
+    val importPresetFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) vm.importProfileFolder(uri)
+    }
     val openProject = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) vm.openProject(uri)
     }
@@ -516,6 +519,7 @@ fun PlateScreen(vm: AppViewModel) {
             choice = vm.choices[kind],
             onChoose = { vm.choosePresets(kind, entries, it) },
             onImport = if (kind == PresetKind.FILAMENT) ({ importPresets.launch(arrayOf("*/*")) }) else null,
+            onImportFolder = { importPresetFolder.launch(null) },
         )
     }
     if (exportPrinterPicker) {

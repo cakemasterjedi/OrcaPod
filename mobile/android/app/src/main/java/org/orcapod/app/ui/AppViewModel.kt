@@ -11,6 +11,7 @@ import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
@@ -569,20 +570,50 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * .orca_printer exports, or the JSON files from its user preset folder)
      * to the user's presets, and says which filaments did not come through.
      */
-    fun importProfiles(uris: List<Uri>) = engineAction("Importing profiles…") { e ->
-        if (uris.isEmpty()) return@engineAction
+    fun importProfiles(uris: List<Uri>) {
+        if (uris.isEmpty()) return
         val ctx = getApplication<Application>()
-        val result = withContext(Dispatchers.IO) {
+        importAndReport {
             uris.map { uri ->
                 ctx.contentResolver.openInputStream(uri)?.use { ProfileBackup.import(it, userDir) }
                     ?: throw java.io.IOException("Cannot read the file")
             }.reduce(ProfileBackup.ImportResult::plus)
         }
+    }
+
+    /**
+     * Adds every user preset in the folder at [treeUri], picked with
+     * ACTION_OPEN_DOCUMENT_TREE: desktop OrcaSlicer's own `user` folder (or the
+     * whole OrcaSlicer folder) copied to the phone or reached through a cloud app.
+     */
+    fun importProfileFolder(treeUri: Uri) {
+        val ctx = getApplication<Application>()
+        importAndReport {
+            val root = DocumentFile.fromTreeUri(ctx, treeUri)?.takeIf { it.isDirectory }
+                ?: throw java.io.IOException("Cannot open that folder")
+            val files = ArrayList<Pair<String, ByteArray>>()
+            fun walk(dir: DocumentFile, path: String, depth: Int) {
+                for (f in dir.listFiles()) {
+                    val name = f.name ?: continue
+                    val p = if (path.isEmpty()) name else "$path/$name"
+                    if (f.isDirectory && depth < 5) walk(f, p, depth + 1)
+                    else if (f.isFile && f.length() < (8L shl 20) && ProfileBackup.isFolderPreset("${root.name}/$p")) {
+                        ctx.contentResolver.openInputStream(f.uri)?.use { files += p to it.readBytes() }
+                    }
+                }
+            }
+            walk(root, "", 0)
+            ProfileBackup.importEntries(files, userDir)
+        }
+    }
+
+    private fun importAndReport(read: () -> ProfileBackup.ImportResult) = engineAction("Importing profiles…") { e ->
+        val result = withContext(Dispatchers.IO) { read() }
         if (result.imported > 0) reloadUserPresets(e)
         val loaded = if (result.filaments.isEmpty()) emptyList() else e.list(PresetKind.FILAMENT)
         _messages.tryEmit(
             when {
-                result.imported == 0 -> "No printer, filament or process profiles found in that file"
+                result.imported == 0 -> "No printer, filament or process profiles found there"
                 result.skipped.isEmpty() -> if (result.imported == 1) "Imported 1 profile" else "Imported ${result.imported} profiles"
                 else -> "Imported ${result.imported} of ${result.imported + result.skipped.size} files; the rest are not profiles"
             } + importProblems(result.filaments, loaded),

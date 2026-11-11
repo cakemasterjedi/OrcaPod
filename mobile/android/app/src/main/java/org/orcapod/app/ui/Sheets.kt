@@ -3,6 +3,7 @@ package org.orcapod.app.ui
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -63,7 +65,8 @@ import org.orcapod.app.engine.PresetKind
  * brand through [onBrand]; [loading] shows while that brand loads. With a
  * [choice], the list holds only the presets the user picked to show, and
  * "Choose" lets them tick which ones through [onChoose]. With [onImport],
- * an "Import" button adds the user's own presets from files.
+ * an "Import" menu adds the user's own presets from files, or with
+ * [onImportFolder] from a whole folder such as desktop OrcaSlicer's.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -81,6 +84,7 @@ fun PresetPickerSheet(
     choice: PresetChoice? = null,
     onChoose: (Set<String>) -> Unit = {},
     onImport: (() -> Unit)? = null,
+    onImportFolder: (() -> Unit)? = null,
 ) {
     var query by remember { mutableStateOf("") }
     // Ticked presets while choosing which to show; null when picking a preset.
@@ -96,7 +100,21 @@ fun PresetPickerSheet(
         Column(Modifier.fillMaxHeight(0.9f).padding(horizontal = 16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                if (onImport != null && ticked == null) TextButton(onClick = onImport) { Text("Import") }
+                if (onImport != null && ticked == null) {
+                    var importMenu by remember { mutableStateOf(false) }
+                    Box {
+                        TextButton(onClick = { if (onImportFolder == null) onImport() else importMenu = true }) { Text("Import") }
+                        DropdownMenu(expanded = importMenu, onDismissRequest = { importMenu = false }) {
+                            DropdownMenuItem(text = { Text("Profile files") }, onClick = { importMenu = false; onImport() })
+                            if (onImportFolder != null) {
+                                DropdownMenuItem(
+                                    text = { Text("OrcaSlicer folder") },
+                                    onClick = { importMenu = false; onImportFolder() },
+                                )
+                            }
+                        }
+                    }
+                }
                 if (choice != null) {
                     if (ticked == null) {
                         TextButton(onClick = {

@@ -67,7 +67,10 @@ dropped then).
   as a read-only local bundle instead of editable user presets. Import takes
   desktop's `.orca_printer`, `.orca_filament` and `.zip` exports or preset
   JSON files (several at once, such as desktop's `user/<id>/filament`
-  folder; the filament picker has its own Import button), classifies each file by its `*_settings_id` key, `type` or
+  folder; the filament picker has its own Import button), or a whole folder
+  (a copy of desktop's OrcaSlicer or `user` folder, read through the Storage
+  Access Framework: every JSON under a `filament`, `machine`/`printer` or
+  `process` folder, leaving out `system/`), classifies each file by its `*_settings_id` key, `type` or
   folder, names it after its `name` key (the engine loads a user preset under
   its file name), and replaces a preset of the same name. The engine drops a
   user preset whose `inherits` parent is not installed, so after the reload

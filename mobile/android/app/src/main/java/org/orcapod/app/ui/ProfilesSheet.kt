@@ -40,6 +40,9 @@ fun ProfilesSheet(vm: AppViewModel, onDismiss: () -> Unit) {
     val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         vm.importProfiles(uris)
     }
+    val importFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) vm.importProfileFolder(uri)
+    }
     val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) vm.chooseSyncFolder(uri)
     }
@@ -64,7 +67,7 @@ fun ProfilesSheet(vm: AppViewModel, onDismiss: () -> Unit) {
             Text("Backup file", style = MaterialTheme.typography.titleMedium)
             Text(
                 "A zip in OrcaSlicer's preset format. Desktop OrcaSlicer can import it with File > Import > Import Configs, " +
-                    "and its exported .orca_printer, .orca_filament and .zip files, or the .json files in its user preset folder, can be imported here.",
+                    "and its exported .orca_printer, .orca_filament and .zip files, or the .json files in its user preset folder, can be imported here. Import folder takes a copy of desktop's whole OrcaSlicer or user folder.",
                 style = MaterialTheme.typography.bodySmall,
             )
             Spacer(Modifier.height(8.dp))
@@ -75,6 +78,7 @@ fun ProfilesSheet(vm: AppViewModel, onDismiss: () -> Unit) {
                 ) { Text("Export") }
                 OutlinedButton(onClick = { import.launch(arrayOf("*/*")) }, enabled = !busy) { Text("Import") }
             }
+            OutlinedButton(onClick = { importFolder.launch(null) }, enabled = !busy) { Text("Import OrcaSlicer folder") }
 
             Spacer(Modifier.height(16.dp))
             HorizontalDivider()

@@ -31,12 +31,14 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextAlign
 import kotlinx.coroutines.launch
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
@@ -114,8 +116,12 @@ fun PlateScreen(vm: AppViewModel) {
     // Picking an object in the viewport brings its controls into view.
     LaunchedEffect(vm.selection) { if (vm.selection != null) paneTab = PaneTab.OBJECTS }
 
-    LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
-    LaunchedEffect(Unit) { printerVm.messages.collect { snackbar.showSnackbar(it) } }
+    // A long message (such as why slicing failed) stays up longer, and any can be closed.
+    suspend fun show(message: String) {
+        snackbar.showSnackbar(message, withDismissAction = true, duration = if (message.length > 60) SnackbarDuration.Long else SnackbarDuration.Short)
+    }
+    LaunchedEffect(Unit) { vm.messages.collect { show(it) } }
+    LaunchedEffect(Unit) { printerVm.messages.collect { show(it) } }
     vm.crashReport?.let { CrashReportDialog(it) { vm.crashReport = null } }
     // A queue notification was tapped.
     LaunchedEffect(Unit) {
@@ -274,7 +280,7 @@ fun PlateScreen(vm: AppViewModel) {
         drawerContent = { AppDrawerSheet(menuGroups, projectTitle) { scope.launch { drawer.close() } } },
     ) {
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbar) },
+        snackbarHost = { if (twoPane) SnackbarHost(snackbar) },
         topBar = {
             if (twoPane) {
                 CenterAlignedTopAppBar(
@@ -430,8 +436,9 @@ fun PlateScreen(vm: AppViewModel) {
                 viewport()
                 if (!hasObjects && !previewing && vm.busy == null) {
                     Text(
-                        "Plate is empty · import a model to start",
+                        "The plate is empty.\nAdd a model with the buttons below.",
                         Modifier.align(Alignment.Center).padding(24.dp),
+                        textAlign = TextAlign.Center,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -453,8 +460,8 @@ fun PlateScreen(vm: AppViewModel) {
                             vm,
                             previewing = previewing,
                             onMenu = { scope.launch { drawer.open() } },
-                            onFilaments = { filamentSlots = true },
-                        ) { picker = it }
+                            onSettings = { settingsFor = PresetKind.PROCESS },
+                        )
                     },
                     status = status,
                     previewPanel = { controls(true, {}, {}) },
@@ -469,7 +476,12 @@ fun PlateScreen(vm: AppViewModel) {
                         )
                     },
                     onPrint = { sendOpen = true },
+                    onFilaments = { filamentSlots = true },
+                    onPick = { picker = it },
                 )
+                // Messages show under the top row, where they cover neither the
+                // Slice bar nor the tools.
+                SnackbarHost(snackbar, Modifier.align(Alignment.TopCenter).padding(top = 52.dp))
             }
         }
     }

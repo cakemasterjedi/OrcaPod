@@ -36,6 +36,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Menu
@@ -80,16 +81,15 @@ import java.util.Locale
 
 /**
  * The phone's top row over the plate: the menu, the plate strip (or the way
- * back from the preview) and one button that opens the printer, filament and
- * process pickers, so the presets take no permanent space.
+ * back from the preview) and the print settings. The printer, filament and
+ * process in use are named in the Slice bar.
  */
 @Composable
 fun WorkbenchTopRow(
     vm: AppViewModel,
     previewing: Boolean,
     onMenu: () -> Unit,
-    onFilaments: () -> Unit,
-    onPick: (PresetKind) -> Unit,
+    onSettings: () -> Unit,
 ) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         RoundButton(Icons.Filled.Menu, "Menu", onClick = onMenu)
@@ -106,7 +106,7 @@ fun WorkbenchTopRow(
             }
         }
         Spacer(Modifier.width(8.dp))
-        PresetsButton(vm, onFilaments, onPick)
+        RoundButton(AppIcons.Tune, "Print settings", onClick = onSettings)
     }
 }
 
@@ -122,13 +122,41 @@ private fun RoundButton(icon: ImageVector, label: String, enabled: Boolean = tru
     }
 }
 
-/** The printer, filament and process in use, behind one button. */
+/**
+ * The printer, filament and process in use, named in two short lines; a tap
+ * opens a menu of the three pickers.
+ */
 @Composable
-private fun PresetsButton(vm: AppViewModel, onFilaments: () -> Unit, onPick: (PresetKind) -> Unit) {
+private fun PresetSummary(vm: AppViewModel, onFilaments: () -> Unit, onPick: (PresetKind) -> Unit, modifier: Modifier = Modifier) {
     var open by remember { mutableStateOf(false) }
+    val colors = MaterialTheme.colorScheme
     val slots = vm.filamentSlots.map { it.colour }
-    Box {
-        RoundButton(AppIcons.Print, "Printer, filament and process") { open = true }
+    val filament = if (slots.size > 1) "${slots.size} filaments" else shortPreset(vm.filament)
+    Box(modifier) {
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { open = true }
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(AppIcons.Print, null, Modifier.size(14.dp), tint = colors.primary)
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    vm.printer.ifEmpty { "Choose a printer" }, Modifier.weight(1f, fill = false),
+                    style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+                Icon(Icons.Filled.ArrowDropDown, null, Modifier.size(16.dp), tint = colors.onSurfaceVariant)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Swatches(slots)
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    listOf(filament, shortPreset(vm.process)).filter { it.isNotEmpty() }.joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             PresetItem("Printer", vm.printer, { Icon(AppIcons.Print, null) }) { open = false; onPick(PresetKind.PRINTER) }
             if (slots.size > 1) {
@@ -140,6 +168,9 @@ private fun PresetsButton(vm: AppViewModel, onFilaments: () -> Unit, onPick: (Pr
         }
     }
 }
+
+/** A system preset's name without its "@printer" suffix, which the printer line already says. */
+internal fun shortPreset(name: String): String = name.substringBefore(" @").trim()
 
 @Composable
 private fun PresetItem(label: String, value: String, lead: @Composable () -> Unit, onClick: () -> Unit) {
@@ -276,6 +307,9 @@ fun TransformPanel(vm: AppViewModel, sel: Selection, onClose: () -> Unit) {
         NumberField(fmt(t.offsetY), Modifier.fillMaxWidth(), label = "Y", suffix = "mm") {
             vm.setTransform(sel, t.copy(offsetY = it.toDouble()), "Move")
         }
+        NumberField(fmt(Math.toDegrees(t.rotationZ)), Modifier.fillMaxWidth(), label = "Rotation", suffix = "°") {
+            vm.setTransform(sel, t.copy(rotationZ = Math.toRadians(it.toDouble())), "Rotate")
+        }
         NumberField(fmt(t.scaleX * 100), Modifier.fillMaxWidth(), label = "Scale", suffix = "%") {
             val f = it.toDouble() / 100
             if (f > 0) {
@@ -386,39 +420,41 @@ fun BottomBar(content: @Composable RowScope.() -> Unit) {
     }
 }
 
-/** The Slice bar: objects on the plate (or the last result) and the Slice button. */
+/**
+ * The Slice bar: the printer, filament and process that will be used, the
+ * last result's print time (a tap opens the preview) and the Slice button.
+ */
 @Composable
 fun SliceBar(
     vm: AppViewModel,
     done: SliceState.Done?,
     onSlice: (allPlates: Boolean) -> Unit,
     onShowResult: () -> Unit,
+    onFilaments: () -> Unit,
+    onPick: (PresetKind) -> Unit,
 ) {
     val snap = vm.scene.snapshot
     val count = snap.objects.size
     var sliceMenu by remember { mutableStateOf(false) }
     BottomBar {
-        Column(Modifier.weight(1f)) {
-            Text(
-                when (count) {
-                    0 -> "No objects"
-                    1 -> "1 object"
-                    else -> "$count objects"
-                } + if (snap.plates.size > 1) " · Plate ${snap.currentPlate + 1} of ${snap.plates.size}" else "",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (done != null) {
+        PresetSummary(vm, onFilaments, onPick, Modifier.weight(1f))
+        if (done != null) {
+            Row(
+                Modifier.height(48.dp).clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f))
+                    .clickable(onClick = onShowResult).padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(AppIcons.Layers, "Show preview", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(5.dp))
                 Text(
-                    "Sliced · " + duration(done.report.timeEstimateSeconds),
-                    style = MaterialTheme.typography.labelMedium,
+                    duration(done.report.timeEstimateSeconds),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.clickable(onClick = onShowResult),
+                    maxLines = 1,
                 )
             }
-        }
-        if (done != null) {
-            IconButton(onClick = onShowResult) { Icon(AppIcons.Layers, "Show preview") }
         }
         Box {
             Button(
@@ -432,8 +468,8 @@ fun SliceBar(
                 Text("Slice", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             }
             DropdownMenu(expanded = sliceMenu, onDismissRequest = { sliceMenu = false }) {
-                DropdownMenuItem(text = { Text("Slice this plate") }, onClick = { sliceMenu = false; onSlice(false) })
-                DropdownMenuItem(text = { Text("Slice all plates") }, onClick = { sliceMenu = false; onSlice(true) })
+                DropdownMenuItem(text = { Text("Slice plate ${snap.currentPlate + 1}") }, onClick = { sliceMenu = false; onSlice(false) })
+                DropdownMenuItem(text = { Text("Slice all ${snap.plates.size} plates") }, onClick = { sliceMenu = false; onSlice(true) })
             }
         }
     }
@@ -678,6 +714,8 @@ fun WorkbenchPhone(
     onOpenProject: () -> Unit,
     exports: (SliceState.Done) -> List<Pair<String, () -> Unit>>,
     onPrint: () -> Unit,
+    onFilaments: () -> Unit,
+    onPick: (PresetKind) -> Unit,
 ) {
     val paint = vm.paint
     val sel = vm.selection?.takeIf { vm.transformOf(it) != null }
@@ -699,7 +737,8 @@ fun WorkbenchPhone(
                 }
                 toolOpen || slicing != null -> Unit
                 else -> {
-                    ToolColumn(prepareTools(vm, sel, layFlat, onLayFlat, transformOpen, onTransform, onEditObject), toolLabels, onToolLabels)
+                    val tools = prepareTools(vm, sel, layFlat, onLayFlat, transformOpen, onTransform, onEditObject)
+                    if (tools.isNotEmpty()) ToolColumn(tools, toolLabels, onToolLabels)
                     Spacer(Modifier.weight(1f))
                     if (sel != null && transformOpen) TransformPanel(vm, sel) { onTransform(false) }
                 }
@@ -725,15 +764,36 @@ fun WorkbenchPhone(
                     Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) { CalibrationBanner(vm) }
                     Spacer(Modifier.height(8.dp))
                 }
+                if (sel == null && vm.scene.snapshot.objects.isNotEmpty()) {
+                    Text(
+                        "Tap a model to move, rotate or edit it",
+                        Modifier.align(Alignment.CenterHorizontally).clip(RoundedCornerShape(50))
+                            .background(MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f))
+                            .padding(horizontal = 12.dp, vertical = 5.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
                 ObjectStrip(vm, onImport = onImport, onLibrary = { vm.openLibrary() }, onOpenProject = onOpenProject)
                 Spacer(Modifier.height(8.dp))
-                SliceBar(vm, done, onSlice = { vm.startSlice(allPlates = it) }, onShowResult = { vm.showPreview = true })
+                SliceBar(
+                    vm, done,
+                    onSlice = { vm.startSlice(allPlates = it) },
+                    onShowResult = { vm.showPreview = true },
+                    onFilaments = onFilaments,
+                    onPick = onPick,
+                )
             }
         }
     }
 }
 
-/** Prepare's tool column; the object tools wait for a selected object. */
+/**
+ * Prepare's tool column. The object tools show once a model is picked, Arrange
+ * once the plate has models, and undo and redo once there is a step to take
+ * back, so an empty plate has no column at all.
+ */
 private fun prepareTools(
     vm: AppViewModel,
     sel: Selection?,
@@ -743,24 +803,26 @@ private fun prepareTools(
     onTransform: (Boolean) -> Unit,
     onEditObject: (Selection) -> Unit,
 ): List<ColumnTool> {
-    val has = sel != null
-    return listOf(
-        ColumnTool("Move and scale", AppIcons.Move, enabled = has, active = has && transformOpen) { onTransform(!transformOpen) },
+    val snap = vm.scene.snapshot
+    val objectTools = if (sel == null) emptyList() else listOf(
+        ColumnTool("Move and scale", AppIcons.Move, active = transformOpen) { onTransform(!transformOpen) },
         ColumnTool(
-            "Rotate", AppIcons.Rotate, enabled = has,
-            menu = if (sel == null) emptyList() else listOf(
+            "Rotate", AppIcons.Rotate,
+            menu = listOf(
                 "Turn 90° around Z" to { vm.rotate(sel, 2, 90.0) },
                 "Tip 90° around X" to { vm.rotate(sel, 0, 90.0) },
                 "Tip 90° around Y" to { vm.rotate(sel, 1, 90.0) },
                 "Auto orient" to { vm.orient(sel) },
             ),
         ),
-        ColumnTool("Lay flat", AppIcons.LayFlat, enabled = has, active = layFlat, onClick = onLayFlat),
-        ColumnTool("Arrange", AppIcons.GridView, enabled = vm.scene.snapshot.objects.isNotEmpty()) { vm.arrange() },
-        ColumnTool("Cut", AppIcons.Cut, enabled = has) { sel?.let(vm::startCut) },
-        ColumnTool("Paint", AppIcons.Brush, enabled = has) { sel?.let { vm.startPaint(it.objectId) } },
-        ColumnTool("Measure", AppIcons.Ruler, enabled = has) { sel?.let { vm.startMeasure(it.objectId) } },
-        ColumnTool("Layer heights", AppIcons.Layers, enabled = has) { sel?.let(vm::startLayerHeights) },
-        ColumnTool("Parts and settings", AppIcons.Tune, enabled = has) { sel?.let(onEditObject) },
-    ) + undoTools(vm)
+        ColumnTool("Lay flat", AppIcons.LayFlat, active = layFlat, onClick = onLayFlat),
+        ColumnTool("Cut", AppIcons.Cut) { vm.startCut(sel) },
+        ColumnTool("Paint", AppIcons.Brush) { vm.startPaint(sel.objectId) },
+        ColumnTool("Measure", AppIcons.Ruler) { vm.startMeasure(sel.objectId) },
+        ColumnTool("Layer heights", AppIcons.Layers) { vm.startLayerHeights(sel) },
+        ColumnTool("Parts and settings", AppIcons.Tune) { onEditObject(sel) },
+    )
+    val plateTools = if (snap.objects.isEmpty()) emptyList() else listOf(ColumnTool("Arrange", AppIcons.GridView) { vm.arrange() })
+    val undo = if (snap.undoCount > 0 || snap.redoCount > 0) undoTools(vm) else emptyList()
+    return objectTools + plateTools + undo
 }

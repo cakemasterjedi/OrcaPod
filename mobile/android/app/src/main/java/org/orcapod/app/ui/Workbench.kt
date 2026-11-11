@@ -709,6 +709,7 @@ fun WorkbenchPhone(
         when {
             previewing && done != null -> {
                 if (previewDetails) Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) { previewPanel() }
+                else SlicedPlateChips(vm, done, Modifier.padding(horizontal = 8.dp))
                 Spacer(Modifier.height(6.dp))
                 PreviewStats(vm, done)
                 Spacer(Modifier.height(8.dp))

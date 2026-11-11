@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import org.orcapod.app.data.CrashReports
 import org.orcapod.app.data.PrinterFleet
 import org.orcapod.app.ui.AppViewModel
 import org.orcapod.app.ui.OrcaPodApp
@@ -20,6 +21,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashReports.install(this)
         enableEdgeToEdge()
         if (savedInstanceState == null) {
             collectShared(intent)

@@ -77,6 +77,8 @@ fun PreviewPanel(vm: AppViewModel, done: SliceState.Done, onShare: () -> Unit, o
     var warningsOpen by remember { mutableStateOf(false) }
     var section by remember { mutableStateOf<PreviewSection?>(null) }
     val tp = done.toolpath
+    // The engine reports some checks twice (an old and a new error number).
+    val warnings = remember(done) { done.report.warnings.map { it.text }.distinct() }
     Card {
         Column(Modifier.fillMaxWidth().padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -91,16 +93,17 @@ fun PreviewPanel(vm: AppViewModel, done: SliceState.Done, onShare: () -> Unit, o
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
-                if (done.report.warnings.isNotEmpty()) {
+                if (warnings.isNotEmpty()) {
                     TextButton(onClick = { warningsOpen = !warningsOpen }) {
                         Icon(Icons.Filled.Warning, null)
                         Spacer(Modifier.width(4.dp))
-                        Text("${done.report.warnings.size}")
+                        Text("${warnings.size}")
                     }
                 }
             }
+            SlicedPlateChips(vm, done)
             if (warningsOpen) {
-                for (w in done.report.warnings.take(8)) Text("• ${w.text}", style = MaterialTheme.typography.bodySmall)
+                for (w in warnings.take(8)) Text("• $w", style = MaterialTheme.typography.bodySmall)
             }
             if (vm.sliceStale) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -398,5 +401,23 @@ private fun describe(item: CustomGcode, layer: Int): String {
         CustomGcodeType.TOOL_CHANGE -> "$at: change to filament ${item.extruder}"
         CustomGcodeType.TEMPLATE -> "$at: template"
         CustomGcodeType.CUSTOM -> "$at: ${item.extra.lineSequence().first()}"
+    }
+}
+
+/** A slice of every plate: picks the plate whose layers the preview shows. */
+@Composable
+fun SlicedPlateChips(vm: AppViewModel, done: SliceState.Done, modifier: Modifier = Modifier) {
+    if (done.plates.size < 2) return
+    Row(modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+        for (p in done.plates) {
+            val name = vm.scene.snapshot.plates.getOrNull(p.plate)?.name.orEmpty().ifEmpty { "Plate ${p.plate + 1}" }
+            FilterChip(
+                selected = p.plate == done.plate,
+                onClick = { vm.previewSlicedPlate(p.plate) },
+                enabled = !vm.loadingPlatePreview,
+                label = { Text(name, maxLines = 1) },
+                modifier = Modifier.padding(end = 6.dp),
+            )
+        }
     }
 }

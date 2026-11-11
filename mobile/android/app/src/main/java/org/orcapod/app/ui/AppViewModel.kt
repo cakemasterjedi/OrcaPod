@@ -28,6 +28,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.orcapod.app.data.LocalProfileFolder
 import org.orcapod.app.data.PresetChoice
+import org.orcapod.app.data.CrashReport
+import org.orcapod.app.data.CrashReports
 import org.orcapod.app.data.ProfileCatalog
 import org.orcapod.app.data.ProfileBackup
 import org.orcapod.app.data.ProfileStore
@@ -61,6 +63,8 @@ import org.orcapod.app.engine.SliceReport
 import org.orcapod.app.engine.StepFile
 import org.orcapod.app.engine.StepImportOptions
 import org.orcapod.app.engine.SliceTarget
+import org.orcapod.app.engine.SlicedPlate
+import org.orcapod.app.engine.splitPlates
 import org.orcapod.app.engine.Toolpath
 import org.orcapod.app.engine.VolumeType
 import org.orcapod.app.settings.OptionDef
@@ -111,10 +115,17 @@ sealed interface SliceState {
     data object Idle : SliceState
     data class Running(val percent: Int, val message: String) : SliceState
     /**
-     * A finished slice. [plate] is the index of the sliced plate, or -1 when
-     * every plate went into one file (no layer preview then).
+     * A finished slice. [plate] is the index of the plate [toolpath] shows. A
+     * slice of every plate keeps all of them in [gcode] and each one in
+     * [plates], whose previews the user switches between.
      */
-    data class Done(val report: SliceReport, val gcode: File, val toolpath: Toolpath?, val plate: Int) : SliceState
+    data class Done(
+        val report: SliceReport,
+        val gcode: File,
+        val toolpath: Toolpath?,
+        val plate: Int,
+        val plates: List<SlicedPlate> = emptyList(),
+    ) : SliceState
 }
 
 /** The per-object or per-part settings target: [volumeId] 0 is the object itself. */
@@ -255,7 +266,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages
 
+    /** The report of the app's last unexpected close, offered for sharing once. */
+    var crashReport by mutableStateOf<CrashReport?>(null)
+
     init {
+        viewModelScope.launch {
+            crashReport = withContext(Dispatchers.IO) {
+                try {
+                    CrashReports.takePending(getApplication())
+                } catch (ex: Exception) {
+                    Log.w(TAG, "could not read the crash report", ex)
+                    null
+                }
+            }
+        }
         viewModelScope.launch { start() }
     }
 
@@ -1745,18 +1769,63 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             dir.listFiles()?.forEach { it.delete() }
             val out = File(dir, gcodeName())
             slice = SliceState.Running(0, "Preparing")
+            CrashReports.breadcrumb(getApplication(), "Slicing ${if (allPlates) "every plate" else "a plate"}")
             try {
                 val target = if (allPlates) SliceTarget.ALL_PLATES else SliceTarget.PLATE
                 val report = e.slice(out.path, target, listener = progress())
-                // One file of several plates overlaps on the bed, so only a single plate is previewed.
-                val toolpath = if (allPlates) null else loadPreview(e, out)
-                slice = SliceState.Done(report, out, toolpath, if (allPlates) -1 else scene.snapshot.currentPlate)
+                // The plates of one file overlap on the bed, so each is previewed on its own.
+                val plates = if (allPlates) withContext(Dispatchers.IO) { splitPlates(out, dir) } else emptyList()
+                val plate = if (allPlates) {
+                    plates.firstOrNull { it.plate == scene.snapshot.currentPlate }?.plate ?: plates.firstOrNull()?.plate ?: -1
+                } else scene.snapshot.currentPlate
+                val previewFile = if (allPlates) plates.firstOrNull { it.plate == plate }?.gcode else out
+                val toolpath = previewFile?.let { loadPreview(e, it) }
+                slice = SliceState.Done(report, out, toolpath, plate, plates)
                 previewRange = PreviewRange(0, (toolpath?.layerTotal ?: 1) - 1)
                 sliceStale = false
                 showPreview = true
             } catch (ex: OrcaException) {
                 slice = SliceState.Idle
                 _messages.tryEmit(if (ex.code == OrcaException.CANCELLED) "Slicing cancelled" else "Slicing failed: ${ex.message}")
+            } catch (ex: CancellationException) {
+                throw ex
+            } catch (ex: Exception) {
+                // Anything else must not close the app: report it like an engine error.
+                Log.e(TAG, "slicing failed", ex)
+                slice = SliceState.Idle
+                _messages.tryEmit("Slicing failed: ${ex.message ?: ex.javaClass.simpleName}")
+            } catch (ex: OutOfMemoryError) {
+                Log.e(TAG, "slicing ran out of memory", ex)
+                slice = SliceState.Idle
+                _messages.tryEmit("Slicing ran out of memory. Try fewer or smaller objects, or a larger layer height.")
+            } finally {
+                CrashReports.breadcrumb(getApplication(), null)
+            }
+        }
+    }
+
+    /** Whether [previewSlicedPlate] is loading a plate. */
+    var loadingPlatePreview by mutableStateOf(false)
+        private set
+
+    /** Shows another plate of a slice of every plate. */
+    fun previewSlicedPlate(plate: Int) {
+        val done = slice as? SliceState.Done ?: return
+        val e = engine ?: return
+        if (plate == done.plate || loadingPlatePreview) return
+        val file = done.plates.firstOrNull { it.plate == plate }?.gcode ?: return
+        loadingPlatePreview = true
+        viewModelScope.launch {
+            try {
+                val toolpath = loadPreview(e, file, showProgress = false)
+                // Unless the model changed meanwhile, which drops the slice.
+                if (slice === done) {
+                    slice = done.copy(toolpath = toolpath, plate = plate)
+                    previewRange = PreviewRange(0, (toolpath?.layerTotal ?: 1) - 1)
+                }
+            } finally {
+                loadingPlatePreview = false
+                CrashReports.breadcrumb(getApplication(), null)
             }
         }
     }
@@ -1777,18 +1846,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 _messages.tryEmit(if (ex.code == OrcaException.CANCELLED) "Slicing cancelled" else "Slicing failed: ${ex.message}")
             } catch (ex: java.io.IOException) {
                 _messages.tryEmit(ex.message ?: "File error")
+            } catch (ex: CancellationException) {
+                throw ex
+            } catch (ex: Exception) {
+                Log.e(TAG, "sliced 3MF export failed", ex)
+                _messages.tryEmit("Slicing failed: ${ex.message ?: ex.javaClass.simpleName}")
+            } catch (ex: OutOfMemoryError) {
+                Log.e(TAG, "sliced 3MF export ran out of memory", ex)
+                _messages.tryEmit("Slicing ran out of memory. Try fewer or smaller objects, or a larger layer height.")
             } finally {
+                CrashReports.breadcrumb(getApplication(), null)
                 if (slice is SliceState.Running) slice = SliceState.Idle
             }
         }
     }
 
     private fun progress() = org.orcapod.app.engine.ProgressListener { percent, message ->
+        // Kept on disk, so a crash report names the step the engine was at.
+        CrashReports.breadcrumb(getApplication(), "Slicing, $percent%: $message")
         viewModelScope.launch { if (slice is SliceState.Running) slice = SliceState.Running(percent, message) }
     }
 
-    private suspend fun loadPreview(e: Engine, gcode: File): Toolpath? {
-        slice = SliceState.Running(100, "Loading preview")
+    private suspend fun loadPreview(e: Engine, gcode: File, showProgress: Boolean = true): Toolpath? {
+        if (showProgress) slice = SliceState.Running(100, "Loading preview")
+        CrashReports.breadcrumb(getApplication(), "Loading the sliced preview")
         return try {
             e.loadToolpath(gcode.path)
         } catch (ex: OrcaException) {
@@ -1796,6 +1877,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             null
         } catch (ex: OutOfMemoryError) {
             Log.w(TAG, "preview too large", ex)
+            _messages.tryEmit("This G-code is too large to preview on this device. It can still be printed.")
             null
         }
     }

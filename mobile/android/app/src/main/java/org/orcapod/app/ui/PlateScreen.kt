@@ -116,6 +116,7 @@ fun PlateScreen(vm: AppViewModel) {
 
     LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
     LaunchedEffect(Unit) { printerVm.messages.collect { snackbar.showSnackbar(it) } }
+    vm.crashReport?.let { CrashReportDialog(it) { vm.crashReport = null } }
     // A queue notification was tapped.
     LaunchedEffect(Unit) {
         printerVm.fleet.dashboardRequested.collect { if (it) { queueOpen = true; printerVm.fleet.dashboardRequested.value = false } }

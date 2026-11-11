@@ -348,11 +348,22 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
         if (key != toolpathSource) {
             Gl.deleteVbo(toolpathVbo)
             Gl.deleteVbo(pointVbo)
-            val g = ToolpathGeometry.build(tp, style)
-            toolpathVbo = if (g.lines.isNotEmpty()) Gl.vbo(g.lines) else 0
-            pointVbo = if (g.points.isNotEmpty()) Gl.vbo(g.points) else 0
-            toolpathGeometry = g
+            toolpathVbo = 0
+            pointVbo = 0
+            toolpathGeometry = null
             toolpathSource = key
+            // A large print's lines may not fit in memory: draw nothing then,
+            // rather than end the app from the render thread.
+            try {
+                val g = ToolpathGeometry.build(tp, style)
+                toolpathVbo = if (g.lines.isNotEmpty()) Gl.vbo(g.lines) else 0
+                pointVbo = if (g.points.isNotEmpty()) Gl.vbo(g.points) else 0
+                toolpathGeometry = g
+            } catch (ex: OutOfMemoryError) {
+                Gl.deleteVbo(toolpathVbo)
+                toolpathVbo = 0
+                android.util.Log.w("OrcaPod", "toolpath too large to draw", ex)
+            }
         }
         val g = toolpathGeometry ?: return
         if (tp.layerTotal == 0) return

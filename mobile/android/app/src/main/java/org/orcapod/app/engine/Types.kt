@@ -250,7 +250,42 @@ data class PrintVolume(val minX: Double, val minY: Double, val maxX: Double, val
 }
 
 class SliceWarning(val level: Int, val code: String, val message: String, val detail: String) {
-    val text: String get() = listOf(message.ifEmpty { code }, detail).filter { it.isNotBlank() }.joinToString(": ")
+    /**
+     * The sentence shown to the user. The engine's G-code checks report an
+     * identifier in [code] and only a Bambu error number (such as 1000C001)
+     * in [message]; desktop words them in Plater::get_slice_warning_string.
+     */
+    val text: String get() {
+        KNOWN[code]?.let { return it }
+        if (code == PATH_CONFLICT) {
+            // detail: first object, second object, height, layer
+            val parts = detail.split('\n')
+            if (parts.size < 3) return "Some objects' toolpaths collide. Move them apart."
+            val height = parts[2].toDoubleOrNull()?.let { String.format(java.util.Locale.US, "%.2f", it) } ?: parts[2]
+            return "The toolpaths of ${parts[0]} and ${parts[1]} collide at $height mm. Move them apart."
+        }
+        val words = if (message.isNotEmpty() && !ERROR_NUMBER.matches(message)) message else code.replace('_', ' ').replaceFirstChar { it.uppercaseChar() }
+        return listOf(words, detail.replace('\n', ' ')).filter { it.isNotBlank() }.joinToString(": ")
+    }
+
+    companion object {
+        private const val PATH_CONFLICT = "gcode_path_conflict"
+        private val ERROR_NUMBER = Regex("[0-9A-Fa-f]{8}")
+        private val KNOWN = mapOf(
+            "bed_temperature_too_high_than_filament" to
+                "The bed temperature is higher than this filament's softening temperature. The nozzle may clog in an enclosed printer: open the door or remove the lid.",
+            "the_actual_nozzle_hrc_smaller_than_the_required_nozzle_hrc" to
+                "This filament needs a harder nozzle than the printer's. Fit a hardened nozzle, or the nozzle will wear out.",
+            "not_support_traditional_timelapse" to
+                "Traditional timelapse may leave marks on the surface. Smooth timelapse is recommended.",
+            "not_generate_timelapse" to
+                "No timelapse will be recorded for this print.",
+            "smooth_timelapse_without_prime_tower" to
+                "Smooth timelapse is on but the prime tower is off, which may cause print defects. Turn on the prime tower and slice again.",
+            "activate_long_retraction_when_cut" to
+                "Long retraction when cut is on.",
+        )
+    }
 }
 
 class SliceReport(val timeEstimateSeconds: Double, val gcodeBytes: Long, val warnings: Array<SliceWarning>)

@@ -136,6 +136,7 @@ void orca_result_dispose(orca_result *result) {
 #include "libslic3r/Arrange.hpp"
 #include "libslic3r/Geometry/ConvexHull.hpp"
 #include "libslic3r/ClipperUtils.hpp"
+#include "libslic3r/Exception.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/AppConfig.hpp"
@@ -9107,6 +9108,12 @@ static orca_result orcapad_run_print(const char *operation,
         } catch (const Slic3r::CanceledException &) {
             return orcapad_fail(ORCA_STATUS_CANCELLED, operation,
                                 "slice was cancelled");
+        } catch (const Slic3r::SlicingErrors &errors) {
+            // Its own what() is just "Errors": report each object's error,
+            // as desktop BackgroundSlicingProcess does.
+            const std::string message = print.slicing_errors_message(errors);
+            return orcapad_fail(ORCA_STATUS_INVALID_MODEL, operation,
+                                message.empty() ? errors.what() : message.c_str());
         }
     });
 }

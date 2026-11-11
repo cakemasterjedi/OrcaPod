@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <new>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -28,6 +29,8 @@ constexpr double kBedBoxHeight = 10000.0;
 
 std::string cls(const char *name) { return std::string(kPkg) + name; }
 
+jstring jstr(JNIEnv *env, const char *data, size_t length);
+
 // Throws OrcaException(code, diagnostic) when `r` failed; always disposes it.
 // Returns true on success.
 bool check(JNIEnv *env, orca_result r)
@@ -39,7 +42,9 @@ bool check(JNIEnv *env, orca_result r)
             msg = "engine call failed (status " + std::to_string(int(r.code)) + ")";
         jclass ex = env->FindClass(cls("OrcaException").c_str());
         jmethodID ctor = env->GetMethodID(ex, "<init>", "(ILjava/lang/String;)V");
-        jstring jmsg = env->NewStringUTF(msg.c_str());
+        // Not NewStringUTF: engine messages carry object names, and a name
+        // outside modified UTF-8 (an emoji) aborts the app under CheckJNI.
+        jstring jmsg = jstr(env, msg.data(), msg.size());
         env->Throw(static_cast<jthrowable>(env->NewObject(ex, ctor, jint(r.code), jmsg)));
     }
     orca_result_dispose(&r);
@@ -698,14 +703,21 @@ JNI_FN(jobject, platerSlice)(JNIEnv *env, jobject, jlong pl, jlong p, jstring pa
 // file order, per layer, with the attributes the desktop view types colour
 // by; retractions, seams, tool and colour changes, pauses and custom G-code
 // as point markers. Layers without extrusions (trailing travels) are dropped.
-JNI_FN(jobject, toolpathLoad)(JNIEnv *env, jobject, jstring path)
+namespace {
+
+struct ToolpathGuard
+{
+    orca_toolpath tp{};
+    ~ToolpathGuard() { orca_toolpath_dispose(&tp); }
+};
+
+jobject load_toolpath(JNIEnv *env, jstring path, orca_toolpath &tp)
 {
     constexpr uint8_t kMoveTravel = 8, kMoveExtrude = 10;
     constexpr int kAttrs = 12; // keep in step with Toolpath.Attr
     orca_gcode *gcode = nullptr;
     if (!check(env, orca_gcode_load(utf8(env, path).c_str(), &gcode)))
         return nullptr;
-    orca_toolpath tp{};
     const bool ok = check(env, orca_gcode_toolpath(gcode, &tp));
     orca_gcode_free(gcode);
     if (!ok)
@@ -761,42 +773,99 @@ JNI_FN(jobject, toolpathLoad)(JNIEnv *env, jobject, jstring path)
         layer_count.push_back(jint(moves.size() - first));
     }
 
-    auto byte_array = [env](const std::vector<jbyte> &v) {
+    const uint32_t extruder_count = std::min<uint32_t>(tp.extruder_count, ORCA_TP_MAX_EXTRUDERS);
+    const float totals[2] = {tp.estimated_time_seconds, tp.estimated_stealth_seconds};
+    std::vector<double> volumes(tp.total_volumes, tp.total_volumes + extruder_count);
+    std::vector<float> densities(tp.filament_densities, tp.filament_densities + extruder_count);
+    std::vector<float> diameters(tp.filament_diameters, tp.filament_diameters + extruder_count);
+    std::vector<float> costs(tp.filament_costs, tp.filament_costs + extruder_count);
+    std::vector<float> total(totals, totals + 2);
+    orca_toolpath_dispose(&tp); // the engine's copy is no longer needed
+
+    // A big print can need more Java heap than the app has. Each array is
+    // made only while no exception is pending (another JNI call then aborts
+    // under CheckJNI), and its native copy is released once copied, so the
+    // OutOfMemoryError reaches Kotlin, which drops the preview.
+    jobject args[18] = {};
+    size_t made = 0;
+    auto add = [&](jobject a) {
+        if (!env->ExceptionCheck() && a)
+            args[made++] = a;
+    };
+    auto put_floats = [&](std::vector<float> &v) {
+        if (env->ExceptionCheck())
+            return;
+        jfloatArray a = env->NewFloatArray(jsize(v.size()));
+        if (a && !v.empty())
+            env->SetFloatArrayRegion(a, 0, jsize(v.size()), v.data());
+        std::vector<float>().swap(v);
+        add(a);
+    };
+    auto put_bytes = [&](std::vector<jbyte> &v) {
+        if (env->ExceptionCheck())
+            return;
         jbyteArray a = env->NewByteArray(jsize(v.size()));
         if (a && !v.empty())
             env->SetByteArrayRegion(a, 0, jsize(v.size()), v.data());
-        return a;
+        std::vector<jbyte>().swap(v);
+        add(a);
     };
-    auto int_array = [env](const std::vector<jint> &v) {
+    auto put_ints = [&](std::vector<jint> &v) {
+        if (env->ExceptionCheck())
+            return;
         jintArray a = env->NewIntArray(jsize(v.size()));
         if (a && !v.empty())
             env->SetIntArrayRegion(a, 0, jsize(v.size()), v.data());
-        return a;
+        std::vector<jint>().swap(v);
+        add(a);
     };
-    const uint32_t extruder_count = std::min<uint32_t>(tp.extruder_count, ORCA_TP_MAX_EXTRUDERS);
-    const float totals[2] = {tp.estimated_time_seconds, tp.estimated_stealth_seconds};
-    jdoubleArray volumes = env->NewDoubleArray(jsize(extruder_count));
-    if (volumes)
-        env->SetDoubleArrayRegion(volumes, 0, jsize(extruder_count), tp.total_volumes);
-    jobject args[] = {
-        floats(env, pos.data(), jsize(pos.size())), byte_array(moves), byte_array(roles), byte_array(extruders),
-        floats(env, attrs.data(), jsize(attrs.size())), floats(env, times.data(), jsize(times.size())),
-        floats(env, layer_z.data(), jsize(layer_z.size())), int_array(layer_first), int_array(layer_count),
-        floats(env, layer_time.data(), jsize(layer_time.size())),
-        floats(env, point_pos.data(), jsize(point_pos.size())), byte_array(point_types), int_array(point_layers),
-        floats(env, totals, 2), volumes,
-        floats(env, tp.filament_densities, jsize(extruder_count)),
-        floats(env, tp.filament_diameters, jsize(extruder_count)),
-        floats(env, tp.filament_costs, jsize(extruder_count)),
-    };
-    orca_toolpath_dispose(&tp);
-    if (env->ExceptionCheck())
+    put_floats(pos);
+    put_bytes(moves);
+    put_bytes(roles);
+    put_bytes(extruders);
+    put_floats(attrs);
+    put_floats(times);
+    put_floats(layer_z);
+    put_ints(layer_first);
+    put_ints(layer_count);
+    put_floats(layer_time);
+    put_floats(point_pos);
+    put_bytes(point_types);
+    put_ints(point_layers);
+    put_floats(total);
+    if (!env->ExceptionCheck()) {
+        jdoubleArray a = env->NewDoubleArray(jsize(volumes.size()));
+        if (a && !volumes.empty())
+            env->SetDoubleArrayRegion(a, 0, jsize(volumes.size()), volumes.data());
+        add(a);
+    }
+    put_floats(densities);
+    put_floats(diameters);
+    put_floats(costs);
+    if (env->ExceptionCheck() || made != 18)
         return nullptr;
     jclass tp_cls = env->FindClass(cls("Toolpath").c_str());
     jmethodID ctor = env->GetMethodID(tp_cls, "<init>", "([F[B[B[B[F[F[F[I[I[F[F[B[I[F[D[F[F[F)V");
     return env->NewObject(tp_cls, ctor, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
                           args[8], args[9], args[10], args[11], args[12], args[13], args[14], args[15], args[16],
                           args[17]);
+}
+
+} // namespace
+
+JNI_FN(jobject, toolpathLoad)(JNIEnv *env, jobject, jstring path)
+{
+    ToolpathGuard guard;
+    try {
+        return load_toolpath(env, path, guard.tp);
+    } catch (const std::bad_alloc &) {
+        // A C++ exception must not unwind into the JVM: that aborts the app.
+        if (!env->ExceptionCheck()) {
+            jclass oom = env->FindClass("java/lang/OutOfMemoryError");
+            env->ThrowNew(oom, "the G-code preview does not fit in memory");
+        }
+        return nullptr;
+    }
 }
 
 // --- per-layer custom G-code (desktop layer-slider ticks) ----------------------

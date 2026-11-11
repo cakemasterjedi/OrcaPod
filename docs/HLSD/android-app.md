@@ -121,7 +121,9 @@ Plates are desktop's plate tabs: add, rename, lock, duplicate, reorder,
 delete and per-plate settings (plate type, sequence, spiral vase, first-layer
 filament order). Slicing works on the selected plate or every plate into one
 file; the preview shows a single plate, offset to where it sits beside the
-bed. Sliced 3MF files (G-code inside a 3MF) export per plate or for all
+bed. The plates of one file overlap on the bed, so the app splits it at the
+engine's `; ORCA_PLATE` marker lines into one file per plate, and the preview
+switches between those. Sliced 3MF files (G-code inside a 3MF) export per plate or for all
 plates.
 
 ## Projects
@@ -440,6 +442,26 @@ Per-layer custom G-code follows desktop's layer slider:
 - Add a pause, custom G-code or, with several filaments, a filament change
   before the top layer shown (`orca_plater_custom_gcode_*`).
 - The shown slice stays until the next one, which applies the changes.
+
+A large print can need more memory than the app has. The JNI layer builds
+the preview's Java arrays one at a time and stops at the first that does not
+fit, so the `OutOfMemoryError` reaches Kotlin, which drops the preview and
+keeps the G-code; the renderer likewise draws nothing when the line buffer
+does not fit.
+
+## Crash reports
+
+`CrashReports` (`data/CrashReports.kt`) keeps what is needed to find a crash
+that happens on the user's phone. A Kotlin crash's stack trace is written
+from the default uncaught-exception handler. While slicing, a breadcrumb file
+holds the engine's latest progress step. From Android 11 the next launch also
+reads the system's record of why the process ended
+(`ApplicationExitInfo`), which covers engine (native) crashes and
+low-memory kills; for a native crash from Android 12 it adds the text fields
+of the tombstone (signal, abort message, function and library names). A
+low-memory kill counts only while slicing, since Android ends background apps
+for memory routinely. The next launch offers the report once, to share as
+text; nothing leaves the device otherwise.
 
 ## Printers
 

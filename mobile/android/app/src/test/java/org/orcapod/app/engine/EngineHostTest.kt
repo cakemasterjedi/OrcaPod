@@ -371,6 +371,10 @@ class EngineHostTest {
         val report = e.slice(all.path, SliceTarget.ALL_PLATES) { _, _ -> }
         assertTrue(all.length() > 10_000)
         assertEquals(all.length(), report.gcodeBytes)
+        // Each plate of the file previews on its own.
+        val plates = splitPlates(all, work)
+        assertTrue(plates.isNotEmpty())
+        for (p in plates) assertTrue(e.loadToolpath(p.gcode.path).layerTotal > 0)
         val sliced = File(work, "plate.gcode.3mf")
         e.slice(sliced.path, SliceTarget.SLICED_3MF_PLATE, 0) { _, _ -> }
         assertTrue(sliced.length() > 1_000)

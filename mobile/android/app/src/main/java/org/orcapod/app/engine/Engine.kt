@@ -67,7 +67,7 @@ class Scene(val snapshot: SceneSnapshot, val meshes: Map<Long, Mesh>) {
 class Engine private constructor(private var presets: Long, private val plater: Long) : Closeable {
     private val meshCache = HashMap<Long, Mesh>()
 
-    @Volatile
+    private val jobLock = Any()
     private var job: Long = 0
 
     // --- presets ---
@@ -523,19 +523,24 @@ class Engine private constructor(private var presets: Long, private val plater: 
         listener: ProgressListener,
     ): SliceReport {
         val handle = Native.jobNew()
-        job = handle
+        synchronized(jobLock) { job = handle }
         try {
             return onEngine { Native.platerSlice(plater, presets, gcodePath, handle, listener, target.code, plateIndex) }
         } finally {
-            job = 0
-            Native.jobFree(handle)
+            // Under the lock, so a cancel tapped as the slice ends never
+            // reaches a freed job.
+            synchronized(jobLock) {
+                job = 0
+                Native.jobFree(handle)
+            }
         }
     }
 
     /** Cancels a running [slice]; it then throws OrcaException with code CANCELLED. */
     fun cancelSlice() {
-        val handle = job
-        if (handle != 0L) Native.jobCancel(handle)
+        synchronized(jobLock) {
+            if (job != 0L) Native.jobCancel(job)
+        }
     }
 
     suspend fun loadToolpath(gcodePath: String): Toolpath = onEngine { Native.toolpathLoad(gcodePath) }

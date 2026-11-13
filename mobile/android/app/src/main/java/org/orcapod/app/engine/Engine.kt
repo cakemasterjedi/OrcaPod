@@ -516,16 +516,21 @@ class Engine private constructor(private var presets: Long, private val plater: 
 
     // --- slicing ---
 
+    /**
+     * A non-null [machine] slices a [SliceTarget.SLICED_3MF_PLATE] export for that printer preset,
+     * keeping the session's process changes; the session's own selection stays as it is.
+     */
     suspend fun slice(
         gcodePath: String,
         target: SliceTarget = SliceTarget.PLATE,
         plateIndex: Int = 0,
+        machine: String? = null,
         listener: ProgressListener,
     ): SliceReport {
         val handle = Native.jobNew()
         synchronized(jobLock) { job = handle }
         try {
-            return onEngine { Native.platerSlice(plater, presets, gcodePath, handle, listener, target.code, plateIndex) }
+            return onEngine { Native.platerSlice(plater, presets, gcodePath, handle, listener, target.code, plateIndex, machine) }
         } finally {
             // Under the lock, so a cancel tapped as the slice ends never
             // reaches a freed job.

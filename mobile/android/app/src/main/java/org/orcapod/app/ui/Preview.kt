@@ -22,7 +22,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -73,7 +72,7 @@ private enum class PreviewSection(val label: String) { LEGEND("Legend"), STATS("
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PreviewPanel(vm: AppViewModel, done: SliceState.Done, onShare: () -> Unit, onSave: () -> Unit, onPrint: () -> Unit) {
+fun PreviewPanel(vm: AppViewModel, done: SliceState.Done, exports: List<Pair<String, () -> Unit>>, onPrint: () -> Unit) {
     var warningsOpen by remember { mutableStateOf(false) }
     var section by remember { mutableStateOf<PreviewSection?>(null) }
     val tp = done.toolpath
@@ -148,8 +147,15 @@ fun PreviewPanel(vm: AppViewModel, done: SliceState.Done, onShare: () -> Unit, o
                 Text("The toolpath preview is not available for this G-code.", style = MaterialTheme.typography.bodySmall)
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onShare, enabled = done.printable) { Icon(Icons.Filled.Share, "Share G-code") }
-                OutlinedButton(onClick = onSave, enabled = done.printable) { Text("Save") }
+                var exportMenu by remember { mutableStateOf(false) }
+                Box {
+                    OutlinedButton(onClick = { exportMenu = true }, enabled = done.printable) { Text("Export") }
+                    DropdownMenu(expanded = exportMenu, onDismissRequest = { exportMenu = false }) {
+                        for ((label, action) in exports) {
+                            DropdownMenuItem(text = { Text(label) }, onClick = { exportMenu = false; action() })
+                        }
+                    }
+                }
                 Spacer(Modifier.width(8.dp))
                 Button(onClick = onPrint, enabled = done.printable) {
                     Icon(AppIcons.Print, null)

@@ -314,7 +314,7 @@ static void test_md5_shim() {
 
 static void test_abi_version() {
     CHECK_EQ(orca_bridge_abi_version(), ORCA_BRIDGE_ABI_VERSION);
-    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 47);
+    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 48);
 }
 
 struct ProgressRecord {
@@ -4043,6 +4043,23 @@ static void test_exports(const std::string &dir, const std::string &data_dir) {
                                                  plate3mf.c_str(), nullptr,
                                                  nullptr, nullptr, &report));
     expect_code(p7, ORCA_STATUS_INVALID_MODEL, "empty plate export");
+
+    // ABI v48: the plate sliced for another printer, with the session's
+    // process change, leaves the session as it was
+    GUARD(p8, orca_presets_set_value(presets, 2, "layer_height", "0.28"));
+    expect_ok(p8, "change layer height");
+    const std::string other3mf = dir + "/plate0-a1mini.gcode.3mf";
+    GUARD(p9, orca_plater_export_gcode_3mf_plate_for_machine(
+                  plater, presets, "Bambu Lab A1 mini 0.4 nozzle", 0,
+                  other3mf.c_str(), nullptr, nullptr, nullptr, &report));
+    expect_ok(p9, "export plate sliced 3mf for A1 mini");
+    CHECK(report.gcode_bytes > 1000);
+    CHECK(current_preset(presets, 0) == "Bambu Lab X1 Carbon 0.4 nozzle");
+    CHECK(current_preset(presets, 2) == "0.20mm Standard @BBL X1C");
+    GUARD(p10, orca_plater_export_gcode_3mf_plate_for_machine(
+                   plater, presets, "No such printer", 0, other3mf.c_str(),
+                   nullptr, nullptr, nullptr, &report));
+    expect_code(p10, ORCA_STATUS_NOT_FOUND, "sliced export for unknown printer");
     orca_slice_report_dispose(&report);
     orca_presets_free(presets);
     orca_plater_free(plater);

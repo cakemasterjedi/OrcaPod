@@ -1929,21 +1929,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Desktop "Export plate sliced file" / "Export all sliced file": G-code inside a 3MF, for Bambu-style printers. */
-    fun exportSliced3mf(uri: Uri, allPlates: Boolean) {
+    /**
+     * Desktop "Export plate sliced file" / "Export all sliced file": G-code inside a 3MF, for
+     * Bambu-style printers. With [machine], the selected plate is sliced for that printer preset
+     * instead, keeping this session's process changes; the plate's own printer stays selected.
+     */
+    fun exportSliced3mf(uri: Uri, allPlates: Boolean, machine: String? = null) {
         val e = engine ?: return
         if (slice is SliceState.Running) return
         sliceJob = viewModelScope.launch {
             val tmp = File(getApplication<Application>().cacheDir, "sliced.3mf")
             slice = SliceState.Running(0, "Preparing")
             try {
-                val target = if (allPlates) SliceTarget.SLICED_3MF else SliceTarget.SLICED_3MF_PLATE
-                val report = e.slice(tmp.path, target, scene.snapshot.currentPlate, progress())
+                val target = if (allPlates && machine == null) SliceTarget.SLICED_3MF else SliceTarget.SLICED_3MF_PLATE
+                val report = e.slice(tmp.path, target, scene.snapshot.currentPlate, machine, progress())
                 if (report.hasPathConflict) {
                     _messages.tryEmit(COLLISION_BLOCKS_OUTPUT)
                 } else {
                     copyFromFile(tmp, uri)
-                    _messages.tryEmit("Sliced 3MF saved")
+                    _messages.tryEmit(if (machine != null) "Sliced 3MF for $machine saved" else "Sliced 3MF saved")
                 }
             } catch (ex: OrcaException) {
                 _messages.tryEmit(if (ex.code == OrcaException.CANCELLED) "Slicing cancelled" else "Slicing failed: ${ex.message}")
@@ -1993,9 +1997,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Lines the preview can have in the Java heap left now: each takes about
-     * 80 bytes in the toolpath, and 100 in the renderer's geometry while it is
-     * uploaded (its lines and their GL buffer copy, both on the Java heap on
-     * Android). Half the free heap is left for the rest of the app.
+     * 80 bytes in the toolpath and 8 in the renderer's draw ranges (it uploads
+     * the vertices a run at a time); the rest of the 180 is headroom for
+     * rebuilding them when the view mode changes. Half the free heap is left
+     * for the rest of the app.
      */
     private fun previewLineBudget(): Int {
         val rt = Runtime.getRuntime()
@@ -2015,19 +2020,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun gcodeName(): String {
-        val first = scene.snapshot.objects.firstOrNull()?.name?.substringBeforeLast('.') ?: "plate"
-        val safe = first.replace(Regex("[^A-Za-z0-9._-]+"), "_").take(60).ifEmpty { "plate" }
+        val safe = exportName().replace(Regex("[^A-Za-z0-9._-]+"), "_").take(60).ifEmpty { "plate" }
         return "${safe}_${process.substringBefore(' ').replace(Regex("[^A-Za-z0-9.]+"), "")}.gcode"
     }
 
-    fun saveGcode(uri: Uri) = viewModelScope.launch {
-        val done = slice as? SliceState.Done ?: return@launch
-        try {
-            copyFromFile(done.gcode, uri)
-            _messages.tryEmit("G-code saved")
-        } catch (e: Exception) {
-            _messages.tryEmit("Could not save: ${e.message}")
-        }
+    /** Base name for exported files: the project's name, else the first object's, else "plate". */
+    fun exportName(): String {
+        val name = projectName ?: scene.snapshot.objects.firstOrNull()?.name?.substringBeforeLast('.')
+        return name?.let { exportFileName(it) } ?: "plate"
     }
 
     // --- helpers ---
@@ -2130,3 +2130,7 @@ internal fun repairSummary(reports: List<Pair<String, RepairReport>>): String {
     if (reports.any { it.second.paintingRemoved }) lines += "Painting on the repaired parts was removed"
     return lines.joinToString("\n")
 }
+
+/** [name] without the characters file pickers refuse, or null when nothing is left. */
+internal fun exportFileName(name: String): String? =
+    name.replace(Regex("""[\\/:*?"<>|\u0000-\u001f]+"""), "_").trim(' ', '.', '_').take(80).ifEmpty { null }

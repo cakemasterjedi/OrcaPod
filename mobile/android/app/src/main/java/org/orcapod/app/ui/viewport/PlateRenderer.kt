@@ -65,7 +65,8 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
 
     private var toolpathSource: Pair<Toolpath, PreviewStyle>? = null
     private var toolpathGeometry: ToolpathGeometry? = null
-    private var toolpathVbo = 0
+    /** The toolpath's lines, [LINES_PER_VBO] to a buffer: one buffer of a big print's may not be allocatable. */
+    private var toolpathVbos = IntArray(0)
     private var pointVbo = 0
     private var toolVbo = 0
     private var overlayVbo = 0
@@ -83,6 +84,9 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
         volumeMeshes.clear()
         bedKey = null
         toolpathSource = null
+        toolpathGeometry = null
+        toolpathVbos = IntArray(0)
+        pointVbo = 0
         toolVbo = 0
         overlayVbo = 0
         glEnable(GL_DEPTH_TEST)
@@ -346,25 +350,9 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
     private fun drawToolpath(tp: Toolpath, style: PreviewStyle, range: PreviewRange, dx: Float, dy: Float) {
         val key = tp to style
         if (key != toolpathSource) {
-            Gl.deleteVbo(toolpathVbo)
-            Gl.deleteVbo(pointVbo)
-            toolpathVbo = 0
-            pointVbo = 0
-            toolpathGeometry = null
+            deleteToolpathBuffers()
             toolpathSource = key
-            // A large print's lines may not fit in memory: draw nothing then,
-            // rather than end the app from the render thread.
-            try {
-                val g = ToolpathGeometry.build(tp, style)
-                toolpathVbo = if (g.lines.isNotEmpty()) Gl.vbo(g.lines) else 0
-                pointVbo = if (g.points.isNotEmpty()) Gl.vbo(g.points) else 0
-                g.releaseVertices()
-                toolpathGeometry = g
-            } catch (ex: OutOfMemoryError) {
-                Gl.deleteVbo(toolpathVbo)
-                toolpathVbo = 0
-                android.util.Log.w("OrcaPod", "toolpath too large to draw", ex)
-            }
+            toolpathGeometry = uploadToolpath(tp, style)
         }
         val g = toolpathGeometry ?: return
         if (tp.layerTotal == 0) return
@@ -375,10 +363,16 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
         glUniformMatrix4fv(colorProgram.mvp, 1, false, mvp, 0)
         glUniform1f(colorProgram.alpha, 1f)
         val lines = g.lineRange(tp, range)
-        if (toolpathVbo != 0 && !lines.isEmpty()) {
-            bindInterleaved(toolpathVbo)
+        if (!lines.isEmpty()) {
             glLineWidth(2f)
-            glDrawArrays(GL_LINES, lines.first * 2, (lines.last - lines.first + 1) * 2)
+            for ((k, vbo) in toolpathVbos.withIndex()) {
+                val base = k * LINES_PER_VBO
+                val first = maxOf(lines.first, base)
+                val last = minOf(lines.last, base + LINES_PER_VBO - 1)
+                if (first > last) continue
+                bindInterleaved(vbo)
+                glDrawArrays(GL_LINES, (first - base) * 2, (last - first + 1) * 2)
+            }
             glLineWidth(1f)
         }
         val points = g.pointRange(tp, range)
@@ -403,7 +397,71 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
         }
     }
 
+    private fun deleteToolpathBuffers() {
+        for (vbo in toolpathVbos) Gl.deleteVbo(vbo)
+        Gl.deleteVbo(pointVbo)
+        toolpathVbos = IntArray(0)
+        pointVbo = 0
+        toolpathGeometry = null
+    }
+
+    /**
+     * Builds [tp]'s geometry for [style] and uploads it, a run of lines at a
+     * time, so the Java heap never holds a copy of every vertex. Returns null,
+     * drawing no toolpath rather than ending the app from the render thread,
+     * when the print is too large for the heap or the GPU.
+     */
+    private fun uploadToolpath(tp: Toolpath, style: PreviewStyle): ToolpathGeometry? {
+        try {
+            val g = ToolpathGeometry.build(tp, style)
+            repeat(8) { glGetError() } // clear earlier errors, so the check below is this upload's
+            val run = FloatArray(UPLOAD_LINES * ToolpathGeometry.FLOATS_PER_LINE)
+            val staging = java.nio.ByteBuffer.allocateDirect(run.size * 4)
+                .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
+            val buffers = (g.lineCount + LINES_PER_VBO - 1) / LINES_PER_VBO
+            toolpathVbos = IntArray(buffers)
+            if (buffers > 0) glGenBuffers(buffers, toolpathVbos, 0)
+            for ((k, vbo) in toolpathVbos.withIndex()) {
+                val base = k * LINES_PER_VBO
+                val count = minOf(LINES_PER_VBO, g.lineCount - base)
+                glBindBuffer(GL_ARRAY_BUFFER, vbo)
+                glBufferData(GL_ARRAY_BUFFER, count * ToolpathGeometry.FLOATS_PER_LINE * 4, null, GL_STATIC_DRAW)
+                var done = 0
+                while (done < count) {
+                    val n = minOf(UPLOAD_LINES, count - done)
+                    g.writeLines(base + done, n, run)
+                    staging.clear()
+                    staging.put(run, 0, n * ToolpathGeometry.FLOATS_PER_LINE)
+                    staging.position(0)
+                    glBufferSubData(
+                        GL_ARRAY_BUFFER, done * ToolpathGeometry.FLOATS_PER_LINE * 4,
+                        n * ToolpathGeometry.FLOATS_PER_LINE * 4, staging,
+                    )
+                    done += n
+                }
+            }
+            glBindBuffer(GL_ARRAY_BUFFER, 0)
+            if (g.points.isNotEmpty()) pointVbo = Gl.vbo(g.points)
+            val error = glGetError()
+            if (error == GL_OUT_OF_MEMORY) {
+                android.util.Log.w("OrcaPod", "toolpath of ${g.lineCount} lines does not fit in GPU memory")
+                deleteToolpathBuffers()
+                return null
+            }
+            return g
+        } catch (ex: OutOfMemoryError) {
+            android.util.Log.w("OrcaPod", "toolpath too large to draw", ex)
+            deleteToolpathBuffers()
+            return null
+        }
+    }
+
     companion object {
+        /** Lines per toolpath buffer: 12 MB of vertices. */
+        private const val LINES_PER_VBO = 1 shl 18
+        /** Lines written and uploaded at a time. */
+        private const val UPLOAD_LINES = 1 shl 14
+
         /** Desktop preview colours (libvgcode defaults), indexed by engine ExtrusionRole. */
         private val ROLE_COLORS = arrayOf(
             intArrayOf(230, 179, 179), // None

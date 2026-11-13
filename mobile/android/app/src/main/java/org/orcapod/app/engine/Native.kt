@@ -78,9 +78,13 @@ internal object Native {
     external fun jobNew(): Long
     external fun jobCancel(job: Long)
     external fun jobFree(job: Long)
-    /** [target] is a [SliceTarget] code; [plateIndex] is used by SLICED_3MF_PLATE. */
+    /**
+     * [target] is a [SliceTarget] code; [plateIndex] and a non-null [machine] (slice for that
+     * printer preset instead of the selected one) are used by SLICED_3MF_PLATE.
+     */
     external fun platerSlice(
         plater: Long, presets: Long, path: String, job: Long, listener: ProgressListener, target: Int, plateIndex: Int,
+        machine: String?,
     ): SliceReport
     /** At most about [maxLines] lines: beyond that, runs of short moves are joined. */
     external fun toolpathLoad(gcodePath: String, maxLines: Int): Toolpath

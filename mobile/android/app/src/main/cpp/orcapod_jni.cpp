@@ -643,8 +643,9 @@ constexpr jint kSliceAll = 1;       // every non-empty plate, one G-code
 constexpr jint kSliced3mf = 2;      // every plate, G-code embedded in a 3MF
 constexpr jint kSliced3mfPlate = 3; // the selected plate, as a sliced 3MF
 
+// A non-null machine slices a kSliced3mfPlate export for that printer preset instead of the selected one.
 JNI_FN(jobject, platerSlice)(JNIEnv *env, jobject, jlong pl, jlong p, jstring path, jlong job, jobject listener,
-                             jint target, jint plate_index)
+                             jint target, jint plate_index, jstring machine)
 {
     ProgressCtx ctx{};
     env->GetJavaVM(&ctx.vm);
@@ -664,8 +665,13 @@ JNI_FN(jobject, platerSlice)(JNIEnv *env, jobject, jlong pl, jlong p, jstring pa
         r = orca_plater_export_gcode_3mf(plater_of(pl), presets_of(p), file.c_str(), on_progress, &ctx, j, &report);
         break;
     case kSliced3mfPlate:
-        r = orca_plater_export_gcode_3mf_plate(plater_of(pl), presets_of(p), plate_index, file.c_str(), on_progress,
-                                               &ctx, j, &report);
+        if (machine)
+            r = orca_plater_export_gcode_3mf_plate_for_machine(plater_of(pl), presets_of(p), utf8(env, machine).c_str(),
+                                                               plate_index, file.c_str(), on_progress, &ctx, j,
+                                                               &report);
+        else
+            r = orca_plater_export_gcode_3mf_plate(plater_of(pl), presets_of(p), plate_index, file.c_str(),
+                                                   on_progress, &ctx, j, &report);
         break;
     default:
         r = orca_plater_slice_to_gcode_with_presets(plater_of(pl), presets_of(p), file.c_str(), on_progress, &ctx, j,

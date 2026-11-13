@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 /// Version of the C ABI contract in this header. Callers verify it at runtime.
-#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)47)
+#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)48)
 
 typedef int32_t orca_status_code;
 #define ORCA_STATUS_OK                     ((orca_status_code)0)
@@ -1898,6 +1898,18 @@ orca_result orca_plater_export_gcode_3mf_plate(orca_plater *plater,
                                                 void *ctx,
                                                 orca_slice_job *job,
                                                 orca_slice_report *out_report);
+
+/// Sliced-3MF export for another printer (ABI v48): like
+/// orca_plater_export_gcode_3mf_plate, but sliced for `machine` (a listed
+/// printer preset) with the filaments a printer change to it would resolve
+/// and the process it would resolve carrying the session's own process
+/// changes (desktop's "Transfer" of a printer change). Instances keep their
+/// place relative to the plate's centre on that printer's plate. The
+/// session's selection and the document are left untouched.
+orca_result orca_plater_export_gcode_3mf_plate_for_machine(
+    orca_plater *plater, orca_presets *presets, const char *machine,
+    int32_t plate_index, const char *path, orca_progress_fn progress,
+    void *ctx, orca_slice_job *job, orca_slice_report *out_report);
 
 #if defined(__cplusplus)
 }

@@ -10503,6 +10503,115 @@ orca_result orca_project_save(orca_plater *plater, orca_presets *presets,
     });
 }
 
+/// Desktop "Transfer" of a printer change: the process options the session
+/// has changed from the preset it is based on (unsaved edits, and a user
+/// preset's own values) carry over onto the process the new printer
+/// resolved. Which presets apply stays the new printer's.
+static void orcapad_transfer_process_changes(const Slic3r::PresetBundle &from,
+                                             Slic3r::PresetBundle &to) {
+    const Slic3r::PresetCollection &prints = from.prints;
+    const Slic3r::Preset *parent = prints.get_selected_preset_parent();
+    if (!parent) parent = &prints.get_selected_preset();
+    const Slic3r::DynamicPrintConfig &edited = prints.get_edited_preset().config;
+    Slic3r::DynamicPrintConfig &target = to.prints.get_edited_preset().config;
+    static const std::set<std::string> identity{
+        "inherits", "compatible_printers", "compatible_printers_condition",
+        "compatible_prints", "compatible_prints_condition", "print_settings_id",
+        "setting_id", "name", "from", "version", "print_extruder_id",
+        "print_extruder_variant"};
+    Slic3r::t_config_option_keys keys;
+    for (const std::string &key :
+         Slic3r::PresetCollection::dirty_options(&prints.get_edited_preset(), parent))
+        if (!identity.count(key) && target.has(key) && edited.has(key))
+            keys.push_back(key);
+    target.apply_only(edited, keys);
+}
+
+/// Runs `use` with the document set up for the printer preset `machine`:
+/// `use` gets a copy of the preset session with that printer selected (with
+/// the process and filaments a printer change would resolve, or the
+/// session's own process changes when `keep_process_changes`), while each
+/// instance keeps its place relative to its plate's centre on that
+/// printer's (differently sized) plates. The session, placements and bed
+/// are as they were once `use` returns.
+template <typename Use>
+static orca_result orcapad_with_machine(orca_plater *plater,
+                                        orca_presets *presets,
+                                        const char *machine,
+                                        bool keep_process_changes,
+                                        const char *operation, Use &&use) {
+    if (!orcapad_has_listed_preset(presets->bundle->printers, machine))
+        return orcapad_fail(ORCA_STATUS_NOT_FOUND, operation,
+                            "machine preset was not found");
+    auto candidate = std::make_unique<Slic3r::PresetBundle>(*presets->bundle);
+    const orca_result selected =
+        orcapad_select_machine_into(*candidate, machine, operation);
+    if (selected.code != ORCA_STATUS_OK) return selected;
+    if (presets->bundle->printers.get_selected_preset().name != machine)
+        orcapad_apply_default_bed_type(*candidate);
+    if (keep_process_changes)
+        orcapad_transfer_process_changes(*presets->bundle, *candidate);
+
+    const Slic3r::DynamicPrintConfig &printer =
+        candidate->printers.get_selected_preset().config;
+    const auto *area = printer.option<Slic3r::ConfigOptionPoints>("printable_area");
+    if (!area || area->values.empty())
+        return orcapad_fail(ORCA_STATUS_INVALID_CONFIGURATION, operation,
+                            "machine defines no printable area");
+    Slic3r::BoundingBoxf bed;
+    for (const auto &point : area->values) bed.merge(point);
+    if (!(bed.max.x() > bed.min.x()) || !(bed.max.y() > bed.min.y()))
+        return orcapad_fail(ORCA_STATUS_INVALID_CONFIGURATION, operation,
+                            "printable area is degenerate");
+    const auto *height = printer.option<Slic3r::ConfigOptionFloat>("printable_height");
+
+    struct Restore {
+        orca_plater &plater;
+        double origin_x, origin_y, width, depth, height;
+        std::vector<std::pair<Slic3r::ModelInstance *, Slic3r::Vec3d>> offsets;
+        ~Restore() {
+            for (auto &entry : offsets) {
+                entry.first->set_offset(entry.second);
+                entry.first->get_object()->invalidate_bounding_box();
+            }
+            plater.bed_origin_x = origin_x;
+            plater.bed_origin_y = origin_y;
+            plater.bed_width = width;
+            plater.bed_depth = depth;
+            plater.bed_height = height;
+        }
+    } restore{*plater, plater->bed_origin_x, plater->bed_origin_y,
+              plater->bed_width, plater->bed_depth, plater->bed_height, {}};
+    std::vector<std::pair<Slic3r::ModelInstance *, int>> placed;
+    for (Slic3r::ModelObject *object : plater->model.objects)
+        for (Slic3r::ModelInstance *instance : object->instances)
+            placed.emplace_back(instance, orcapad_instance_plate(
+                *plater, static_cast<orca_object_id>(object->id().id),
+                static_cast<orca_instance_id>(instance->id().id),
+                orcapad_instance_box(*instance)));
+    auto plate_centre = [&](int index) -> Slic3r::Vec3d {
+        return orcapad_plate_origin(*plater, index) +
+               Slic3r::Vec3d(plater->bed_width / 2, plater->bed_depth / 2, 0.0);
+    };
+    std::vector<Slic3r::Vec3d> old_centres;
+    for (size_t index = 0; index < plater->plates.size(); ++index)
+        old_centres.push_back(plate_centre(static_cast<int>(index)));
+
+    plater->bed_origin_x = bed.min.x();
+    plater->bed_origin_y = bed.min.y();
+    plater->bed_width = bed.max.x() - bed.min.x();
+    plater->bed_depth = bed.max.y() - bed.min.y();
+    if (height && height->value > 0.0) plater->bed_height = height->value;
+    for (const auto &[instance, plate] : placed) {
+        restore.offsets.emplace_back(instance, instance->get_offset());
+        if (plate < 0) continue; // off every plate: left where it is
+        instance->set_offset(instance->get_offset() + plate_centre(plate) -
+                             old_centres[static_cast<size_t>(plate)]);
+        instance->get_object()->invalidate_bounding_box();
+    }
+    return use(candidate);
+}
+
 orca_result orca_project_export_for_machine(orca_plater *plater,
                                             orca_presets *presets,
                                             const char *machine,
@@ -10518,82 +10627,45 @@ orca_result orca_project_export_for_machine(orca_plater *plater,
                             "machine name is empty");
 
     return orcapad_guard(operation, [&]() -> orca_result {
-        if (!orcapad_has_listed_preset(presets->bundle->printers, machine))
-            return orcapad_fail(ORCA_STATUS_NOT_FOUND, operation,
-                                "machine preset was not found");
-        // The session's own selection stays untouched: the chosen printer
-        // (with the process and filaments a printer change would resolve)
-        // is selected on a copy that only this export reads.
-        Slic3r::PresetBundle candidate(*presets->bundle);
-        const orca_result selected =
-            orcapad_select_machine_into(candidate, machine, operation);
-        if (selected.code != ORCA_STATUS_OK) return selected;
-        if (presets->bundle->printers.get_selected_preset().name != machine)
-            orcapad_apply_default_bed_type(candidate);
+        return orcapad_with_machine(
+            plater, presets, machine, false, operation,
+            [&](std::unique_ptr<Slic3r::PresetBundle> &candidate) {
+                return orcapad_store_project(plater, *candidate, path,
+                                             thumbnail_size, thumbnail_rgba,
+                                             operation);
+            });
+    });
+}
 
-        const Slic3r::DynamicPrintConfig &printer =
-            candidate.printers.get_selected_preset().config;
-        const auto *area = printer.option<Slic3r::ConfigOptionPoints>("printable_area");
-        if (!area || area->values.empty())
-            return orcapad_fail(ORCA_STATUS_INVALID_CONFIGURATION, operation,
-                                "machine defines no printable area");
-        Slic3r::BoundingBoxf bed;
-        for (const auto &point : area->values) bed.merge(point);
-        if (!(bed.max.x() > bed.min.x()) || !(bed.max.y() > bed.min.y()))
-            return orcapad_fail(ORCA_STATUS_INVALID_CONFIGURATION, operation,
-                                "printable area is degenerate");
-        const auto *height = printer.option<Slic3r::ConfigOptionFloat>("printable_height");
+orca_result orca_plater_export_gcode_3mf_plate_for_machine(
+    orca_plater *plater, orca_presets *presets, const char *machine,
+    int32_t plate_index, const char *path, orca_progress_fn progress,
+    void *ctx, orca_slice_job *job, orca_slice_report *out_report) {
+    constexpr const char *operation =
+        "orca_plater_export_gcode_3mf_plate_for_machine";
+    if (out_report) *out_report = orca_slice_report{};
+    if (!plater || !presets)
+        return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, operation,
+                            "plater or presets handle is null");
+    if (!machine || !machine[0])
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "machine name is empty");
 
-        // Each instance keeps its place relative to its plate's centre on
-        // the chosen printer's (differently sized) plates, so desktop
-        // OrcaSlicer shows the same plates. Placement and bed are restored
-        // once the file is written: the export is not a mutation.
-        struct Restore {
-            orca_plater &plater;
-            double origin_x, origin_y, width, depth, height;
-            std::vector<std::pair<Slic3r::ModelInstance *, Slic3r::Vec3d>> offsets;
-            ~Restore() {
-                for (auto &entry : offsets) {
-                    entry.first->set_offset(entry.second);
-                    entry.first->get_object()->invalidate_bounding_box();
-                }
-                plater.bed_origin_x = origin_x;
-                plater.bed_origin_y = origin_y;
-                plater.bed_width = width;
-                plater.bed_depth = depth;
-                plater.bed_height = height;
-            }
-        } restore{*plater, plater->bed_origin_x, plater->bed_origin_y,
-                  plater->bed_width, plater->bed_depth, plater->bed_height, {}};
-        std::vector<std::pair<Slic3r::ModelInstance *, int>> placed;
-        for (Slic3r::ModelObject *object : plater->model.objects)
-            for (Slic3r::ModelInstance *instance : object->instances)
-                placed.emplace_back(instance, orcapad_instance_plate(
-                    *plater, static_cast<orca_object_id>(object->id().id),
-                    static_cast<orca_instance_id>(instance->id().id),
-                    orcapad_instance_box(*instance)));
-        auto plate_centre = [&](int index) -> Slic3r::Vec3d {
-            return orcapad_plate_origin(*plater, index) +
-                   Slic3r::Vec3d(plater->bed_width / 2, plater->bed_depth / 2, 0.0);
-        };
-        std::vector<Slic3r::Vec3d> old_centres;
-        for (size_t index = 0; index < plater->plates.size(); ++index)
-            old_centres.push_back(plate_centre(static_cast<int>(index)));
-
-        plater->bed_origin_x = bed.min.x();
-        plater->bed_origin_y = bed.min.y();
-        plater->bed_width = bed.max.x() - bed.min.x();
-        plater->bed_depth = bed.max.y() - bed.min.y();
-        if (height && height->value > 0.0) plater->bed_height = height->value;
-        for (const auto &[instance, plate] : placed) {
-            restore.offsets.emplace_back(instance, instance->get_offset());
-            if (plate < 0) continue; // off every plate: left where it is
-            instance->set_offset(instance->get_offset() + plate_centre(plate) -
-                                 old_centres[static_cast<size_t>(plate)]);
-            instance->get_object()->invalidate_bounding_box();
-        }
-        return orcapad_store_project(plater, candidate, path, thumbnail_size,
-                                     thumbnail_rgba, operation);
+    return orcapad_guard(operation, [&]() -> orca_result {
+        return orcapad_with_machine(
+            plater, presets, machine, true, operation,
+            [&](std::unique_ptr<Slic3r::PresetBundle> &candidate) {
+                // The slice reads the session's bundle: lend it the
+                // candidate for the slice, and take the session's back.
+                struct Swap {
+                    std::unique_ptr<Slic3r::PresetBundle> &a, &b;
+                    ~Swap() { a.swap(b); }
+                } swap{presets->bundle, candidate};
+                presets->bundle.swap(candidate);
+                return orca_plater_export_gcode_3mf_plate(
+                    plater, presets, plate_index, path, progress, ctx, job,
+                    out_report);
+            });
     });
 }
 

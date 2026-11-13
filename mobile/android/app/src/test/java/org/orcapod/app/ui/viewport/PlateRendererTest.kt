@@ -34,17 +34,20 @@ class PlateRendererTest {
     fun toolpathGeometryCarriesRoleColoursAndOptions() {
         val tp = twoMoves()
         val g = ToolpathGeometry.build(tp, PreviewStyle())
-        assertEquals(12, g.lines.size)
-        assertArrayEquals(floatArrayOf(10f, 0f, 0.2f), g.lines.copyOfRange(6, 9), 0f)
-        assertEquals(1f, g.lines[3], 1e-6f)
-        assertEquals(125 / 255f, g.lines[4], 1e-6f)
+        assertEquals(1, g.lineCount)
+        assertArrayEquals(floatArrayOf(10f, 0f, 0.2f), g.lineVertices().copyOfRange(6, 9), 0f)
+        assertEquals(1f, g.lineVertices()[3], 1e-6f)
+        assertEquals(125 / 255f, g.lineVertices()[4], 1e-6f)
         assertEquals(0, g.points.size)
         assertEquals(0..0, g.lineRange(tp, PreviewRange(0, 0)))
 
         val all = ToolpathGeometry.build(tp, PreviewStyle(options = setOf(PreviewOption.TRAVEL, PreviewOption.SEAM)))
-        assertEquals(24, all.lines.size)
-        assertEquals(56 / 255f, all.lines[15], 1e-6f)
+        assertEquals(2, all.lineCount)
+        assertEquals(56 / 255f, all.lineVertices()[15], 1e-6f)
         assertEquals(6, all.points.size)
+        // A run written on its own matches the same lines of the whole.
+        val second = FloatArray(12).also { all.writeLines(1, 1, it) }
+        assertArrayEquals(all.lineVertices().copyOfRange(12, 24), second, 0f)
         // The move slider stops after the first move.
         assertEquals(0..0, all.lineRange(tp, PreviewRange(0, 0, 1)))
         assertEquals(0..1, all.lineRange(tp, PreviewRange(0, 0)))

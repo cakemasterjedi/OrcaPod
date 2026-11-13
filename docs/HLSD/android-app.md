@@ -131,7 +131,20 @@ file; the preview shows a single plate, offset to where it sits beside the
 bed. The plates of one file overlap on the bed, so the app splits it at the
 engine's `; ORCA_PLATE` marker lines into one file per plate, and the preview
 switches between those. Sliced 3MF files (G-code inside a 3MF) export per plate or for all
-plates.
+plates, named after the project or, before it has one, its first object. The
+preview's Export menu offers the sliced 3MF and not a plain G-code file,
+which Bambu printers do not print from storage; plain G-code is still shared
+to other apps and sent to the other printer hosts.
+
+A plate can also be sliced for another printer preset
+(`orca_plater_export_gcode_3mf_plate_for_machine`) without changing the
+plate's own printer. As for a project exported for another printer (below),
+a copy of the preset session switches to that printer and the plate's
+instances keep their place relative to its centre; in addition the process
+options the session has changed from its preset's system base (unsaved edits
+and a user preset's own values) carry over onto the process the new printer
+resolved, like desktop's "Transfer" when the printer changes. The copy is
+lent to the slice and the session's own presets are put back afterwards.
 
 ## Projects
 
@@ -460,9 +473,11 @@ Per-layer custom G-code follows desktop's layer slider:
 
 A large print can need more memory than the app has. Kotlin gives the
 preview a line budget from the Java heap that is free, at about 180 bytes per
-line: the toolpath arrays, plus the renderer's geometry and its GL buffer copy
-while they are uploaded (direct buffers live on the Java heap on Android). The
-renderer drops its vertices once they are in GL buffers. Past the budget, the
+line: the toolpath arrays, the renderer's draw ranges, and headroom to rebuild
+those when the view mode changes. The renderer never holds every vertex on the
+Java heap: it writes and uploads them a run of lines at a time, into GL
+buffers of at most 12 MB each, since a GPU may refuse one buffer for a whole
+large print. Past the budget, the
 JNI layer joins runs of lines that carry on from one another with the same
 move type, role and extruder and about the same speed, width and flow (walls
 vary a little from move to move), as long as every point a run passes stays
@@ -473,8 +488,8 @@ legend and summary keep their totals; the preview then says that it is
 simplified. The JNI layer builds the Java arrays one at a time and stops at
 the first that does not fit, so an `OutOfMemoryError` reaches Kotlin, which
 tries again with a third of the budget, twice, before it drops the preview and
-keeps the G-code. The renderer likewise draws nothing when the line buffer
-does not fit.
+keeps the G-code. The renderer likewise draws nothing when the lines do not
+fit in the heap or the GPU's memory.
 
 As on desktop, a slice whose toolpaths collide (the engine's
 `gcode_path_conflict` warning) cannot be printed, saved, shared or exported

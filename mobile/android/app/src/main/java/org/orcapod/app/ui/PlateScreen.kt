@@ -160,13 +160,18 @@ fun PlateScreen(vm: AppViewModel) {
     val export3mf = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/3mf")) { uri ->
         if (uri != null) vm.exportGeneric3mf(uri)
     }
-    // The printer a "3MF for printer" export is being written for.
+    // The printer a "for printer" export is being written for, and whether it is sliced.
     var exportPrinter by remember { mutableStateOf<String?>(null) }
-    var exportPrinterPicker by remember { mutableStateOf(false) }
+    var exportPrinterPicker by remember { mutableStateOf<ExportFor?>(null) }
     val exportFor = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/3mf")) { uri ->
         val machine = exportPrinter
         exportPrinter = null
         if (uri != null && machine != null) vm.exportProjectFor(machine, uri)
+    }
+    val exportSlicedFor = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/3mf")) { uri ->
+        val machine = exportPrinter
+        exportPrinter = null
+        if (uri != null && machine != null) vm.exportSliced3mf(uri, allPlates = false, machine = machine)
     }
     val exportStl = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/stl")) { uri ->
         if (uri != null) vm.exportStl(null, uri)
@@ -174,9 +179,6 @@ fun PlateScreen(vm: AppViewModel) {
     var slicedAll by remember { mutableStateOf(false) }
     val exportSliced = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("model/3mf")) { uri ->
         if (uri != null) vm.exportSliced3mf(uri, slicedAll)
-    }
-    val saveGcode = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/x-gcode")) { uri ->
-        if (uri != null) vm.saveGcode(uri)
     }
 
     val listener = remember {
@@ -227,14 +229,17 @@ fun PlateScreen(vm: AppViewModel) {
             "Export",
             listOfNotNull(
                 MenuEntry("Export plate sliced file", AppIcons.Export, enabled = canExport) {
-                    slicedAll = false; exportSliced.launch("plate.gcode.3mf")
+                    slicedAll = false; exportSliced.launch("${vm.exportName()}.gcode.3mf")
                 },
                 if (vm.scene.snapshot.plates.size > 1) MenuEntry("Export all plates sliced file", AppIcons.Export, enabled = canExport) {
-                    slicedAll = true; exportSliced.launch("plates.gcode.3mf")
+                    slicedAll = true; exportSliced.launch("${vm.exportName()}.gcode.3mf")
                 } else null,
-                MenuEntry("Export 3MF for printer", AppIcons.Export, enabled = hasObjects) { exportPrinterPicker = true },
-                MenuEntry("Export generic 3MF", AppIcons.Export, enabled = hasObjects) { export3mf.launch("plate.3mf") },
-                MenuEntry("Export all objects as STL", AppIcons.Export, enabled = hasObjects) { exportStl.launch("plate.stl") },
+                MenuEntry("Export plate sliced for another printer", AppIcons.Export, enabled = canExport) {
+                    exportPrinterPicker = ExportFor.SLICED
+                },
+                MenuEntry("Export 3MF for printer", AppIcons.Export, enabled = hasObjects) { exportPrinterPicker = ExportFor.PROJECT },
+                MenuEntry("Export generic 3MF", AppIcons.Export, enabled = hasObjects) { export3mf.launch("${vm.exportName()}.3mf") },
+                MenuEntry("Export all objects as STL", AppIcons.Export, enabled = hasObjects) { exportStl.launch("${vm.exportName()}.stl") },
             ),
         ),
         MenuGroup(
@@ -276,6 +281,18 @@ fun PlateScreen(vm: AppViewModel) {
             .putExtra(Intent.EXTRA_STREAM, uri)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         context.startActivity(Intent.createChooser(send, "Send G-code"))
+    }
+    // The preview's Export menu. Plain G-code is shared, not saved: Bambu printers take the sliced 3MF.
+    val sliceExports: (SliceState.Done) -> List<Pair<String, () -> Unit>> = { result ->
+        listOfNotNull(
+            "Export plate sliced file" to { slicedAll = false; exportSliced.launch("${vm.exportName()}.gcode.3mf") },
+            if (vm.scene.snapshot.plates.size > 1) {
+                "Export all plates sliced file" to { slicedAll = true; exportSliced.launch("${vm.exportName()}.gcode.3mf") }
+            } else null,
+            "Export sliced for another printer" to { exportPrinterPicker = ExportFor.SLICED },
+            "Export generic 3MF (any printer)" to { export3mf.launch("${vm.exportName()}.3mf") },
+            "Share G-code" to { shareGcode(result) },
+        )
     }
     val projectTitle = vm.projectName?.let { if (vm.projectDirty) "$it*" else it }
 
@@ -385,8 +402,7 @@ fun PlateScreen(vm: AppViewModel) {
                     previewing -> PreviewPanel(
                         vm = vm,
                         done = done!!,
-                        onShare = { shareGcode(done) },
-                        onSave = { saveGcode.launch(done.gcode.name) },
+                        exports = sliceExports(done),
                         onPrint = { sendOpen = true },
                     )
                     vm.slice is SliceState.Running -> SlicingPanel(vm.slice as SliceState.Running, vm::cancelSlice)
@@ -474,13 +490,7 @@ fun PlateScreen(vm: AppViewModel) {
                     onEditObject = { objectSheet = it },
                     onImport = { importModels.launch(MODEL_TYPES) },
                     onOpenProject = { guarded { openProject.launch(MODEL_TYPES) } },
-                    exports = { result ->
-                        listOf(
-                            "Save G-code" to { saveGcode.launch(result.gcode.name) },
-                            "Share G-code" to { shareGcode(result) },
-                            "Export plate sliced file" to { slicedAll = false; exportSliced.launch("plate.gcode.3mf") },
-                        )
-                    },
+                    exports = sliceExports,
                     onPrint = { sendOpen = true },
                     onFilaments = { filamentSlots = true },
                     onPick = { picker = it },
@@ -522,17 +532,18 @@ fun PlateScreen(vm: AppViewModel) {
             onImportFolder = { importPresetFolder.launch(null) },
         )
     }
-    if (exportPrinterPicker) {
+    exportPrinterPicker?.let { mode ->
         PresetPickerSheet(
-            title = "Export 3MF for printer",
+            title = if (mode == ExportFor.SLICED) "Slice and export for printer" else "Export 3MF for printer",
             entries = vm.printers,
             current = vm.printer,
             onPick = { machine ->
                 exportPrinter = machine
-                exportFor.launch(projectFileName)
+                val name = "${vm.exportName()} - ${printerModel(machine)}"
+                if (mode == ExportFor.SLICED) exportSlicedFor.launch("$name.gcode.3mf") else exportFor.launch("$name.3mf")
             },
             onDelete = null,
-            onDismiss = { exportPrinterPicker = false },
+            onDismiss = { exportPrinterPicker = null },
             choice = vm.choices[PresetKind.PRINTER],
             onChoose = { vm.choosePresets(PresetKind.PRINTER, vm.printers, it) },
         )
@@ -726,3 +737,10 @@ private fun SlicingPanel(state: SliceState.Running, onCancel: () -> Unit) {
         }
     }
 }
+
+/** What a printer picked for an export gets: the plate sliced for it, or the project set up for it. */
+private enum class ExportFor { SLICED, PROJECT }
+
+/** A printer preset's model for a file name: "Bambu Lab A1 0.4 nozzle" is "Bambu Lab A1". */
+internal fun printerModel(preset: String): String =
+    preset.replace(Regex("""\s+\d+(\.\d+)?\s*nozzle$""", RegexOption.IGNORE_CASE), "").trim().ifEmpty { preset }

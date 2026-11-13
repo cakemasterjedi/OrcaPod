@@ -56,28 +56,44 @@ data class PreviewRange(val low: Int = 0, val high: Int = 0, val moves: Int = In
 data class LegendItem(val color: IntArray, val label: String, val detail: String = "", val role: Int = -1)
 
 /**
- * GPU-ready toolpath geometry: [lines] holds two interleaved position + colour
- * vertices per visible segment, in file order; [visibleBefore] counts the
- * visible segments before each segment, so a layer range maps to one draw
- * range. [points] holds one vertex per visible marker, [pointLayerStart] the
- * first marker of each layer.
+ * GPU-ready toolpath geometry. Each visible segment becomes two interleaved
+ * position + colour vertices, in file order; [writeLines] fills them a run at
+ * a time, so a big print is uploaded to GL without a vertex copy of it all on
+ * the Java heap. [visibleBefore] counts the visible segments before each
+ * segment, so a layer range maps to one draw range. [points] holds one vertex
+ * per visible marker, [pointLayerStart] the first marker of each layer.
  */
 class ToolpathGeometry(
-    lines: FloatArray,
+    private val tp: Toolpath,
+    private val colours: ToolpathColours,
+    /** The toolpath segment of each visible line. */
+    private val visibleSegments: IntArray,
     val visibleBefore: IntArray,
-    points: FloatArray,
+    val points: FloatArray,
     val pointLayerStart: IntArray,
 ) {
-    var lines = lines
-        private set
-    var points = points
-        private set
+    /** Visible lines, each [FLOATS_PER_LINE] floats. */
+    val lineCount: Int get() = visibleSegments.size
 
-    /** Drops the vertices once they are in GL buffers: a big print's take much of the Java heap. */
-    fun releaseVertices() {
-        lines = FloatArray(0)
-        points = FloatArray(0)
+    /** Writes lines [first, first + count) into [out], from its start. */
+    fun writeLines(first: Int, count: Int, out: FloatArray) {
+        val p = tp.positions
+        val c = FloatArray(3)
+        var o = 0
+        for (line in first until first + count) {
+            val i = visibleSegments[line]
+            colours.segment(i, c)
+            val s = i * 6
+            out[o] = p[s]; out[o + 1] = p[s + 1]; out[o + 2] = p[s + 2]
+            out[o + 3] = c[0]; out[o + 4] = c[1]; out[o + 5] = c[2]
+            out[o + 6] = p[s + 3]; out[o + 7] = p[s + 4]; out[o + 8] = p[s + 5]
+            out[o + 9] = c[0]; out[o + 10] = c[1]; out[o + 11] = c[2]
+            o += FLOATS_PER_LINE
+        }
     }
+
+    /** Every line's vertices at once; for tests and small toolpaths. */
+    fun lineVertices(): FloatArray = FloatArray(lineCount * FLOATS_PER_LINE).also { writeLines(0, lineCount, it) }
 
     /** Visible-segment range drawn for [r], as [first, end). */
     fun lineRange(tp: Toolpath, r: PreviewRange): IntRange {
@@ -96,6 +112,9 @@ class ToolpathGeometry(
     }
 
     companion object {
+        /** Two vertices of position + colour. */
+        const val FLOATS_PER_LINE = 12
+
         fun build(tp: Toolpath, style: PreviewStyle): ToolpathGeometry {
             val colours = ToolpathColours(tp, style)
             val n = tp.segmentCount
@@ -106,20 +125,8 @@ class ToolpathGeometry(
                 if (colours.visible(i)) visible++
             }
             visibleBefore[n] = visible
-            val lines = FloatArray(visible * 12)
-            val p = tp.positions
-            var o = 0
-            val c = FloatArray(3)
-            for (i in 0 until n) {
-                if (!colours.visible(i)) continue
-                colours.segment(i, c)
-                val s = i * 6
-                lines[o] = p[s]; lines[o + 1] = p[s + 1]; lines[o + 2] = p[s + 2]
-                lines[o + 3] = c[0]; lines[o + 4] = c[1]; lines[o + 5] = c[2]
-                lines[o + 6] = p[s + 3]; lines[o + 7] = p[s + 4]; lines[o + 8] = p[s + 5]
-                lines[o + 9] = c[0]; lines[o + 10] = c[1]; lines[o + 11] = c[2]
-                o += 12
-            }
+            val visibleSegments = IntArray(visible)
+            for (i in 0 until n) if (visibleBefore[i + 1] != visibleBefore[i]) visibleSegments[visibleBefore[i]] = i
 
             val pointLayerStart = IntArray(tp.layerTotal + 1)
             val shown = BooleanArray(tp.pointTypes.size) {
@@ -138,7 +145,7 @@ class ToolpathGeometry(
                 q += 6
             }
             while (layer < tp.layerTotal) pointLayerStart[++layer] = q / 6
-            return ToolpathGeometry(lines, visibleBefore, points, pointLayerStart)
+            return ToolpathGeometry(tp, colours, visibleSegments, visibleBefore, points, pointLayerStart)
         }
     }
 }

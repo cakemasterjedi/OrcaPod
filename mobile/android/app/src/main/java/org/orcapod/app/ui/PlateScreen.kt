@@ -366,6 +366,7 @@ fun PlateScreen(vm: AppViewModel) {
                     paintOverlay = if (vm.paint != null) vm.paintOverlay else null,
                     measureLines = vm.measure?.lines(),
                     measurePoints = vm.measure?.points(),
+                    clearance = vm.clearance.outlines,
                 )
             },
         )
@@ -393,6 +394,13 @@ fun PlateScreen(vm: AppViewModel) {
             if (layFlat) {
                 Spacer(Modifier.height(6.dp))
                 Hint("Tap the face the object should rest on")
+            }
+            // Print by object: desktop's clearance warning, such as objects too close to each other.
+            if (!previewing && vm.clearance.message.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                    Text(vm.clearance.message, Modifier.padding(horizontal = 12.dp, vertical = 8.dp), style = MaterialTheme.typography.bodyMedium)
+                }
             }
         }
         // The preview, slicing progress, tool panels or the plate actions; the phone also shows

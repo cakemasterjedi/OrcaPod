@@ -405,6 +405,10 @@ class EngineHostTest {
         ZipFile(published).use { assertNull(it.getEntry("Metadata/project_settings.config")) }
         assertTrue(ProjectStore.isProject(published))
         assertNotNull(e.publishOptions().previous)
+        // Printing by layer, the plate has no clearance outlines.
+        val clearance = e.sequentialClearance()
+        assertFalse(clearance.byObject)
+        assertTrue(clearance.outlines.isEmpty())
         // So does a sliced file for another printer.
         val slicedOther = File(work, "for-other.gcode.3mf")
         e.slice(slicedOther.path, SliceTarget.SLICED_3MF_PLATE, 0, other) { _, _ -> }

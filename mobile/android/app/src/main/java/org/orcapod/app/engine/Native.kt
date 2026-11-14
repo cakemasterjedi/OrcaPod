@@ -172,6 +172,7 @@ internal object Native {
     /** A non-null [machine] writes the project for that printer instead of the selected one. */
     external fun projectSave(plater: Long, presets: Long, path: String, thumbnailSize: Int, thumbnail: ByteArray?, machine: String?)
     external fun projectPublishOptions(plater: Long, presets: Long): String
+    external fun platerSequentialClearance(plater: Long, presets: Long): String
     external fun projectPublish(plater: Long, presets: Long, path: String, selectionJson: String, thumbnailSize: Int, thumbnail: ByteArray?)
     external fun projectPublishNotes(plater: Long): String
 

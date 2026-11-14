@@ -136,6 +136,18 @@ preview's Export menu offers the sliced 3MF and not a plain G-code file,
 which Bambu printers do not print from storage; plain G-code is still shared
 to other apps and sent to the other printer hosts.
 
+A plate printed by object (its own sequence setting, else the process's)
+gets desktop's sequential print helpers. Arrange and Fill bed space the
+objects by the extruder clearance radius, plus a per-object skirt, on a bed
+shrunk like desktop's `init_arrange_params`, or by the nozzle width when
+every object is shorter than the nozzle; a plate whose sequence differs from
+the process's keeps its layout. The viewport draws each instance's clearance
+outline on the bed (`orca_plater_sequential_clearance`, the footprint grown
+by `Print::sequential_print_clearance_offset`, the offset desktop's canvas
+uses), red where two overlap, and the outline follows an object while it is
+dragged. Print::validate's clearance error, such as objects too close or too
+tall for the gantry, shows above the plate actions until it is fixed.
+
 A plate can also be sliced for another printer preset
 (`orca_plater_export_gcode_3mf_plate_for_machine`) without changing the
 plate's own printer. As for a project exported for another printer (below),

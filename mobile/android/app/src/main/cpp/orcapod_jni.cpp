@@ -1782,6 +1782,13 @@ JNI_FN(void, projectSave)(JNIEnv *env, jobject, jlong pl, jlong p, jstring path,
         check(env, orca_project_save(plater_of(pl), presets_of(p), utf8(env, path).c_str(), size, pixels));
 }
 
+/** Print by object: the selected plate's clearance outlines, as JSON (orca_plater_sequential_clearance). */
+JNI_FN(jstring, platerSequentialClearance)(JNIEnv *env, jobject, jlong pl, jlong p)
+{
+    orca_owned_string json{};
+    return take_json(env, orca_plater_sequential_clearance(plater_of(pl), presets_of(p), &json), json);
+}
+
 /** The publish sheet's choices, as JSON (orca_project_publish_options). */
 JNI_FN(jstring, projectPublishOptions)(JNIEnv *env, jobject, jlong pl, jlong p)
 {

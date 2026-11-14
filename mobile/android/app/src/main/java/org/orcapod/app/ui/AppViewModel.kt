@@ -68,6 +68,7 @@ import org.orcapod.app.engine.CalibrationTest
 import org.orcapod.app.engine.PlateSettings
 import org.orcapod.app.engine.Scene
 import org.orcapod.app.engine.SceneObject
+import org.orcapod.app.engine.SequentialClearance
 import org.orcapod.app.engine.Shape
 import org.orcapod.app.engine.SliceReport
 import org.orcapod.app.engine.StepFile
@@ -493,6 +494,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         modifiedKeys = modified
         filamentSlots = e.filamentSlots()
         bedType = e.bedType()
+        refreshClearance(e)
     }
 
     /** Values of the edited preset of [kind] with defaults for keys it does not set. */
@@ -1369,6 +1371,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (sel != null && transformOf(sel) == null) selection = null
         val vol = selectedVolume
         if (vol != null && scene.snapshot.objects.none { o -> o.volumes.any { it.id == vol } }) selectedVolume = null
+        refreshClearance(e)
+    }
+
+    /** Print by object: the selected plate's toolhead clearance outlines, and why it cannot print. */
+    var clearance by mutableStateOf(SequentialClearance.NONE)
+        private set
+
+    private suspend fun refreshClearance(e: Engine) {
+        clearance = if (scene.snapshot.objects.isEmpty()) SequentialClearance.NONE
+        else runCatching { e.sequentialClearance() }.getOrDefault(SequentialClearance.NONE)
     }
 
     // --- object list: objects, parts and modifiers ---

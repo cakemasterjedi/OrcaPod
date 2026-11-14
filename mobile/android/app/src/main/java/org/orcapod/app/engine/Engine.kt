@@ -256,6 +256,10 @@ class Engine private constructor(private var presets: Long, private val plater: 
         Native.projectSave(plater, presets, path, thumbnailSize, thumbnail, machine)
     }
 
+    /** Print by object: the selected plate's toolhead clearance outlines and the reason it cannot print. */
+    suspend fun sequentialClearance(): SequentialClearance =
+        onEngine { SequentialClearance.parse(Native.platerSequentialClearance(plater, presets)) }
+
     /** What the Publish 3MF sheet offers for the plate and the selected presets. */
     suspend fun publishOptions(): PublishOptions = onEngine { PublishOptions.parse(Native.projectPublishOptions(plater, presets)) }
 

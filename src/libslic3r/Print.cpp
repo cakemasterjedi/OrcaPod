@@ -892,6 +892,16 @@ std::vector<size_t> Print::layers_sorted_for_object(float start, float end, std:
     return idx_of_object_sorted;
 };
 
+float Print::sequential_print_clearance_offset(const Print &print)
+{
+    auto [object_skirt_offset, _] = print.object_skirt_offset();
+    // Shrink the extruder_clearance_radius a tiny bit, so that if the object arrangement algorithm placed the objects
+    // exactly by satisfying the extruder_clearance_radius, this test will not trigger collision.
+    return print.is_all_objects_are_short() ?
+               scale_(std::max(0.5f * MAX_OUTER_NOZZLE_DIAMETER, object_skirt_offset) - 0.1) :
+               scale_(0.5 * print.config().extruder_clearance_radius.value + object_skirt_offset - 0.1);
+}
+
 StringObjectException Print::sequential_print_clearance_valid(const Print &print, Polygons *polygons, std::vector<std::pair<Polygon, float>>* height_polygons, StringObjectException *warning)
 {
     StringObjectException single_object_exception;
@@ -996,9 +1006,7 @@ StringObjectException Print::sequential_print_clearance_valid(const Print &print
             polygons->clear();
         std::vector<size_t> intersecting_idxs;
 
-        // Shrink the extruder_clearance_radius a tiny bit, so that if the object arrangement algorithm placed the objects
-        // exactly by satisfying the extruder_clearance_radius, this test will not trigger collision.
-        float obj_distance = print.is_all_objects_are_short() ? scale_(std::max(0.5f * MAX_OUTER_NOZZLE_DIAMETER, object_skirt_offset) - 0.1) : scale_(0.5 * print.config().extruder_clearance_radius.value + object_skirt_offset - 0.1);
+        const float obj_distance = sequential_print_clearance_offset(print);
 
         for (const PrintObject *print_object : print.objects()) {
             assert(! print_object->model_object()->instances.empty());

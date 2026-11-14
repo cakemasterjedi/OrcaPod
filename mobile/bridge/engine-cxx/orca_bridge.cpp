@@ -135,6 +135,7 @@ void orca_result_dispose(orca_result *result) {
 #include "libslic3r/Flow.hpp"
 #include "libslic3r/calib.hpp"
 #include "libslic3r/Arrange.hpp"
+#include "libslic3r/Geometry.hpp"
 #include "libslic3r/Geometry/ConvexHull.hpp"
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/Exception.hpp"
@@ -11323,6 +11324,52 @@ orca_result orca_plater_flatten_planes(orca_plater *plater,
     });
 }
 
+/// Whether `config` prints one object after the other.
+static bool orcapad_by_object(const Slic3r::DynamicPrintConfig &config) {
+    const auto *sequence =
+        config.option<Slic3r::ConfigOptionEnum<Slic3r::PrintSequence>>("print_sequence");
+    return sequence && sequence->value == Slic3r::PrintSequence::ByObject;
+}
+
+/// Whether a plate prints by object: its own setting, else the global one.
+static bool orcapad_plate_by_object(const OrcapadPlate &plate,
+                                    const Slic3r::DynamicPrintConfig &config) {
+    return plate.config.has("print_sequence") ? orcapad_by_object(plate.config)
+                                              : orcapad_by_object(config);
+}
+
+/// Desktop init_arrange_params (ArrangeJob.cpp): the toolhead clearances,
+/// and for print by object the spacing Print::sequential_print_clearance_valid
+/// asks for, widened by a per-object skirt, on a bed shrunk by
+/// BED_SHRINK_SEQ_PRINT. Call before update_arrange_params.
+static void orcapad_init_arrange_params(Slic3r::arrangement::ArrangeParams &params,
+                                        const Slic3r::DynamicPrintConfig &config,
+                                        const Slic3r::Model &model,
+                                        bool sequential) {
+    params.printable_height = config.opt_float("printable_height");
+    params.clearance_height_to_rod = config.opt_float("extruder_clearance_height_to_rod");
+    params.clearance_height_to_lid = config.opt_float("extruder_clearance_height_to_lid");
+    params.clearance_radius = config.opt_float("extruder_clearance_radius");
+    params.nozzle_height = config.opt_float("nozzle_height");
+    params.is_seq_print = sequential;
+    if (!sequential) return;
+    params.bed_shrink_x = BED_SHRINK_SEQ_PRINT;
+    params.bed_shrink_y = BED_SHRINK_SEQ_PRINT;
+    // Only a per-object skirt widens the gap (Print::object_skirt_offset);
+    // anything else spares applying the model to a Print.
+    const auto *skirt = config.option<Slic3r::ConfigOptionEnum<Slic3r::SkirtType>>("skirt_type");
+    if (config.opt_int("skirt_loops") > 0 && skirt && skirt->value == Slic3r::stPerObject) {
+        Slic3r::DynamicPrintConfig print_config = config;
+        print_config.option<Slic3r::ConfigOptionEnum<Slic3r::PrintSequence>>("print_sequence", true)->value =
+            Slic3r::PrintSequence::ByObject;
+        Slic3r::Print print;
+        print.apply(model, std::move(print_config));
+        const float offset = std::get<0>(print.object_skirt_offset());
+        params.clearance_radius += offset * 2;
+        params.object_skirt_offset = offset;
+    }
+}
+
 orca_result orca_plater_arrange(orca_plater *plater, orca_presets *presets,
                                 uint8_t allow_rotations,
                                 uint32_t *out_unprintable,
@@ -11355,7 +11402,13 @@ orca_result orca_plater_arrange(orca_plater *plater, orca_presets *presets,
                                 "no arrangeable instance");
 
         // Locked plates pin their content (desktop preprocess_arrange_polygon):
-        // pinned instances never move and act as fixed obstacles.
+        // pinned instances never move and act as fixed obstacles. So does a
+        // plate whose print sequence differs from the global one, whose
+        // spacing this arrange would not keep (desktop ArrangeJob::prepare_all).
+        const bool global_sequential = orcapad_by_object(config);
+        std::vector<bool> other_sequence;
+        for (const OrcapadPlate &plate : plater->plates)
+            other_sequence.push_back(orcapad_plate_by_object(plate, config) != global_sequential);
         Slic3r::arrangement::ArrangePolygons excluded;
         Slic3r::ModelInstancePtrs arrangeable;
         {
@@ -11374,7 +11427,10 @@ orca_result orca_plater_arrange(orca_plater *plater, orca_presets *presets,
                             if (pin.first == object_id && pin.second == instance_id)
                                 return true;
                     }
-                    return false;
+                    const int plate = orcapad_instance_plate(
+                        *plater, object_id, instance_id, orcapad_instance_box(*instance));
+                    return plate >= 0 && size_t(plate) < other_sequence.size() &&
+                           other_sequence[size_t(plate)];
                 }();
                 if (pinned) {
                     excluded.push_back(input[i]);
@@ -11392,15 +11448,7 @@ orca_result orca_plater_arrange(orca_plater *plater, orca_presets *presets,
 
         Slic3r::arrangement::ArrangeParams params;
         params.allow_rotations = allow_rotations != 0;
-        params.printable_height = config.opt_float("printable_height");
-        params.clearance_height_to_rod =
-            config.opt_float("extruder_clearance_height_to_rod");
-        params.clearance_height_to_lid =
-            config.opt_float("extruder_clearance_height_to_lid");
-        params.clearance_radius = config.opt_float("extruder_clearance_radius");
-        if (const auto *nozzle = config.option<Slic3r::ConfigOptionFloats>("nozzle_diameter"))
-            if (!nozzle->values.empty())
-                params.nozzle_height = nozzle->values.front();
+        orcapad_init_arrange_params(params, config, plater->model, global_sequential);
         // Desktop ArrangeSettings.distance default is 0: update_selected_
         // items_inflation then derives spacing from each item's brim width.
         params.min_obj_distance = Slic3r::scaled(0.0);
@@ -11513,15 +11561,9 @@ orca_result orca_plater_fill_bed(orca_plater *plater, orca_presets *presets,
 
         Slic3r::arrangement::ArrangeParams params;
         params.allow_rotations = allow_rotations != 0;
-        params.printable_height = config.opt_float("printable_height");
-        params.clearance_height_to_rod =
-            config.opt_float("extruder_clearance_height_to_rod");
-        params.clearance_height_to_lid =
-            config.opt_float("extruder_clearance_height_to_lid");
-        params.clearance_radius = config.opt_float("extruder_clearance_radius");
-        if (const auto *nozzle = config.option<Slic3r::ConfigOptionFloats>("nozzle_diameter"))
-            if (!nozzle->values.empty())
-                params.nozzle_height = nozzle->values.front();
+        orcapad_init_arrange_params(
+            params, config, plater->model,
+            orcapad_plate_by_object(plater->plates[static_cast<size_t>(plater->current_plate)], config));
         // Desktop ArrangeSettings.distance default is 0 (brim-aware).
         params.min_obj_distance = Slic3r::scaled(0.0);
         Slic3r::arrangement::update_arrange_params(params, &config, selected);
@@ -11599,6 +11641,92 @@ orca_result orca_plater_fill_bed(orca_plater *plater, orca_presets *presets,
 
         *out_revision = mutation.commit();
         *out_added = added;
+        return orcapad_ok();
+    });
+}
+
+// --- print by object (desktop sequential print clearance, ABI v50) ----------
+
+orca_result orca_plater_sequential_clearance(orca_plater *plater,
+                                             orca_presets *presets,
+                                             orca_owned_string *out_json) {
+    constexpr const char *operation = "orca_plater_sequential_clearance";
+    if (out_json) *out_json = orcapad_empty_string();
+    if (!plater || !presets)
+        return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, operation,
+                            "plater or presets handle is null");
+    if (!out_json)
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "output pointer is null");
+    return orcapad_guard(operation, [&]() -> orca_result {
+        if (plater->plates.empty())
+            return orcapad_fail(ORCA_STATUS_INTERNAL_INVARIANT, operation,
+                                "document has no plates");
+        orcapad_clamp_current_plate(*plater);
+        const OrcapadPlate &plate = plater->plates[static_cast<size_t>(plater->current_plate)];
+        Slic3r::DynamicPrintConfig config = presets->bundle->full_config();
+        if (!plate.config.empty()) config.apply(plate.config);
+        orcapad_finalize_config(config);
+
+        nlohmann::json outlines = nlohmann::json::array();
+        std::string message;
+        const bool by_object = orcapad_by_object(config);
+        Slic3r::Model plate_model;
+        if (by_object && orcapad_build_plate_model(*plater, operation, plater->current_plate,
+                                                   plate_model).code == ORCA_STATUS_OK) {
+            Slic3r::Print print;
+            print.apply(plate_model, std::move(config));
+            print.set_plate_origin(orcapad_plate_origin(*plater, plater->current_plate));
+            message = Slic3r::Print::sequential_print_clearance_valid(print).string;
+
+            // Each instance's hull grown the way the clearance check grows it
+            // (desktop GLCanvas3D::update_sequential_clearance), in world
+            // coordinates; two outlines that overlap are too close.
+            const float grow = Slic3r::Print::sequential_print_clearance_offset(print);
+            struct Outline {
+                orca_object_id object;
+                orca_instance_id instance;
+                Slic3r::Polygon polygon;
+                bool colliding = false;
+            };
+            std::vector<Outline> found;
+            for (const Slic3r::ModelObject *object : plate_model.objects)
+                for (const Slic3r::ModelInstance *instance : object->instances) {
+                    if (!instance->printable) continue;
+                    const Slic3r::Polygon hull = object->convex_hull_2d(Slic3r::Geometry::assemble_transform(
+                        {0.0, 0.0, instance->get_offset().z()}, instance->get_rotation(),
+                        instance->get_scaling_factor(), instance->get_mirror()));
+                    if (hull.empty()) continue;
+                    const Slic3r::Polygons grown = Slic3r::offset(hull, grow, Slic3r::jtRound, Slic3r::scaled(0.1));
+                    Slic3r::Polygon polygon = grown.empty() ? hull : grown.front();
+                    polygon.translate(Slic3r::scaled(instance->get_offset().x()),
+                                      Slic3r::scaled(instance->get_offset().y()));
+                    found.push_back({static_cast<orca_object_id>(object->id().id),
+                                     static_cast<orca_instance_id>(instance->id().id),
+                                     std::move(polygon)});
+                }
+            for (size_t i = 0; i < found.size(); ++i)
+                for (size_t j = i + 1; j < found.size(); ++j)
+                    if (!Slic3r::intersection(found[i].polygon, found[j].polygon).empty())
+                        found[i].colliding = found[j].colliding = true;
+            for (const Outline &outline : found) {
+                nlohmann::json points = nlohmann::json::array();
+                for (const Slic3r::Point &point : outline.polygon.points) {
+                    points.push_back(Slic3r::unscaled(point.x()));
+                    points.push_back(Slic3r::unscaled(point.y()));
+                }
+                outlines.push_back({{"object", outline.object},
+                                    {"instance", outline.instance},
+                                    {"colliding", outline.colliding},
+                                    {"points", points}});
+            }
+        }
+        const nlohmann::json out{{"by_object", by_object},
+                                 {"outlines", outlines},
+                                 {"message", message}};
+        if (!orcapad_copy_string(out.dump().c_str(), out_json))
+            return orcapad_fail(ORCA_STATUS_OUT_OF_MEMORY, operation,
+                                "could not allocate the clearance");
         return orcapad_ok();
     });
 }

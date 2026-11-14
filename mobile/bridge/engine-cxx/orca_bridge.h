@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 /// Version of the C ABI contract in this header. Callers verify it at runtime.
-#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)49)
+#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)50)
 
 typedef int32_t orca_status_code;
 #define ORCA_STATUS_OK                     ((orca_status_code)0)
@@ -1640,11 +1640,29 @@ orca_result orca_plater_flatten_planes(orca_plater *plater,
 /// inflation → get_shrink_bedpts → arrangement::arrange → apply). Arranges
 /// EVERY instance. Items that do not fit the bed are placed on the next
 /// virtual bed (shifted beside the printable area) and counted in
-/// out_unprintable — desktop shows them on extra plates. One mutation.
+/// out_unprintable — desktop shows them on extra plates. When the global
+/// process prints by object, objects keep the extruder clearance apart
+/// (desktop init_arrange_params), and plates whose own print sequence differs
+/// from the global one are left as they are. Fill bed keeps the same spacing
+/// when the selected plate prints by object. One mutation.
 orca_result orca_plater_arrange(orca_plater *plater, orca_presets *presets,
                                 uint8_t allow_rotations,
                                 uint32_t *out_unprintable,
                                 orca_revision *out_revision);
+
+/// Print by object (ABI v50): desktop's sequential print clearance for the
+/// selected plate, as JSON {"by_object": bool, "outlines": [{"object",
+/// "instance", "colliding": bool, "points": [x0, y0, x1, y1, ...]}],
+/// "message"}. When the plate prints by object, each printable instance's
+/// footprint is grown by half the extruder clearance radius (half the nozzle
+/// width when every object is shorter than the nozzle, plus a per-object
+/// skirt), in world millimetres; two outlines that overlap are too close and
+/// are both marked "colliding". "message" is Print::validate's clearance
+/// error (too close, or too tall for the gantry), empty when the plate
+/// prints. No outlines when the plate prints by layer. Read-only.
+orca_result orca_plater_sequential_clearance(orca_plater *plater,
+                                             orca_presets *presets,
+                                             orca_owned_string *out_json);
 
 /// Desktop "Fill bed" (FillBedJob, ABI v30): fills the SELECTED plate with
 /// as many clones of the template instance as fit (needed = (plate_area -

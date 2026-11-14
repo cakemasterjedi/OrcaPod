@@ -314,7 +314,7 @@ static void test_md5_shim() {
 
 static void test_abi_version() {
     CHECK_EQ(orca_bridge_abi_version(), ORCA_BRIDGE_ABI_VERSION);
-    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 49);
+    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 50);
 }
 
 struct ProgressRecord {
@@ -6382,6 +6382,70 @@ static void test_project_publish(const std::string &dir, const std::string &data
     orca_presets_free(presets);
 }
 
+// Print by object: the clearance outlines desktop draws, and arranging that
+// keeps objects the extruder clearance apart.
+static void test_sequential_clearance(const std::string &dir, const std::string &data_dir) {
+    orca_presets *presets = nullptr;
+    GUARD(gp, orca_presets_new(data_dir.c_str(), &presets));
+    expect_ok(gp, "presets_new");
+    GUARD(gs, orca_presets_select(presets, "Bambu Lab X1 Carbon 0.4 nozzle",
+                                  "Bambu PLA Basic @BBL X1C", "0.20mm Standard @BBL X1C"));
+    expect_ok(gs, "select X1C");
+
+    const std::string cube = write_cube_stl(dir, "orcapad-cube-sequential.stl");
+    orca_plater *plater = nullptr;
+    GUARD(g0, orca_plater_new(&plater));
+    expect_ok(g0, "plater_new");
+    orca_scene_snapshot bed_snap;
+    GUARD(g1, orca_plater_set_bed(plater, 0, 0, 256, 256, 250, &bed_snap));
+    expect_ok(g1, "X1C bed");
+    orca_scene_snapshot_dispose(&bed_snap);
+    orca_object_id a = 0, b = 0;
+    orca_revision revision = 0;
+    GUARD(g2, import_one(plater, cube.c_str(), 100.0, 128.0, &a, &revision));
+    expect_ok(g2, "import a");
+    GUARD(g3, import_one(plater, cube.c_str(), 125.0, 128.0, &b, &revision));
+    expect_ok(g3, "import b");
+
+    auto clearance = [&](const char *what) {
+        orca_owned_string json{};
+        GUARD(g, orca_plater_sequential_clearance(plater, presets, &json));
+        expect_ok(g, what);
+        std::string out(json.data ? json.data : "", size_t(json.length));
+        orca_owned_string_dispose(&json);
+        return out;
+    };
+    GUARD(e1, orca_plater_sequential_clearance(nullptr, presets, nullptr));
+    expect_code(e1, ORCA_STATUS_INVALID_HANDLE, "clearance(null)");
+
+    // printing by layer: nothing to draw
+    const std::string by_layer = clearance("clearance by layer");
+    CHECK(by_layer.find("\"by_object\":false") != std::string::npos);
+    CHECK(by_layer.find("\"outlines\":[]") != std::string::npos);
+
+    GUARD(g4, orca_presets_set_value(presets, 2, "print_sequence", "by object"));
+    expect_ok(g4, "print by object");
+    const std::string close = clearance("clearance close");
+    CHECK(close.find("\"by_object\":true") != std::string::npos);
+    CHECK(close.find("\"colliding\":true") != std::string::npos);
+    CHECK(close.find("\"colliding\":false") == std::string::npos);
+    CHECK(close.find("\"message\":\"\"") == std::string::npos);
+    CHECK(close.find("\"object\":" + std::to_string(a)) != std::string::npos);
+    CHECK(close.find("\"object\":" + std::to_string(b)) != std::string::npos);
+
+    // arranging for print by object spaces them by the clearance radius
+    uint32_t unprintable = 99;
+    GUARD(g5, orca_plater_arrange(plater, presets, 0, &unprintable, &revision));
+    expect_ok(g5, "arrange by object");
+    CHECK_EQ(unprintable, 0u);
+    const std::string apart = clearance("clearance arranged");
+    CHECK(apart.find("\"colliding\":true") == std::string::npos);
+    CHECK(apart.find("\"message\":\"\"") != std::string::npos);
+
+    orca_plater_free(plater);
+    orca_presets_free(presets);
+}
+
 int main() {
     const std::string dir = test_dir();
     // One data directory per PROCESS (the Bridge contract is initialize-once).
@@ -6435,6 +6499,7 @@ int main() {
     test_project_roundtrip(dir, data_dir);
     test_project_export_for_machine(dir, data_dir);
     test_project_publish(dir, data_dir);
+    test_sequential_clearance(dir, data_dir);
     test_user_presets(data_dir);
     test_physical_printers(data_dir);
     test_arrange_orient(dir, data_dir);

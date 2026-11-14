@@ -34,7 +34,8 @@ internal object Native {
     external fun platerSetBed(plater: Long, x: Double, y: Double, w: Double, d: Double, h: Double)
     /** Returns the first imported object id and the object count. */
     external fun platerImport(plater: Long, path: String, cx: Double, cy: Double): LongArray
-    external fun platerProjectOpen(plater: Long, presets: Long, path: String)
+    /** True when the file was a published 3MF, applied on top of the selected presets. */
+    external fun platerProjectOpen(plater: Long, presets: Long, path: String): Boolean
     /**
      * Snapshot of the document. Objects whose (id, mesh revision) pair is in
      * [knownIds]/[knownRevisions] come back without positions and indices.
@@ -170,6 +171,10 @@ internal object Native {
     external fun exportStlAll(plater: Long, path: String)
     /** A non-null [machine] writes the project for that printer instead of the selected one. */
     external fun projectSave(plater: Long, presets: Long, path: String, thumbnailSize: Int, thumbnail: ByteArray?, machine: String?)
+    external fun projectPublishOptions(plater: Long, presets: Long): String
+    external fun platerSequentialClearance(plater: Long, presets: Long): String
+    external fun projectPublish(plater: Long, presets: Long, path: String, selectionJson: String, thumbnailSize: Int, thumbnail: ByteArray?)
+    external fun projectPublishNotes(plater: Long): String
 
     // --- height range modifiers: flat (min z, max z, layer height) triples ---
     external fun heightRanges(plater: Long, objectId: Long): DoubleArray

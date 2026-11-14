@@ -35,6 +35,8 @@ arrangement::ArrangePolygons get_arrange_polys(const Model &model, ModelInstance
             // default; seed it to bed 0 (as get_instance_arrange_poly does) so the
             // nester treats the item as placeable instead of returning it unplaced.
             ap.bed_idx = 0;
+            // The height decides the spacing when printing by object (update_selected_items_inflation).
+            ap.height = mo->instance_convex_hull_bounding_box(minst).size().z();
             input.emplace_back(ap);
             instances.emplace_back(minst);
         }

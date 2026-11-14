@@ -314,7 +314,7 @@ static void test_md5_shim() {
 
 static void test_abi_version() {
     CHECK_EQ(orca_bridge_abi_version(), ORCA_BRIDGE_ABI_VERSION);
-    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 48);
+    CHECK_EQ(ORCA_BRIDGE_ABI_VERSION, 50);
 }
 
 struct ProgressRecord {
@@ -6247,6 +6247,205 @@ static void test_repair_and_boolean(const std::string &dir) {
     orca_plater_free(plater);
 }
 
+// Desktop "Publish 3MF": only the chosen settings travel, in the model
+// metadata, and opening the file applies them on top of the receiver's own
+// printer and filaments.
+static void test_project_publish(const std::string &dir, const std::string &data_dir) {
+    orca_presets *presets = nullptr;
+    GUARD(gp, orca_presets_new(data_dir.c_str(), &presets));
+    expect_ok(gp, "presets_new");
+    GUARD(gs, orca_presets_select(presets, "Bambu Lab X1 Carbon 0.4 nozzle",
+                                  "Bambu PLA Basic @BBL X1C", "0.20mm Standard @BBL X1C"));
+    expect_ok(gs, "select X1C");
+    GUARD(gv1, orca_presets_set_value(presets, 2, "wall_loops", "5"));
+    expect_ok(gv1, "edit wall loops");
+    GUARD(gv2, orca_presets_set_value(presets, 2, "sparse_infill_density", "37%"));
+    expect_ok(gv2, "edit infill");
+    GUARD(gv3, orca_presets_set_filament_colour(presets, 0, "#FF0000"));
+    expect_ok(gv3, "colour slot 1");
+
+    const std::string cube = write_cube_stl(dir, "orcapad-cube-publish.stl");
+    orca_plater *plater = nullptr;
+    GUARD(g0, orca_plater_new(&plater));
+    expect_ok(g0, "plater_new");
+    orca_scene_snapshot bed_snap;
+    GUARD(g1, orca_plater_set_bed(plater, 0, 0, 256, 256, 250, &bed_snap));
+    expect_ok(g1, "X1C bed");
+    orca_scene_snapshot_dispose(&bed_snap);
+    orca_object_id object_id = 0;
+    orca_revision revision = 0;
+    GUARD(g2, import_one(plater, cube.c_str(), 118.0, 128.0, &object_id, &revision));
+    expect_ok(g2, "import cube");
+
+    // the sheet offers the changed process settings and the used slot
+    orca_owned_string options{};
+    GUARD(g3, orca_project_publish_options(plater, presets, &options));
+    expect_ok(g3, "publish options");
+    const std::string offered(options.data ? options.data : "", size_t(options.length));
+    orca_owned_string_dispose(&options);
+    CHECK(offered.find("\"wall_loops\"") != std::string::npos);
+    CHECK(offered.find("\"sparse_infill_density\"") != std::string::npos);
+    CHECK(offered.find("\"used\":true") != std::string::npos);
+    CHECK(offered.find("\"previous\":null") != std::string::npos);
+
+    const std::string published = dir + "/cube.published.3mf";
+    GUARD(e1, orca_project_publish(plater, presets, published.c_str(), "{\"keys\": 3}", 0, nullptr));
+    expect_code(e1, ORCA_STATUS_INVALID_ARGUMENT, "publish(bad selection)");
+    GUARD(e2, orca_project_publish(plater, presets, (dir + "/x.stl").c_str(), "{}", 0, nullptr));
+    expect_code(e2, ORCA_STATUS_INVALID_ARGUMENT, "publish(non-3mf)");
+    std::vector<uint8_t> image(64 * 64 * 4, 200);
+    GUARD(g4, orca_project_publish(plater, presets, published.c_str(),
+                                   "{\"keys\": [\"wall_loops\"],"
+                                   " \"materials\": [{\"slot\": 0, \"colour\": true, \"type\": true}]}",
+                                   64, image.data()));
+    expect_ok(g4, "publish");
+    CHECK_EQ(snapshot_revision(plater), revision);
+    {
+        // desktop's minimal published file: no settings file, no embedded
+        // presets, the flag and the payload in the model metadata
+        mz_zip_archive zip;
+        memset(&zip, 0, sizeof zip);
+        CHECK(mz_zip_reader_init_file(&zip, published.c_str(), 0));
+        CHECK(mz_zip_reader_locate_file(&zip, "Metadata/project_settings.config", nullptr, 0) < 0);
+        CHECK(mz_zip_reader_locate_file(&zip, "Metadata/plate_1.png", nullptr, 0) >= 0);
+        size_t size = 0;
+        char *model = static_cast<char *>(
+            mz_zip_reader_extract_file_to_heap(&zip, "3D/3dmodel.model", &size, 0));
+        CHECK(model != nullptr);
+        if (model) {
+            const std::string xml(model, size);
+            mz_free(model);
+            CHECK(xml.find("<metadata name=\"orca_published\">1</metadata>") != std::string::npos);
+            CHECK(xml.find("wall_loops = 5") != std::string::npos);
+            CHECK(xml.find("sparse_infill_density") == std::string::npos);
+            CHECK(xml.find("\"Application\"") == std::string::npos);
+        }
+        mz_zip_reader_end(&zip);
+    }
+
+    // the receiver keeps its own printer and takes only the published keys
+    orca_presets *receiver = nullptr;
+    GUARD(gp2, orca_presets_new(data_dir.c_str(), &receiver));
+    expect_ok(gp2, "receiver presets");
+    const char *a1_mini = "Bambu Lab A1 mini 0.4 nozzle";
+    GUARD(gs2, orca_presets_select(receiver, a1_mini, "Bambu PLA Basic @BBL A1M",
+                                   "0.20mm Standard @BBL A1M"));
+    expect_ok(gs2, "select A1 mini");
+    const std::string infill_before = resolved_value(receiver, "sparse_infill_density");
+    orca_plater *plater2 = nullptr;
+    GUARD(g5, orca_plater_new(&plater2));
+    expect_ok(g5, "plater_new 2");
+    orca_project_info info;
+    GUARD(g6, orca_project_open(plater2, receiver, published.c_str(), &info));
+    expect_ok(g6, "open published");
+    CHECK_EQ(info.published, 1);
+    CHECK_EQ(info.object_count, 1u);
+    CHECK(current_preset(receiver, 0) == a1_mini);
+    CHECK(current_preset(receiver, 2) == "0.20mm Standard @BBL A1M");
+    CHECK(resolved_value(receiver, "wall_loops") == "5");
+    CHECK(resolved_value(receiver, "sparse_infill_density") == infill_before);
+    CHECK(resolved_value(receiver, "filament_colour").find("#FF0000") != std::string::npos);
+    orca_owned_string notes{};
+    GUARD(g7, orca_project_publish_notes(plater2, &notes));
+    expect_ok(g7, "publish notes");
+    CHECK(notes.data && std::string(notes.data).find("\"skipped\"") != std::string::npos);
+    orca_owned_string_dispose(&notes);
+    // the next publish sheet starts from the file's selection
+    GUARD(g8, orca_project_publish_options(plater2, receiver, &options));
+    expect_ok(g8, "options after open");
+    const std::string reopened(options.data ? options.data : "", size_t(options.length));
+    orca_owned_string_dispose(&options);
+    CHECK(reopened.find("\"previous\":{\"keys\":[\"wall_loops\"]") != std::string::npos);
+
+    // saving the opened document writes a normal project again
+    const std::string resaved = dir + "/resaved.3mf";
+    GUARD(g9, orca_project_save(plater2, receiver, resaved.c_str(), 0, nullptr));
+    expect_ok(g9, "save opened published");
+    {
+        mz_zip_archive zip;
+        memset(&zip, 0, sizeof zip);
+        CHECK(mz_zip_reader_init_file(&zip, resaved.c_str(), 0));
+        CHECK(mz_zip_reader_locate_file(&zip, "Metadata/project_settings.config", nullptr, 0) >= 0);
+        size_t size = 0;
+        char *model = static_cast<char *>(
+            mz_zip_reader_extract_file_to_heap(&zip, "3D/3dmodel.model", &size, 0));
+        if (model) {
+            CHECK(std::string(model, size).find("orca_published") == std::string::npos);
+            mz_free(model);
+        }
+        mz_zip_reader_end(&zip);
+    }
+
+    orca_plater_free(plater2);
+    orca_presets_free(receiver);
+    orca_plater_free(plater);
+    orca_presets_free(presets);
+}
+
+// Print by object: the clearance outlines desktop draws, and arranging that
+// keeps objects the extruder clearance apart.
+static void test_sequential_clearance(const std::string &dir, const std::string &data_dir) {
+    orca_presets *presets = nullptr;
+    GUARD(gp, orca_presets_new(data_dir.c_str(), &presets));
+    expect_ok(gp, "presets_new");
+    GUARD(gs, orca_presets_select(presets, "Bambu Lab X1 Carbon 0.4 nozzle",
+                                  "Bambu PLA Basic @BBL X1C", "0.20mm Standard @BBL X1C"));
+    expect_ok(gs, "select X1C");
+
+    const std::string cube = write_cube_stl(dir, "orcapad-cube-sequential.stl");
+    orca_plater *plater = nullptr;
+    GUARD(g0, orca_plater_new(&plater));
+    expect_ok(g0, "plater_new");
+    orca_scene_snapshot bed_snap;
+    GUARD(g1, orca_plater_set_bed(plater, 0, 0, 256, 256, 250, &bed_snap));
+    expect_ok(g1, "X1C bed");
+    orca_scene_snapshot_dispose(&bed_snap);
+    orca_object_id a = 0, b = 0;
+    orca_revision revision = 0;
+    GUARD(g2, import_one(plater, cube.c_str(), 100.0, 128.0, &a, &revision));
+    expect_ok(g2, "import a");
+    GUARD(g3, import_one(plater, cube.c_str(), 125.0, 128.0, &b, &revision));
+    expect_ok(g3, "import b");
+
+    auto clearance = [&](const char *what) {
+        orca_owned_string json{};
+        GUARD(g, orca_plater_sequential_clearance(plater, presets, &json));
+        expect_ok(g, what);
+        std::string out(json.data ? json.data : "", size_t(json.length));
+        orca_owned_string_dispose(&json);
+        return out;
+    };
+    GUARD(e1, orca_plater_sequential_clearance(nullptr, presets, nullptr));
+    expect_code(e1, ORCA_STATUS_INVALID_HANDLE, "clearance(null)");
+
+    // printing by layer: nothing to draw
+    const std::string by_layer = clearance("clearance by layer");
+    CHECK(by_layer.find("\"by_object\":false") != std::string::npos);
+    CHECK(by_layer.find("\"outlines\":[]") != std::string::npos);
+
+    GUARD(g4, orca_presets_set_value(presets, 2, "print_sequence", "by object"));
+    expect_ok(g4, "print by object");
+    const std::string close = clearance("clearance close");
+    CHECK(close.find("\"by_object\":true") != std::string::npos);
+    CHECK(close.find("\"colliding\":true") != std::string::npos);
+    CHECK(close.find("\"colliding\":false") == std::string::npos);
+    CHECK(close.find("\"message\":\"\"") == std::string::npos);
+    CHECK(close.find("\"object\":" + std::to_string(a)) != std::string::npos);
+    CHECK(close.find("\"object\":" + std::to_string(b)) != std::string::npos);
+
+    // arranging for print by object spaces them by the clearance radius
+    uint32_t unprintable = 99;
+    GUARD(g5, orca_plater_arrange(plater, presets, 0, &unprintable, &revision));
+    expect_ok(g5, "arrange by object");
+    CHECK_EQ(unprintable, 0u);
+    const std::string apart = clearance("clearance arranged");
+    CHECK(apart.find("\"colliding\":true") == std::string::npos);
+    CHECK(apart.find("\"message\":\"\"") != std::string::npos);
+
+    orca_plater_free(plater);
+    orca_presets_free(presets);
+}
+
 int main() {
     const std::string dir = test_dir();
     // One data directory per PROCESS (the Bridge contract is initialize-once).
@@ -6299,6 +6498,8 @@ int main() {
     test_height_ranges(dir);
     test_project_roundtrip(dir, data_dir);
     test_project_export_for_machine(dir, data_dir);
+    test_project_publish(dir, data_dir);
+    test_sequential_clearance(dir, data_dir);
     test_user_presets(data_dir);
     test_physical_printers(data_dir);
     test_arrange_orient(dir, data_dir);

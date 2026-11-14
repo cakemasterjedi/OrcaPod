@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -9,6 +10,9 @@
 namespace Slic3r {
 class PresetBundle;
 class DynamicPrintConfig;
+class Model;
+struct PublishedConfig;
+struct ConfigSubstitution;
 
 // Strip a trailing "#N" variant suffix ("retraction_length#2" -> "retraction_length").
 std::string publish_base_key(const std::string &key);
@@ -44,6 +48,12 @@ const std::set<std::string>& publishable_printer_keys();
 // Union of setting keys differing from the base/system preset across the current print,
 // printer and filament presets (feeds the Publish dialog's pre-check).
 std::vector<std::string> collect_dirty_settings_keys(const PresetBundle& bundle);
+
+// The filament slots (0-based) the project uses, across every plate: base and MMU-painted volume
+// extruders, per-object layer-range and support/wall/infill filament overrides, and custom-gcode
+// tool changes. Used mixed slots are kept as themselves while their physical components are
+// added too, so a mix always ships with the materials of its components.
+std::set<size_t> project_used_filament_slots(const PresetBundle &bundle, const DynamicPrintConfig &full, const Model &model);
 
 // Per-slot published material keys, applied positionally (author slot N -> receiver slot N).
 // The identity fields drive the created copy's naming and grouping on Full entries, the
@@ -158,4 +168,27 @@ int resolve_published_extruder_slot(const PublishedExtruderLayout &author, size_
 int resolve_published_extruder_slot(const PublishedExtruderLayout &author, size_t author_index,
                                     const DynamicPrintConfig &receiver_printer, const DynamicPrintConfig &receiver_project,
                                     const DynamicPrintConfig &receiver_target, const std::string &id_key, const std::string &variant_key);
+
+// The keys a "Full Publish" material entry carries: every filament preset key except the
+// structural ones (publish_structural_keys), plus filament_colour.
+std::vector<std::string> publish_full_material_keys();
+
+// Writes the published-3MF model metadata (ORCA_PUBLISHED_* tags in Format/bbs_3mf.hpp) into
+// `metadata`: the flag, the selected keys, the material entries, the filtered settings payload
+// (filter_published_config over `full_config`) and the author's extruder layouts. `materials`
+// must already be normalized (publish_normalize_material_entries). Saving with
+// SaveStrategy::MinimalPublished then produces the published file.
+void write_published_metadata(std::map<std::string, std::string> &metadata, const DynamicPrintConfig &full_config,
+                              const std::vector<std::string> &published_keys,
+                              const std::vector<PublishedMaterialEntry> &materials);
+
+// Reads the published-3MF model metadata. Returns false (and touches nothing) when `metadata`
+// does not mark a published file. Otherwise fills `out` (published, keys, material entries,
+// layouts) and loads the settings payload into `config`; malformed parts are skipped, so the
+// project still loads.
+bool read_published_metadata(const std::map<std::string, std::string> &metadata, PublishedConfig &out, DynamicPrintConfig &config,
+                             std::vector<ConfigSubstitution> &substitutions);
+
+// Removes every published-3MF tag, so a later save of the loaded project is a normal project.
+void erase_published_metadata(std::map<std::string, std::string> &metadata);
 }

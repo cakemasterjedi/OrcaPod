@@ -104,13 +104,39 @@ class ProjectStore(context: Context) {
             }
         }.getOrNull()
 
-        /** True for an OrcaSlicer, Bambu Studio or PrusaSlicer project, not a bare geometry 3MF. */
+        /**
+         * True for an OrcaSlicer, Bambu Studio or PrusaSlicer project, or a published 3MF
+         * (OrcaSlicer's "Publish 3MF"), not a bare geometry 3MF.
+         */
         fun isProject(file: File): Boolean = runCatching {
             ZipFile(file).use { zip ->
                 zip.getEntry("Metadata/project_settings.config") != null ||
-                    zip.getEntry("Metadata/Slic3r_PE.config") != null
+                    zip.getEntry("Metadata/Slic3r_PE.config") != null ||
+                    isPublished(zip)
             }
         }.getOrDefault(false)
+
+        /**
+         * A published 3MF carries no settings file, only an `orca_published` flag among the model
+         * metadata, which comes before the meshes: only the start of the model is read.
+         */
+        private fun isPublished(zip: ZipFile): Boolean {
+            val model = zip.getEntry("3D/3dmodel.model") ?: return false
+            val head = zip.getInputStream(model).use { input ->
+                val buffer = ByteArray(PUBLISHED_PROBE_BYTES)
+                var read = 0
+                while (read < buffer.size) {
+                    val n = input.read(buffer, read, buffer.size - read)
+                    if (n < 0) break
+                    read += n
+                }
+                String(buffer, 0, read, Charsets.UTF_8)
+            }
+            return PUBLISHED_FLAG.containsMatchIn(head.substringBefore("<resources"))
+        }
+
+        private const val PUBLISHED_PROBE_BYTES = 256 * 1024
+        private val PUBLISHED_FLAG = Regex("""<metadata\s+name="orca_published"\s*>\s*1\s*</metadata>""")
 
         /** Display name without the .3mf extension. */
         fun projectName(fileName: String): String =

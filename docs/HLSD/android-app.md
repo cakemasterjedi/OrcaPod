@@ -136,6 +136,18 @@ preview's Export menu offers the sliced 3MF and not a plain G-code file,
 which Bambu printers do not print from storage; plain G-code is still shared
 to other apps and sent to the other printer hosts.
 
+A plate printed by object (its own sequence setting, else the process's)
+gets desktop's sequential print helpers. Arrange and Fill bed space the
+objects by the extruder clearance radius, plus a per-object skirt, on a bed
+shrunk like desktop's `init_arrange_params`, or by the nozzle width when
+every object is shorter than the nozzle; a plate whose sequence differs from
+the process's keeps its layout. The viewport draws each instance's clearance
+outline on the bed (`orca_plater_sequential_clearance`, the footprint grown
+by `Print::sequential_print_clearance_offset`, the offset desktop's canvas
+uses), red where two overlap, and the outline follows an object while it is
+dragged. Print::validate's clearance error, such as objects too close or too
+tall for the gantry, shows above the plate actions until it is fixed.
+
 A plate can also be sliced for another printer preset
 (`orca_plater_export_gcode_3mf_plate_for_machine`) without changing the
 plate's own printer. As for a project exported for another printer (below),
@@ -162,6 +174,21 @@ printer change would, keeping the process and filaments that suit it and
 swapping the rest, and each instance keeps its place relative to its plate's
 centre on that printer's plates. The file names the printer model, so
 desktop OrcaSlicer or Bambu Studio opens it set up for that printer.
+
+"Publish 3MF" writes desktop OrcaSlicer's published 3MF
+(`orca_project_publish`, the same libslic3r code as desktop's Publish 3MF
+dialog): the plates, objects and picture, but no project settings file, no
+embedded presets and no slicer tags. Only the settings the user picks travel,
+in the model metadata: process settings and the printer's retraction and
+Z-hop settings, offered when they differ from the presets' system base, and
+per filament slot a required colour, a required material type, or the whole
+filament profile. Whoever opens the file in OrcaSlicer 2.5 or newer, or in
+OrcaPod, keeps their own printer and filaments and gets those settings on top
+(`load_config_model` with the published config); slots whose material does
+not match are replaced, and what cannot be applied is reported. Other
+slicers, and older OrcaSlicer versions, read only the models. A published
+file opens as a new, unnamed project, and its selection is offered again the
+next time the plate is published.
 
 The app keeps desktop's project workflow around that: the title shows the
 project name with a `*` while the plate or settings differ from the last

@@ -29,7 +29,6 @@
 #include "slic3r/GUI/GUI.hpp"
 #include <vector>
 #include "slic3r/GUI/wxExtensions.hpp"
-#include "libslic3r/CustomGCode.hpp"
 #include "slic3r/GUI/GUI_Utils.hpp"
 #include "slic3r/GUI/Widgets/TabCtrl.hpp"
 #include "Plater.hpp"
@@ -373,114 +372,6 @@ wxBitmap mixed_filament_tab_bitmap(const DynamicPrintConfig& full, size_t slot, 
     }
     memdc.SelectObject(wxNullBitmap);
     return composite;
-}
-
-// The filament slots (0-based) the current project actually uses, across every plate: base and
-// MMU-painted volume extruders, per-object layer-range and support/wall/infill filament
-// overrides, and custom-gcode tool changes. Used mixed slots are preserved as themselves (so an
-// in-use mix is publishable) while their physical components are added too - a mix always ships
-// with the materials of its components even if a component is not referenced directly anywhere.
-std::set<size_t> project_used_filament_slots(const PresetBundle& bundle, const DynamicPrintConfig& full, const Model& model)
-{
-    std::set<size_t> used; // 0-based used slots, mixed slots not yet expanded
-    if (model.objects.empty())
-        return used;
-
-    auto add_1based = [&used](int id) {
-        if (id > 0)
-            used.insert(size_t(id - 1));
-    };
-
-    const DynamicPrintConfig& print_cfg = bundle.prints.get_edited_preset().config;
-    const int glb_support_intf   = print_cfg.opt_int("support_interface_filament");
-    const int glb_support        = print_cfg.opt_int("support_filament");
-    const int glb_outer_wall     = print_cfg.opt_int("outer_wall_filament_id");
-    const int glb_inner_wall     = print_cfg.opt_int("inner_wall_filament_id");
-    const int glb_sparse_infill  = print_cfg.opt_int("sparse_infill_filament_id");
-    const int glb_internal_solid = print_cfg.opt_int("internal_solid_filament_id");
-    const int glb_top_surface    = print_cfg.opt_int("top_surface_filament_id");
-    const int glb_bottom_surface = print_cfg.opt_int("bottom_surface_filament_id");
-    const bool glb_support_on    = print_cfg.opt_bool("enable_support") || print_cfg.opt_int("raft_layers") > 0;
-
-    for (ModelObject* mo : model.objects) {
-        for (ModelVolume* mv : mo->volumes)
-            for (int e : mv->get_extruders())
-                add_1based(e);
-
-        for (const auto& range_entry : mo->layer_config_ranges)
-            if (const ConfigOption* ext_opt = range_entry.second.option("extruder"))
-                add_1based(ext_opt->getInt());
-
-        bool obj_support = glb_support_on;
-        if (const ConfigOption* s_opt = mo->config.option("enable_support"); s_opt != nullptr)
-            obj_support = s_opt->getBool();
-        else if (const ConfigOption* r_opt = mo->config.option("raft_layers"); r_opt != nullptr)
-            obj_support = r_opt->getInt() > 0;
-
-        if (obj_support) {
-            if (const ConfigOption* opt = mo->config.option("support_interface_filament"); opt != nullptr && opt->getInt() != 0)
-                add_1based(opt->getInt());
-            else
-                add_1based(glb_support_intf);
-
-            if (const ConfigOption* opt = mo->config.option("support_filament"); opt != nullptr && opt->getInt() != 0)
-                add_1based(opt->getInt());
-            else
-                add_1based(glb_support);
-        }
-
-        auto obj_id = [&mo](const char* key) {
-            const ConfigOption* opt = mo->config.option(key);
-            return (opt != nullptr) ? opt->getInt() : 0;
-        };
-
-        int obj_outer_wall = obj_id("outer_wall_filament_id");
-        if (obj_outer_wall == 0)
-            obj_outer_wall = obj_id("inner_wall_filament_id");
-        add_1based(obj_outer_wall != 0 ? obj_outer_wall : glb_outer_wall);
-
-        int obj_inner_wall = obj_id("inner_wall_filament_id");
-        if (obj_inner_wall == 0)
-            obj_inner_wall = obj_id("outer_wall_filament_id");
-        add_1based(obj_inner_wall != 0 ? obj_inner_wall : glb_inner_wall);
-
-        const int obj_sparse = obj_id("sparse_infill_filament_id");
-        add_1based(obj_sparse != 0 ? obj_sparse : glb_sparse_infill);
-
-        const int obj_internal_solid = obj_id("internal_solid_filament_id");
-        add_1based(obj_internal_solid != 0 ? obj_internal_solid : glb_internal_solid);
-
-        int obj_top = obj_id("top_surface_filament_id");
-        if (obj_top == 0)
-            obj_top = obj_internal_solid;
-        add_1based(obj_top != 0 ? obj_top : glb_top_surface);
-
-        int obj_bottom = obj_id("bottom_surface_filament_id");
-        if (obj_bottom == 0)
-            obj_bottom = obj_internal_solid;
-        add_1based(obj_bottom != 0 ? obj_bottom : glb_bottom_surface);
-    }
-
-    for (const auto& plate_entry : model.plates_custom_gcodes)
-        for (const CustomGCode::Item& item : plate_entry.second.gcodes)
-            if (item.type == CustomGCode::Type::ToolChange)
-                add_1based(item.extruder);
-
-    // Expand used mixed slots to their physical components and keep each mixed slot itself so the
-    // dialog shows the mix. A component both used directly and pulled in via a mix is deduped.
-    const auto* is_mixed_opt = full.opt<ConfigOptionBools>("filament_is_mixed");
-    const auto* comp_opt     = full.opt<ConfigOptionStrings>("filament_mixed_components");
-    if (is_mixed_opt != nullptr && comp_opt != nullptr && has_any_mixed_filament(is_mixed_opt->values)) {
-        const std::vector<unsigned int> raw(used.begin(), used.end());
-        const std::vector<unsigned int> expanded = expand_mixed_filaments(raw, is_mixed_opt->values, comp_opt->values);
-        std::set<size_t> result(expanded.begin(), expanded.end());
-        for (unsigned int s : raw)
-            if (s < is_mixed_opt->values.size() && is_mixed_opt->values[s])
-                result.insert(s);
-        return result;
-    }
-
-    return used;
 }
 
 // Lays a translated sentence out along `row`, replacing each "%1%"-style placeholder with the
@@ -2291,7 +2182,7 @@ std::vector<Slic3r::PublishedMaterialEntry> PublishSettingsDialog::GetPublishedM
         // published, and the per-key rows are disabled / their state ignored.
         if (cat.full_check != nullptr && cat.full_check->GetValue()) {
             entry.full               = true;
-            entry.full_keys          = full_keys_for_slot();
+            entry.full_keys          = publish_full_material_keys();
             entry.publish_type       = true;
             entry.publish_type_value = normalize_filament_type(cat.filament_type);
             for (size_t r : cat.rows) {
@@ -2370,21 +2261,6 @@ void PublishSettingsDialog::refresh_tab_indicators()
             }
         m_outer_tabs->SetItemIndicator(static_cast<unsigned int>(s), any);
     }
-}
-
-std::vector<std::string> PublishSettingsDialog::full_keys_for_slot() const
-{
-    // The canonical filament preset keys minus the structural keys the published overlay must
-    // never touch (inherits, compatibility, *_settings_id, ...), plus filament_colour (not a
-    // member of Preset::filament_options). Values travel in the exported config, masked to
-    // this slot, and are applied on load onto the receiver's slot.
-    const std::set<std::string>& denylist = publish_structural_keys();
-    std::vector<std::string> keys;
-    for (const std::string& key : Preset::filament_options())
-        if (denylist.count(key) == 0)
-            keys.emplace_back(key);
-    keys.emplace_back("filament_colour");
-    return keys;
 }
 
 void PublishSettingsDialog::on_dpi_changed(const wxRect& suggested_rect)

@@ -6,6 +6,12 @@
 #include "PrintConfig.hpp"
 #include "MaterialType.hpp"
 #include "I18N.hpp"
+#include "CustomGCode.hpp"
+#include "FilamentMixer.hpp"
+#include "Model.hpp"
+#include "Format/bbs_3mf.hpp"
+
+#include "nlohmann/json.hpp"
 
 #include <boost/format.hpp>
 #include <boost/log/trivial.hpp>
@@ -623,6 +629,297 @@ int resolve_published_extruder_slot(const PublishedExtruderLayout &author, size_
     if (nozzle_type == nvtHybrid || author.variants[author_index] != get_extruder_variant_string(extruder_type, nozzle_type))
         return -1;
     return receiver_target.get_index_for_extruder(author_extruder, id_key, extruder_type, nozzle_type, variant_key);
+}
+
+std::set<size_t> project_used_filament_slots(const PresetBundle &bundle, const DynamicPrintConfig &full, const Model &model)
+{
+    std::set<size_t> used; // 0-based used slots, mixed slots not yet expanded
+    if (model.objects.empty())
+        return used;
+
+    auto add_1based = [&used](int id) {
+        if (id > 0)
+            used.insert(size_t(id - 1));
+    };
+
+    const DynamicPrintConfig& print_cfg = bundle.prints.get_edited_preset().config;
+    const int glb_support_intf   = print_cfg.opt_int("support_interface_filament");
+    const int glb_support        = print_cfg.opt_int("support_filament");
+    const int glb_outer_wall     = print_cfg.opt_int("outer_wall_filament_id");
+    const int glb_inner_wall     = print_cfg.opt_int("inner_wall_filament_id");
+    const int glb_sparse_infill  = print_cfg.opt_int("sparse_infill_filament_id");
+    const int glb_internal_solid = print_cfg.opt_int("internal_solid_filament_id");
+    const int glb_top_surface    = print_cfg.opt_int("top_surface_filament_id");
+    const int glb_bottom_surface = print_cfg.opt_int("bottom_surface_filament_id");
+    const bool glb_support_on    = print_cfg.opt_bool("enable_support") || print_cfg.opt_int("raft_layers") > 0;
+
+    for (ModelObject* mo : model.objects) {
+        for (ModelVolume* mv : mo->volumes)
+            for (int e : mv->get_extruders())
+                add_1based(e);
+
+        for (const auto& range_entry : mo->layer_config_ranges)
+            if (const ConfigOption* ext_opt = range_entry.second.option("extruder"))
+                add_1based(ext_opt->getInt());
+
+        bool obj_support = glb_support_on;
+        if (const ConfigOption* s_opt = mo->config.option("enable_support"); s_opt != nullptr)
+            obj_support = s_opt->getBool();
+        else if (const ConfigOption* r_opt = mo->config.option("raft_layers"); r_opt != nullptr)
+            obj_support = r_opt->getInt() > 0;
+
+        if (obj_support) {
+            if (const ConfigOption* opt = mo->config.option("support_interface_filament"); opt != nullptr && opt->getInt() != 0)
+                add_1based(opt->getInt());
+            else
+                add_1based(glb_support_intf);
+
+            if (const ConfigOption* opt = mo->config.option("support_filament"); opt != nullptr && opt->getInt() != 0)
+                add_1based(opt->getInt());
+            else
+                add_1based(glb_support);
+        }
+
+        auto obj_id = [&mo](const char* key) {
+            const ConfigOption* opt = mo->config.option(key);
+            return (opt != nullptr) ? opt->getInt() : 0;
+        };
+
+        int obj_outer_wall = obj_id("outer_wall_filament_id");
+        if (obj_outer_wall == 0)
+            obj_outer_wall = obj_id("inner_wall_filament_id");
+        add_1based(obj_outer_wall != 0 ? obj_outer_wall : glb_outer_wall);
+
+        int obj_inner_wall = obj_id("inner_wall_filament_id");
+        if (obj_inner_wall == 0)
+            obj_inner_wall = obj_id("outer_wall_filament_id");
+        add_1based(obj_inner_wall != 0 ? obj_inner_wall : glb_inner_wall);
+
+        const int obj_sparse = obj_id("sparse_infill_filament_id");
+        add_1based(obj_sparse != 0 ? obj_sparse : glb_sparse_infill);
+
+        const int obj_internal_solid = obj_id("internal_solid_filament_id");
+        add_1based(obj_internal_solid != 0 ? obj_internal_solid : glb_internal_solid);
+
+        int obj_top = obj_id("top_surface_filament_id");
+        if (obj_top == 0)
+            obj_top = obj_internal_solid;
+        add_1based(obj_top != 0 ? obj_top : glb_top_surface);
+
+        int obj_bottom = obj_id("bottom_surface_filament_id");
+        if (obj_bottom == 0)
+            obj_bottom = obj_internal_solid;
+        add_1based(obj_bottom != 0 ? obj_bottom : glb_bottom_surface);
+    }
+
+    for (const auto& plate_entry : model.plates_custom_gcodes)
+        for (const CustomGCode::Item& item : plate_entry.second.gcodes)
+            if (item.type == CustomGCode::Type::ToolChange)
+                add_1based(item.extruder);
+
+    // Expand used mixed slots to their physical components and keep each mixed slot itself so the
+    // dialog shows the mix. A component both used directly and pulled in via a mix is deduped.
+    const auto* is_mixed_opt = full.opt<ConfigOptionBools>("filament_is_mixed");
+    const auto* comp_opt     = full.opt<ConfigOptionStrings>("filament_mixed_components");
+    if (is_mixed_opt != nullptr && comp_opt != nullptr && has_any_mixed_filament(is_mixed_opt->values)) {
+        const std::vector<unsigned int> raw(used.begin(), used.end());
+        const std::vector<unsigned int> expanded = expand_mixed_filaments(raw, is_mixed_opt->values, comp_opt->values);
+        std::set<size_t> result(expanded.begin(), expanded.end());
+        for (unsigned int s : raw)
+            if (s < is_mixed_opt->values.size() && is_mixed_opt->values[s])
+                result.insert(s);
+        return result;
+    }
+
+    return used;
+}
+
+std::vector<std::string> publish_full_material_keys()
+{
+    // Values travel in the exported config, masked to the slot, and are applied on load onto the
+    // receiver's slot.
+    const std::set<std::string> &denylist = publish_structural_keys();
+    std::vector<std::string>     keys;
+    for (const std::string &key : Preset::filament_options())
+        if (denylist.count(key) == 0)
+            keys.emplace_back(key);
+    keys.emplace_back("filament_colour");
+    return keys;
+}
+
+void write_published_metadata(std::map<std::string, std::string> &metadata, const DynamicPrintConfig &full_config,
+                              const std::vector<std::string> &published_keys,
+                              const std::vector<PublishedMaterialEntry> &materials)
+{
+    nlohmann::json materials_json = nlohmann::json::array();
+    for (const PublishedMaterialEntry &e : materials)
+        materials_json.push_back({{"material",
+                                   {{"filament_type", e.filament_type},
+                                    {"filament_vendor", e.filament_vendor},
+                                    {"filament_id", e.filament_id},
+                                    {"setting_id", e.setting_id},
+                                    {"name", e.preset_name}}},
+                                  {"slot", e.slot},
+                                  {"keys", e.keys},
+                                  {"full", e.full},
+                                  {"full_keys", e.full_keys},
+                                  {"publish_type", e.publish_type},
+                                  {"type", e.publish_type_value},
+                                  {"publish_color", e.publish_color},
+                                  {"color", e.color}});
+
+    // The filtered values travel in the metadata payload instead of project_settings.config, so
+    // OrcaSlicer versions without the publish feature import the geometry only (keeping the
+    // receiver's presets) while new versions rebuild the config from the payload.
+    const DynamicPrintConfig filtered = filter_published_config(full_config, published_keys, materials);
+    std::string              payload;
+    for (const std::string &key : filtered.keys()) {
+        // A value containing a newline would break the INI (read_ini throws), so the importer
+        // would discard the whole settings block. Skip such keys instead.
+        std::string value = filtered.opt_serialize(key);
+        if (value.find('\n') != std::string::npos) {
+            BOOST_LOG_TRIVIAL(warning) << "publish: dropping key \"" << key << "\" from the published payload (value contains a newline)";
+            continue;
+        }
+        payload += key + " = " + value + "\n";
+    }
+
+    metadata[ORCA_PUBLISHED_TAG]          = "1";
+    metadata[ORCA_PUBLISHED_KEYS_TAG]     = nlohmann::json(published_keys).dump();
+    metadata[ORCA_PUBLISHED_MATERIAL_TAG] = materials_json.dump();
+    metadata[ORCA_PUBLISHED_CONFIG_TAG]   = std::move(payload);
+    // The author's extruder layouts, so the receiver can place each per-extruder key on the
+    // extruder with the same number.
+    const auto *layout_ids      = full_config.option<ConfigOptionInts>("printer_extruder_id");
+    const auto *layout_variants = full_config.option<ConfigOptionStrings>("printer_extruder_variant");
+    const auto *print_ids       = full_config.option<ConfigOptionInts>("print_extruder_id");
+    const auto *print_variants  = full_config.option<ConfigOptionStrings>("print_extruder_variant");
+    if (layout_ids != nullptr && layout_variants != nullptr && print_ids != nullptr && print_variants != nullptr)
+        metadata[ORCA_PUBLISHED_LAYOUT_TAG] = nlohmann::json{{"extruder_ids", layout_ids->values},
+                                                             {"variants", layout_variants->values},
+                                                             {"print_extruder_ids", print_ids->values},
+                                                             {"print_variants", print_variants->values}}
+                                                  .dump();
+    else
+        metadata.erase(ORCA_PUBLISHED_LAYOUT_TAG);
+}
+
+namespace {
+std::string json_string(const nlohmann::json &object, const char *key)
+{
+    const auto it = object.find(key);
+    return it != object.end() && it->is_string() ? it->get<std::string>() : std::string();
+}
+
+bool json_bool(const nlohmann::json &object, const char *key)
+{
+    const auto it = object.find(key);
+    return it != object.end() && it->is_boolean() && it->get<bool>();
+}
+
+std::vector<std::string> json_strings(const nlohmann::json &object, const char *key)
+{
+    std::vector<std::string> out;
+    const auto               it = object.find(key);
+    if (it != object.end() && it->is_array())
+        for (const auto &value : *it)
+            if (value.is_string())
+                out.emplace_back(value.get<std::string>());
+    return out;
+}
+} // namespace
+
+bool read_published_metadata(const std::map<std::string, std::string> &metadata, PublishedConfig &out, DynamicPrintConfig &config,
+                             std::vector<ConfigSubstitution> &substitutions)
+{
+    const auto flag = metadata.find(ORCA_PUBLISHED_TAG);
+    if (flag == metadata.end() || !is_published_3mf_flag(flag->second))
+        return false;
+    out.published = true;
+
+    if (const auto it = metadata.find(ORCA_PUBLISHED_KEYS_TAG); it != metadata.end()) {
+        try {
+            const nlohmann::json keys = nlohmann::json::parse(it->second);
+            if (keys.is_array())
+                for (const auto &key : keys)
+                    if (key.is_string())
+                        out.published_keys.emplace_back(key.get<std::string>());
+        } catch (const nlohmann::json::exception &) {
+            // Malformed keys: the project still loads.
+        }
+    }
+
+    if (const auto it = metadata.find(ORCA_PUBLISHED_MATERIAL_TAG); it != metadata.end()) {
+        try {
+            const nlohmann::json entries = nlohmann::json::parse(it->second);
+            if (entries.is_array())
+                for (const auto &m : entries) {
+                    // Malformed entries are isolated so one bad item cannot discard the others.
+                    try {
+                        if (!m.is_object())
+                            continue;
+                        PublishedMaterialEntry entry;
+                        if (const auto mat = m.find("material"); mat != m.end() && mat->is_object()) {
+                            entry.filament_type   = json_string(*mat, "filament_type");
+                            entry.filament_vendor = json_string(*mat, "filament_vendor");
+                            entry.filament_id     = json_string(*mat, "filament_id");
+                            entry.setting_id      = json_string(*mat, "setting_id");
+                            entry.preset_name     = json_string(*mat, "name");
+                        }
+                        if (const auto slot = m.find("slot"); slot != m.end() && slot->is_number_integer())
+                            entry.slot = slot->get<int>();
+                        entry.keys               = json_strings(m, "keys");
+                        entry.full               = json_bool(m, "full");
+                        entry.full_keys          = json_strings(m, "full_keys");
+                        entry.publish_type       = json_bool(m, "publish_type");
+                        entry.publish_type_value = json_string(m, "type");
+                        entry.publish_color      = json_bool(m, "publish_color");
+                        entry.color              = json_string(m, "color");
+                        out.material_keys.emplace_back(std::move(entry));
+                    } catch (const nlohmann::json::exception &) {
+                    }
+                }
+        } catch (const nlohmann::json::exception &) {
+            // Malformed material entries: the project still loads.
+        }
+    }
+
+    if (const auto it = metadata.find(ORCA_PUBLISHED_LAYOUT_TAG); it != metadata.end()) {
+        try {
+            const nlohmann::json    layout_json = nlohmann::json::parse(it->second);
+            PublishedExtruderLayout layout;
+            layout.extruder_ids = layout_json.at("extruder_ids").get<std::vector<int>>();
+            layout.variants     = layout_json.at("variants").get<std::vector<std::string>>();
+            out.printer_layout  = std::move(layout);
+            if (layout_json.contains("print_extruder_ids") && layout_json.contains("print_variants")) {
+                PublishedExtruderLayout print_layout;
+                print_layout.extruder_ids = layout_json.at("print_extruder_ids").get<std::vector<int>>();
+                print_layout.variants     = layout_json.at("print_variants").get<std::vector<std::string>>();
+                out.print_layout          = std::move(print_layout);
+            }
+        } catch (const nlohmann::json::exception &) {
+            // Malformed layout: the keys import positionally.
+        }
+    }
+
+    // A published file carries no project_settings.config: its values are rebuilt from the
+    // payload. A missing or malformed payload leaves `config` empty (geometry only).
+    if (const auto it = metadata.find(ORCA_PUBLISHED_CONFIG_TAG); it != metadata.end()) {
+        try {
+            ConfigSubstitutions loaded = config.load_from_ini_string(it->second, ForwardCompatibilitySubstitutionRule::Enable);
+            substitutions.insert(substitutions.end(), std::make_move_iterator(loaded.begin()), std::make_move_iterator(loaded.end()));
+        } catch (...) {
+            // Malformed payload: the project still loads.
+        }
+    }
+    return true;
+}
+
+void erase_published_metadata(std::map<std::string, std::string> &metadata)
+{
+    for (const char *tag : {ORCA_PUBLISHED_TAG, ORCA_PUBLISHED_KEYS_TAG, ORCA_PUBLISHED_MATERIAL_TAG, ORCA_PUBLISHED_CONFIG_TAG,
+                            ORCA_PUBLISHED_LAYOUT_TAG})
+        metadata.erase(tag);
 }
 
 } // namespace Slic3r

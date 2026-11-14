@@ -237,6 +237,7 @@ fun PlateScreen(vm: AppViewModel) {
                 MenuEntry("Export plate sliced for another printer", AppIcons.Export, enabled = canExport) {
                     exportPrinterPicker = ExportFor.SLICED
                 },
+                MenuEntry("Publish 3MF", AppIcons.Export, enabled = hasObjects) { vm.startPublish() },
                 MenuEntry("Export 3MF for printer", AppIcons.Export, enabled = hasObjects) { exportPrinterPicker = ExportFor.PROJECT },
                 MenuEntry("Export generic 3MF", AppIcons.Export, enabled = hasObjects) { export3mf.launch("${vm.exportName()}.3mf") },
                 MenuEntry("Export all objects as STL", AppIcons.Export, enabled = hasObjects) { exportStl.launch("${vm.exportName()}.stl") },
@@ -290,6 +291,7 @@ fun PlateScreen(vm: AppViewModel) {
                 "Export all plates sliced file" to { slicedAll = true; exportSliced.launch("${vm.exportName()}.gcode.3mf") }
             } else null,
             "Export sliced for another printer" to { exportPrinterPicker = ExportFor.SLICED },
+            "Publish 3MF" to { vm.startPublish() },
             "Export generic 3MF (any printer)" to { export3mf.launch("${vm.exportName()}.3mf") },
             "Share G-code" to { shareGcode(result) },
         )
@@ -364,6 +366,7 @@ fun PlateScreen(vm: AppViewModel) {
                     paintOverlay = if (vm.paint != null) vm.paintOverlay else null,
                     measureLines = vm.measure?.lines(),
                     measurePoints = vm.measure?.points(),
+                    clearance = vm.clearance.outlines,
                 )
             },
         )
@@ -391,6 +394,13 @@ fun PlateScreen(vm: AppViewModel) {
             if (layFlat) {
                 Spacer(Modifier.height(6.dp))
                 Hint("Tap the face the object should rest on")
+            }
+            // Print by object: desktop's clearance warning, such as objects too close to each other.
+            if (!previewing && vm.clearance.message.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                    Text(vm.clearance.message, Modifier.padding(horizontal = 12.dp, vertical = 8.dp), style = MaterialTheme.typography.bodyMedium)
+                }
             }
         }
         // The preview, slicing progress, tool panels or the plate actions; the phone also shows
@@ -548,6 +558,7 @@ fun PlateScreen(vm: AppViewModel) {
             onChoose = { vm.choosePresets(PresetKind.PRINTER, vm.printers, it) },
         )
     }
+    vm.publishOptions?.let { options -> PublishSheet(vm, options) { vm.cancelPublish() } }
     if (profilesOpen) ProfilesSheet(vm) { profilesOpen = false }
     settingsFor?.let { kind -> SettingsScreen(vm, kind) { settingsFor = null } }
     // The side pane already shows the object list.

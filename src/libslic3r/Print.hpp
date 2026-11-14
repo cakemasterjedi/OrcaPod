@@ -1347,6 +1347,11 @@ public:
         return result;
     }
 
+    // How far print by object grows each object's 2D convex hull: the hulls of two objects must not
+    // touch. Half the extruder clearance radius (half the nozzle width when every object is shorter
+    // than the nozzle), plus a per-object skirt, less 0.1 mm so objects arranged exactly that far
+    // apart still pass. Scaled.
+    static float sequential_print_clearance_offset(const Print &print);
     //BBS
     // warning, if given, names the instances printed later than their place in the object list to avoid a collision.
     static StringObjectException sequential_print_clearance_valid(const Print &print, Polygons *polygons = nullptr, std::vector<std::pair<Polygon, float>>* height_polygons = nullptr,

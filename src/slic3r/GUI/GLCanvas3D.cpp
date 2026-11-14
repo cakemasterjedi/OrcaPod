@@ -6523,12 +6523,7 @@ void GLCanvas3D::update_sequential_clearance()
     // the results are then cached for following displacements
     if (m_sequential_print_clearance_first_displacement) {
         m_sequential_print_clearance.m_hull_2d_cache.clear();
-        auto [object_skirt_offset, _] = fff_print()->object_skirt_offset();
-        float shrink_factor;
-        if (fff_print()->is_all_objects_are_short())
-            shrink_factor = scale_(std::max(0.5f * MAX_OUTER_NOZZLE_DIAMETER, object_skirt_offset) - 0.1);
-        else
-            shrink_factor = static_cast<float>(scale_(0.5 * fff_print()->config().extruder_clearance_radius.value + object_skirt_offset - 0.1));
+        const float shrink_factor = Print::sequential_print_clearance_offset(*fff_print());
 
         double mitter_limit = scale_(0.1);
         m_sequential_print_clearance.m_hull_2d_cache.reserve(m_model->objects.size());

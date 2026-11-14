@@ -3,6 +3,7 @@ package org.orcapod.app.ui.viewport
 import android.opengl.GLES30.*
 import android.opengl.GLSurfaceView
 import android.opengl.Matrix
+import org.orcapod.app.engine.ClearanceOutline
 import org.orcapod.app.engine.Mesh
 import org.orcapod.app.engine.Plate
 import org.orcapod.app.engine.Scene
@@ -40,6 +41,8 @@ data class ViewportState(
     /** Measure tool lines (GL_LINES) and points: interleaved world position + colour. */
     val measureLines: FloatArray? = null,
     val measurePoints: FloatArray? = null,
+    /** Print by object: each instance's toolhead clearance outline on the bed. */
+    val clearance: List<ClearanceOutline> = emptyList(),
 )
 
 data class Selection(val objectId: Long, val instanceId: Long)
@@ -112,6 +115,7 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
             drawToolpath(s.toolpath, s.previewStyle, s.range, dx, dy)
         } else {
             drawObjects(s)
+            drawClearance(s)
             drawPaint(s)
             drawCut(s)
             drawMeasure(s)
@@ -164,6 +168,33 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
         glDisable(GL_DEPTH_TEST)
         drawOverlay(pts, GL_POINTS, 1f)
         glEnable(GL_DEPTH_TEST)
+    }
+
+    /**
+     * Print by object: desktop's clearance outlines, on the bed under the objects. The outline of
+     * the instance being dragged moves with it; outlines too close to another one are red.
+     */
+    private fun drawClearance(s: ViewportState) {
+        if (s.clearance.isEmpty()) return
+        val drag = s.drag
+        val data = ArrayList<Float>()
+        for (outline in s.clearance) {
+            val moved = drag != null && drag.objectId == outline.objectId && drag.instanceId == outline.instanceId
+            val dx = if (moved) drag!!.dx else 0f
+            val dy = if (moved) drag!!.dy else 0f
+            val colour = if (outline.colliding) CLEARANCE_COLLIDING else CLEARANCE
+            val p = outline.points
+            val n = p.size / 2
+            for (i in 0 until n) {
+                for (j in intArrayOf(i, (i + 1) % n)) {
+                    data += p[j * 2] + dx; data += p[j * 2 + 1] + dy; data += CLEARANCE_Z
+                    data += colour[0]; data += colour[1]; data += colour[2]
+                }
+            }
+        }
+        glLineWidth(2f)
+        drawOverlay(data.toFloatArray(), GL_LINES, 1f)
+        glLineWidth(1f)
     }
 
     /** Measured features and the measurement line, over everything as on desktop. */
@@ -499,6 +530,10 @@ internal class PlateRenderer(val camera: Camera) : GLSurfaceView.Renderer {
         private val ENFORCER = floatArrayOf(0.25f, 0.45f, 0.95f, 0.4f)
         private val CUT_PLANE = floatArrayOf(0.95f, 0.55f, 0.2f)
         private val CONNECTOR = floatArrayOf(1f, 1f, 1f)
+        private val CLEARANCE = floatArrayOf(0.55f, 0.7f, 0.85f)
+        private val CLEARANCE_COLLIDING = floatArrayOf(0.95f, 0.25f, 0.25f)
+        /** Just above the bed, so the bed does not hide the outlines. */
+        private const val CLEARANCE_Z = 0.05f
 
         internal fun parseHex(hex: String): FloatArray {
             val v = hex.trim().removePrefix("#").take(6).toIntOrNull(16) ?: return DEFAULT

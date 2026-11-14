@@ -279,8 +279,6 @@ private:
                     size_t category_index,
                     size_t subcategory_index,
                     RowKind kind = RowKind::Setting);
-    // The non-structural filament keys of a slot's preset, for a "Full Publish" entry.
-    std::vector<std::string> full_keys_for_slot() const;
     void save_scroll_position(Category& category);
     void show_outer_page(size_t section_index);
     void show_inner_page(size_t section_index, int inner_index);

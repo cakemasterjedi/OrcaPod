@@ -397,6 +397,18 @@ class EngineHostTest {
         e.exportProjectFor(other, forOther.path)
         assertTrue(forOther.length() > 1_000)
         assertEquals(printer, e.current(PresetKind.PRINTER))
+        // A published 3MF carries no settings file, and the app still takes it for a project.
+        val options = e.publishOptions()
+        assertTrue(options.filaments.any { it.used })
+        val published = File(work, "plate.published.3mf")
+        e.publishProject(published.path, options.initialSelection())
+        ZipFile(published).use { assertNull(it.getEntry("Metadata/project_settings.config")) }
+        assertTrue(ProjectStore.isProject(published))
+        assertNotNull(e.publishOptions().previous)
+        // Printing by layer, the plate has no clearance outlines.
+        val clearance = e.sequentialClearance()
+        assertFalse(clearance.byObject)
+        assertTrue(clearance.outlines.isEmpty())
         // So does a sliced file for another printer.
         val slicedOther = File(work, "for-other.gcode.3mf")
         e.slice(slicedOther.path, SliceTarget.SLICED_3MF_PLATE, 0, other) { _, _ -> }

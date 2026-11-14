@@ -163,6 +163,21 @@ swapping the rest, and each instance keeps its place relative to its plate's
 centre on that printer's plates. The file names the printer model, so
 desktop OrcaSlicer or Bambu Studio opens it set up for that printer.
 
+"Publish 3MF" writes desktop OrcaSlicer's published 3MF
+(`orca_project_publish`, the same libslic3r code as desktop's Publish 3MF
+dialog): the plates, objects and picture, but no project settings file, no
+embedded presets and no slicer tags. Only the settings the user picks travel,
+in the model metadata: process settings and the printer's retraction and
+Z-hop settings, offered when they differ from the presets' system base, and
+per filament slot a required colour, a required material type, or the whole
+filament profile. Whoever opens the file in OrcaSlicer 2.5 or newer, or in
+OrcaPod, keeps their own printer and filaments and gets those settings on top
+(`load_config_model` with the published config); slots whose material does
+not match are replaced, and what cannot be applied is reported. Other
+slicers, and older OrcaSlicer versions, read only the models. A published
+file opens as a new, unnamed project, and its selection is offered again the
+next time the plate is published.
+
 The app keeps desktop's project workflow around that: the title shows the
 project name with a `*` while the plate or settings differ from the last
 save; "Save" writes back to the same document and "Save as" picks a new one;

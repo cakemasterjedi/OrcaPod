@@ -237,6 +237,7 @@ fun PlateScreen(vm: AppViewModel) {
                 MenuEntry("Export plate sliced for another printer", AppIcons.Export, enabled = canExport) {
                     exportPrinterPicker = ExportFor.SLICED
                 },
+                MenuEntry("Publish 3MF", AppIcons.Export, enabled = hasObjects) { vm.startPublish() },
                 MenuEntry("Export 3MF for printer", AppIcons.Export, enabled = hasObjects) { exportPrinterPicker = ExportFor.PROJECT },
                 MenuEntry("Export generic 3MF", AppIcons.Export, enabled = hasObjects) { export3mf.launch("${vm.exportName()}.3mf") },
                 MenuEntry("Export all objects as STL", AppIcons.Export, enabled = hasObjects) { exportStl.launch("${vm.exportName()}.stl") },
@@ -290,6 +291,7 @@ fun PlateScreen(vm: AppViewModel) {
                 "Export all plates sliced file" to { slicedAll = true; exportSliced.launch("${vm.exportName()}.gcode.3mf") }
             } else null,
             "Export sliced for another printer" to { exportPrinterPicker = ExportFor.SLICED },
+            "Publish 3MF" to { vm.startPublish() },
             "Export generic 3MF (any printer)" to { export3mf.launch("${vm.exportName()}.3mf") },
             "Share G-code" to { shareGcode(result) },
         )
@@ -548,6 +550,7 @@ fun PlateScreen(vm: AppViewModel) {
             onChoose = { vm.choosePresets(PresetKind.PRINTER, vm.printers, it) },
         )
     }
+    vm.publishOptions?.let { options -> PublishSheet(vm, options) { vm.cancelPublish() } }
     if (profilesOpen) ProfilesSheet(vm) { profilesOpen = false }
     settingsFor?.let { kind -> SettingsScreen(vm, kind) { settingsFor = null } }
     // The side pane already shows the object list.

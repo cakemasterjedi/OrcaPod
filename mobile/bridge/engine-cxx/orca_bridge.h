@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 /// Version of the C ABI contract in this header. Callers verify it at runtime.
-#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)48)
+#define ORCA_BRIDGE_ABI_VERSION ((uint32_t)49)
 
 typedef int32_t orca_status_code;
 #define ORCA_STATUS_OK                     ((orca_status_code)0)
@@ -1559,7 +1559,10 @@ orca_result orca_presets_set_filament_colour(orca_presets *presets,
 /// Desktop "Open project": loads a 3MF project (model + embedded presets +
 /// project settings, `PresetBundle::load_config_model`) and REPLACES the
 /// document (new document id, revision +1) and the preset session
-/// atomically — nothing changes on failure. Object placements are kept
+/// atomically — nothing changes on failure. A published 3MF (desktop
+/// "Publish 3MF", ABI v49) keeps the session's own presets and applies only
+/// the settings the author published on top of them; see
+/// orca_project_publish_notes for what could not be applied. Object placements are kept
 /// exactly (project semantics). The file's plates are adopted (names,
 /// locks, locked membership; up to ORCA_PLATE_MAX_COUNT — more is a typed
 /// unsupported capability).
@@ -1573,7 +1576,8 @@ typedef struct {
     uint32_t      plate_count;     // plates described by the file (0 = none)
     uint8_t       config_applied;  // project settings adopted into presets
     uint8_t       source;          // ORCA_PROJECT_FROM_*
-    uint8_t       reserved[6];
+    uint8_t       published;       // a published 3MF (ABI v49, see orca_project_publish)
+    uint8_t       reserved[5];
 } orca_project_info;
 orca_result orca_project_open(orca_plater *plater, orca_presets *presets,
                               const char *path, orca_project_info *out_info);
@@ -1680,6 +1684,46 @@ orca_result orca_project_export_for_machine(orca_plater *plater,
                                             const char *path,
                                             uint32_t thumbnail_size,
                                             const uint8_t *thumbnail_rgba);
+
+// --- publish 3MF (desktop "Publish 3MF", ABI v49) ----------------------------
+
+/// What the publish sheet offers, as JSON:
+/// {"process": [keys], "printer": [keys],
+///  "filaments": [{"slot", "name", "type", "colour", "used"}],
+///  "previous": null or a selection (orca_project_publish's format)}.
+/// "process" and "printer" are the settings changed from the selected
+/// presets' system base, the way desktop pre-checks the dirty ones; a
+/// per-extruder key carries "#N" (process: its variant, printer: its
+/// extruder) and printer keys are limited to desktop's Retraction and Z-Hop
+/// groups. "type" is the vendor-agnostic material family, "used" marks slots
+/// the plate's objects print with. "previous" is the selection of the
+/// published 3MF this document was opened from, if any. Read-only.
+orca_result orca_project_publish_options(orca_plater *plater,
+                                         orca_presets *presets,
+                                         orca_owned_string *out_json);
+
+/// Writes the document as a published 3MF, the file desktop OrcaSlicer's
+/// "Publish 3MF" writes: the plates, objects and thumbnail like
+/// orca_project_save, but with no project settings file, no embedded presets
+/// and no slicer tags. Only the selected settings travel, in the model
+/// metadata, so a receiver applies them on top of its own printer and
+/// filaments. `selection_json` is
+/// {"keys": [process and printer keys, as orca_project_publish_options
+///  lists them], "materials": [{"slot", "colour": bool, "type": bool,
+///  "full": bool}]}: per filament slot, require its colour, require its
+/// material type, or embed the whole filament preset ("full", which implies
+/// both). An empty selection publishes the geometry only. Not a mutation.
+orca_result orca_project_publish(orca_plater *plater, orca_presets *presets,
+                                 const char *path, const char *selection_json,
+                                 uint32_t thumbnail_size,
+                                 const uint8_t *thumbnail_rgba);
+
+/// After orca_project_open of a published 3MF, what desktop reports once it
+/// is loaded, as JSON {"skipped": [keys], "replaced": [notices]}: settings
+/// that could not be applied, and filament slots changed to meet the
+/// author's material requirements. Empty lists for any other project.
+orca_result orca_project_publish_notes(orca_plater *plater,
+                                       orca_owned_string *out_json);
 
 // --- exports (ABI v33) ------------------------------------------------------
 

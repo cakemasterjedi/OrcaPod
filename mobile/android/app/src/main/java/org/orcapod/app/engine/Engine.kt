@@ -166,10 +166,14 @@ class Engine private constructor(private var presets: Long, private val plater: 
     /** Releases a [StepFile] once no call on it runs. */
     suspend fun closeStep(step: StepFile) = onEngine { step.close() }
 
-    /** Opens a 3MF as a project, adopting the settings it carries. */
-    suspend fun openProject(path: String) = onEngine {
-        Native.platerProjectOpen(plater, presets, path)
+    /**
+     * Opens a 3MF as a project, adopting the settings it carries. True for a published 3MF,
+     * whose settings were applied on top of the selected printer and filaments instead.
+     */
+    suspend fun openProject(path: String): Boolean = onEngine {
+        val published = Native.platerProjectOpen(plater, presets, path)
         applyBed()
+        published
     }
 
     suspend fun scene(): Scene = onEngine {
@@ -251,6 +255,20 @@ class Engine private constructor(private var presets: Long, private val plater: 
     suspend fun exportProjectFor(machine: String, path: String, thumbnailSize: Int = 0, thumbnail: ByteArray? = null) = onEngine {
         Native.projectSave(plater, presets, path, thumbnailSize, thumbnail, machine)
     }
+
+    /** What the Publish 3MF sheet offers for the plate and the selected presets. */
+    suspend fun publishOptions(): PublishOptions = onEngine { PublishOptions.parse(Native.projectPublishOptions(plater, presets)) }
+
+    /**
+     * Desktop "Publish 3MF": the plate with only the [selection]'s settings, which a receiver
+     * applies on top of its own printer and filaments. [thumbnail] as for [saveProject].
+     */
+    suspend fun publishProject(path: String, selection: PublishSelection, thumbnailSize: Int = 0, thumbnail: ByteArray? = null) = onEngine {
+        Native.projectPublish(plater, presets, path, selection.toJson(), thumbnailSize, thumbnail)
+    }
+
+    /** What opening the last published 3MF could not apply as authored. */
+    suspend fun publishNotes(): PublishNotes = onEngine { PublishNotes.parse(Native.projectPublishNotes(plater)) }
 
     suspend fun exportStl(objectId: Long?, path: String) = onEngine {
         if (objectId == null) Native.exportStlAll(plater, path) else Native.objectExportStl(plater, objectId, path)

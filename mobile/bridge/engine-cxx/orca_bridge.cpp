@@ -17,6 +17,7 @@
 #include <cstring>
 #include <deque>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -1390,6 +1391,15 @@ struct orca_plater {
     /// merges into that undo step only while nothing else has changed the
     /// document since (undo, redo and every other mutation bump revision).
     orca_revision paint_stroke_revision = 0;
+    /// Desktop's pending published selection: the settings last published,
+    /// or those of the published 3MF last opened, offered again by the
+    /// publish sheet.
+    bool has_published_selection = false;
+    std::vector<std::string> published_keys;
+    std::vector<Slic3r::PublishedMaterialEntry> published_materials;
+    /// What opening the last published 3MF could not apply as authored.
+    std::vector<std::string> publish_skipped;
+    std::vector<std::string> publish_replaced;
 };
 
 /// Desktop keeps a memory-bounded undo stack; OrcaPad bounds it by steps.
@@ -10298,9 +10308,23 @@ orca_result orca_project_open(orca_plater *plater, orca_presets *presets,
         if (!scratch.presets.empty())
             candidate->load_project_embedded_presets(
                 scratch.presets, Slic3r::ForwardCompatibilitySubstitutionRule::Enable);
+        // A published 3MF carries its settings in the model metadata and
+        // applies them on top of the session's presets (desktop
+        // Plater::priv::load_files).
+        Slic3r::PublishedConfig published;
+        if (loaded.model_info)
+            Slic3r::read_published_metadata(loaded.model_info->metadata_items, published,
+                                            config, substitutions.substitutions);
         const bool has_config = !config.empty() && config.has("filament_colour");
         if (has_config)
-            candidate->load_config_model(path, std::move(config), file_version);
+            candidate->load_config_model(path, std::move(config), file_version,
+                                         published.published ? &published : nullptr);
+        if (published.published) {
+            if (!published.mixed_slot_relocations.empty())
+                Slic3r::remap_model_filament_slots(loaded, published.mixed_slot_relocations);
+            // a later save is a normal project
+            Slic3r::erase_published_metadata(loaded.model_info->metadata_items);
+        }
 
         // 3) identity bookkeeping for the new document
         std::unordered_map<orca_object_id, uint64_t> revisions;
@@ -10326,6 +10350,13 @@ orca_result orca_project_open(orca_plater *plater, orca_presets *presets,
         plater->undo.clear();
         plater->redo.clear();
         ++plater->revision;
+        plater->publish_skipped = std::move(published.skipped_keys);
+        plater->publish_replaced = std::move(published.material_replacements);
+        if (published.published) {
+            plater->has_published_selection = true;
+            plater->published_keys = std::move(published.published_keys);
+            plater->published_materials = std::move(published.material_keys);
+        }
         presets->bundle.swap(candidate);
         {
             std::vector<OrcapadPlate> adopted;
@@ -10378,6 +10409,7 @@ orca_result orca_project_open(orca_plater *plater, orca_presets *presets,
         info.object_count = object_count;
         info.plate_count = static_cast<uint32_t>(scratch.plates.size());
         info.config_applied = has_config ? 1 : 0;
+        info.published = published.published ? 1 : 0;
         switch (file_type) {
         case Slic3r::En3mfType::From_Orca: info.source = ORCA_PROJECT_FROM_ORCA; break;
         case Slic3r::En3mfType::From_BBS: info.source = ORCA_PROJECT_FROM_BBS; break;
@@ -10416,12 +10448,16 @@ static orca_result orcapad_check_project_target(orca_plater *plater,
 }
 
 /// Writes the document with `bundle`'s settings as an Orca project 3MF.
+/// `published` writes desktop's minimal published 3MF (the caller has put
+/// the published metadata on the model): no project settings, no embedded
+/// presets, no slicer tags.
 static orca_result orcapad_store_project(orca_plater *plater,
                                          Slic3r::PresetBundle &bundle,
                                          const std::string &target,
                                          uint32_t thumbnail_size,
                                          const uint8_t *thumbnail_rgba,
-                                         const char *operation) {
+                                         const char *operation,
+                                         bool published = false) {
     // desktop Plater::export_3mf: secure full config, embedded presets,
     // one plate (PartPlateList::store_to_3mf_structure, plate_index 0)
     Slic3r::DynamicPrintConfig config = bundle.full_config_secure();
@@ -10484,6 +10520,8 @@ static orca_result orcapad_store_project(orca_plater *plater,
         params.thumbnail_data.push_back(&plate_thumbnail);
     }
     params.strategy = Slic3r::SaveStrategy::Zip64;
+    if (published)
+        params.strategy = params.strategy | Slic3r::SaveStrategy::MinimalPublished;
     if (!Slic3r::store_bbs_3mf(params))
         return orcapad_fail(ORCA_STATUS_IO_FAILURE, operation,
                             "engine failed to write the project file");
@@ -10634,6 +10672,233 @@ orca_result orca_project_export_for_machine(orca_plater *plater,
                                              thumbnail_size, thumbnail_rgba,
                                              operation);
             });
+    });
+}
+
+// --- publish 3MF (desktop "Publish 3MF", ABI v49) ----------------------------
+
+/// The keys of `collection`'s edited preset that differ from its system base
+/// (desktop's dirty keys, also counting a user preset's own values), as
+/// deep_diff names them ("key#N" for one element of a per-extruder vector).
+static std::vector<std::string> orcapad_changed_keys(const Slic3r::PresetCollection &collection) {
+    const Slic3r::Preset *parent = collection.get_selected_preset_parent();
+    if (!parent) parent = &collection.get_selected_preset();
+    std::vector<std::string> keys = Slic3r::PresetCollection::dirty_options(
+        &collection.get_edited_preset(), parent, true);
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    return keys;
+}
+
+/// The desktop publish dialog's process and printer rows for the changed
+/// keys: process keys by variant ("key#N") only where the option has
+/// per-extruder variants, printer keys only from the Retraction and Z-Hop
+/// groups, never a structural key.
+static void orcapad_publishable_changes(const Slic3r::PresetBundle &bundle,
+                                        std::vector<std::string> &process,
+                                        std::vector<std::string> &printer) {
+    const std::set<std::string> &structural = Slic3r::publish_structural_keys();
+    static const std::set<std::string> identity{
+        "print_extruder_id", "print_extruder_variant", "printer_extruder_id",
+        "printer_extruder_variant", "setting_id", "name", "from", "version"};
+    std::set<std::string> seen;
+    for (const std::string &key : orcapad_changed_keys(bundle.prints)) {
+        const std::string base = Slic3r::publish_base_key(key);
+        if (structural.count(base) || identity.count(base)) continue;
+        const std::string row =
+            Slic3r::print_options_with_variant.count(base) ? key : base;
+        if (seen.insert(row).second) process.push_back(row);
+    }
+    const std::set<std::string> &allowed = Slic3r::publishable_printer_keys();
+    for (const std::string &key : orcapad_changed_keys(bundle.printers))
+        if (allowed.count(Slic3r::publish_base_key(key)) && seen.insert(key).second)
+            printer.push_back(key);
+}
+
+static std::string orcapad_slot_string(const Slic3r::DynamicPrintConfig &config,
+                                       const char *key, size_t slot) {
+    const auto *values = config.option<Slic3r::ConfigOptionStrings>(key);
+    return values && slot < values->size() ? values->get_at(slot) : std::string();
+}
+
+orca_result orca_project_publish_options(orca_plater *plater,
+                                         orca_presets *presets,
+                                         orca_owned_string *out_json) {
+    constexpr const char *operation = "orca_project_publish_options";
+    if (out_json) *out_json = orcapad_empty_string();
+    if (!plater || !presets)
+        return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, operation,
+                            "plater or presets handle is null");
+    if (!out_json)
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "output pointer is null");
+    return orcapad_guard(operation, [&]() -> orca_result {
+        const Slic3r::PresetBundle &bundle = *presets->bundle;
+        std::vector<std::string> process, printer;
+        orcapad_publishable_changes(bundle, process, printer);
+
+        const Slic3r::DynamicPrintConfig full = bundle.full_config();
+        const std::set<size_t> used =
+            Slic3r::project_used_filament_slots(bundle, full, plater->model);
+        nlohmann::json filaments = nlohmann::json::array();
+        for (size_t slot = 0; slot < bundle.filament_presets.size(); ++slot)
+            filaments.push_back(
+                {{"slot", slot},
+                 {"name", bundle.filament_presets[slot]},
+                 {"type", Slic3r::normalize_filament_type(
+                              orcapad_slot_string(full, "filament_type", slot))},
+                 {"colour", orcapad_slot_string(full, "filament_colour", slot)},
+                 {"used", used.count(slot) != 0}});
+
+        nlohmann::json previous = nullptr;
+        if (plater->has_published_selection) {
+            nlohmann::json materials = nlohmann::json::array();
+            for (const Slic3r::PublishedMaterialEntry &entry : plater->published_materials)
+                if (entry.slot >= 0)
+                    materials.push_back({{"slot", entry.slot},
+                                         {"colour", entry.publish_color},
+                                         {"type", entry.publish_type},
+                                         {"full", entry.full}});
+            previous = {{"keys", plater->published_keys}, {"materials", materials}};
+        }
+        const nlohmann::json out{{"process", process},
+                                 {"printer", printer},
+                                 {"filaments", filaments},
+                                 {"previous", previous}};
+        if (!orcapad_copy_string(out.dump().c_str(), out_json))
+            return orcapad_fail(ORCA_STATUS_OUT_OF_MEMORY, operation,
+                                "could not allocate publish options");
+        return orcapad_ok();
+    });
+}
+
+/// The desktop publish dialog's material entry for one slot
+/// (PublishSettingsDialog::GetPublishedMaterialKeys): the slot's identity,
+/// plus the colour and type requirements or the whole preset.
+static std::optional<Slic3r::PublishedMaterialEntry> orcapad_publish_material(
+    const Slic3r::PresetBundle &bundle, const Slic3r::DynamicPrintConfig &full,
+    size_t slot, bool colour, bool type, bool whole) {
+    if (slot >= bundle.filament_presets.size() || !(colour || type || whole))
+        return std::nullopt;
+    Slic3r::PublishedMaterialEntry entry;
+    entry.slot = static_cast<int>(slot);
+    entry.filament_type = orcapad_slot_string(full, "filament_type", slot);
+    entry.filament_vendor = orcapad_slot_string(full, "filament_vendor", slot);
+    entry.filament_id = orcapad_slot_string(full, "filament_ids", slot);
+    if (const Slic3r::Preset *preset = bundle.filaments.find_preset(
+            bundle.filament_presets[slot], false)) {
+        entry.setting_id = preset->setting_id;
+        entry.preset_name = preset->name;
+    }
+    const std::string slot_colour = orcapad_slot_string(full, "filament_colour", slot);
+    if (whole) {
+        // "Full Publish" implies the type and the colour.
+        entry.full = true;
+        entry.full_keys = Slic3r::publish_full_material_keys();
+        type = true;
+        colour = true;
+    }
+    if (type) {
+        entry.publish_type = true;
+        entry.publish_type_value = Slic3r::normalize_filament_type(entry.filament_type);
+    }
+    if (colour && !slot_colour.empty()) {
+        entry.publish_color = true;
+        entry.color = slot_colour;
+    }
+    return entry;
+}
+
+orca_result orca_project_publish(orca_plater *plater, orca_presets *presets,
+                                 const char *path, const char *selection_json,
+                                 uint32_t thumbnail_size,
+                                 const uint8_t *thumbnail_rgba) {
+    constexpr const char *operation = "orca_project_publish";
+    const orca_result checked = orcapad_check_project_target(
+        plater, presets, path, thumbnail_size, thumbnail_rgba, operation);
+    if (checked.code != ORCA_STATUS_OK) return checked;
+
+    std::vector<std::string> keys;
+    std::vector<Slic3r::PublishedMaterialEntry> materials;
+    try {
+        const nlohmann::json selection = nlohmann::json::parse(
+            selection_json && selection_json[0] ? selection_json : "{}");
+        if (!selection.is_object() ||
+            !selection.value("keys", nlohmann::json::array()).is_array() ||
+            !selection.value("materials", nlohmann::json::array()).is_array())
+            throw std::invalid_argument("selection is not an object of arrays");
+        const Slic3r::PresetBundle &bundle = *presets->bundle;
+        const Slic3r::DynamicPrintConfig full = bundle.full_config();
+        std::set<std::string> seen;
+        for (const auto &key : selection.value("keys", nlohmann::json::array()))
+            if (key.is_string() && !key.get<std::string>().empty() &&
+                seen.insert(key.get<std::string>()).second)
+                keys.push_back(key.get<std::string>());
+        std::set<size_t> slots;
+        for (const auto &m : selection.value("materials", nlohmann::json::array())) {
+            if (!m.is_object() || !m.contains("slot") || !m["slot"].is_number_unsigned())
+                throw std::invalid_argument("material without a slot");
+            const size_t slot = m["slot"].get<size_t>();
+            if (!slots.insert(slot).second) continue;
+            if (auto entry = orcapad_publish_material(
+                    bundle, full, slot, m.value("colour", false),
+                    m.value("type", false), m.value("full", false)))
+                materials.push_back(std::move(*entry));
+        }
+    } catch (const std::exception &) {
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "selection is not valid publish JSON");
+    }
+
+    return orcapad_guard(operation, [&]() -> orca_result {
+        const Slic3r::DynamicPrintConfig full = presets->bundle->full_config_secure();
+        std::vector<Slic3r::PublishedMaterialEntry> normalized = materials;
+        Slic3r::publish_normalize_material_entries(normalized, full);
+
+        // The published tags live only in the file (desktop
+        // Plater::export_published_3mf): the document's metadata is put back.
+        Slic3r::Model &model = plater->model;
+        struct Restore {
+            Slic3r::Model &model;
+            std::shared_ptr<Slic3r::ModelInfo> info;
+            std::map<std::string, std::string> metadata;
+            ~Restore() {
+                if (info) info->metadata_items = std::move(metadata);
+                else model.model_info = nullptr;
+            }
+        } restore{model, model.model_info,
+                  model.model_info ? model.model_info->metadata_items
+                                   : std::map<std::string, std::string>()};
+        if (!model.model_info) model.model_info = std::make_shared<Slic3r::ModelInfo>();
+        Slic3r::write_published_metadata(model.model_info->metadata_items, full, keys,
+                                         normalized);
+        const orca_result stored = orcapad_store_project(
+            plater, *presets->bundle, path, thumbnail_size, thumbnail_rgba, operation, true);
+        if (stored.code == ORCA_STATUS_OK) {
+            plater->has_published_selection = true;
+            plater->published_keys = keys;
+            plater->published_materials = materials;
+        }
+        return stored;
+    });
+}
+
+orca_result orca_project_publish_notes(orca_plater *plater,
+                                       orca_owned_string *out_json) {
+    constexpr const char *operation = "orca_project_publish_notes";
+    if (out_json) *out_json = orcapad_empty_string();
+    if (!plater)
+        return orcapad_fail(ORCA_STATUS_INVALID_HANDLE, operation, "plater handle is null");
+    if (!out_json)
+        return orcapad_fail(ORCA_STATUS_INVALID_ARGUMENT, operation,
+                            "output pointer is null");
+    return orcapad_guard(operation, [&]() -> orca_result {
+        const nlohmann::json out{{"skipped", plater->publish_skipped},
+                                 {"replaced", plater->publish_replaced}};
+        if (!orcapad_copy_string(out.dump().c_str(), out_json))
+            return orcapad_fail(ORCA_STATUS_OUT_OF_MEMORY, operation,
+                                "could not allocate publish notes");
+        return orcapad_ok();
     });
 }
 

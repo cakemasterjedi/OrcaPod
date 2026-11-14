@@ -409,10 +409,13 @@ JNI_FN(jlongArray, platerImportStep)(JNIEnv *env, jobject, jlong pl, jlong st, j
     return out;
 }
 
-JNI_FN(void, platerProjectOpen)(JNIEnv *env, jobject, jlong pl, jlong p, jstring path)
+/** True when the file was a published 3MF, applied on top of the selected presets. */
+JNI_FN(jboolean, platerProjectOpen)(JNIEnv *env, jobject, jlong pl, jlong p, jstring path)
 {
     orca_project_info info{};
-    check(env, orca_project_open(plater_of(pl), presets_of(p), utf8(env, path).c_str(), &info));
+    if (!check(env, orca_project_open(plater_of(pl), presets_of(p), utf8(env, path).c_str(), &info)))
+        return JNI_FALSE;
+    return info.published ? JNI_TRUE : JNI_FALSE;
 }
 
 JNI_FN(jobject, platerSnapshot)(JNIEnv *env, jobject, jlong pl, jlongArray known_ids, jlongArray known_revs)
@@ -1777,6 +1780,34 @@ JNI_FN(void, projectSave)(JNIEnv *env, jobject, jlong pl, jlong p, jstring path,
                                                    utf8(env, path).c_str(), size, pixels));
     else
         check(env, orca_project_save(plater_of(pl), presets_of(p), utf8(env, path).c_str(), size, pixels));
+}
+
+/** The publish sheet's choices, as JSON (orca_project_publish_options). */
+JNI_FN(jstring, projectPublishOptions)(JNIEnv *env, jobject, jlong pl, jlong p)
+{
+    orca_owned_string json{};
+    return take_json(env, orca_project_publish_options(plater_of(pl), presets_of(p), &json), json);
+}
+
+/** Desktop "Publish 3MF": [selectionJson] as orca_project_publish takes it; [thumbnail] as for projectSave. */
+JNI_FN(void, projectPublish)(JNIEnv *env, jobject, jlong pl, jlong p, jstring path, jstring selectionJson,
+                             jint thumbnailSize, jbyteArray thumbnail)
+{
+    std::vector<uint8_t> rgba;
+    if (thumbnail && thumbnailSize > 0 && env->GetArrayLength(thumbnail) == jsize(thumbnailSize) * thumbnailSize * 4) {
+        rgba.resize(size_t(thumbnailSize) * size_t(thumbnailSize) * 4);
+        env->GetByteArrayRegion(thumbnail, 0, jsize(rgba.size()), reinterpret_cast<jbyte *>(rgba.data()));
+    }
+    check(env, orca_project_publish(plater_of(pl), presets_of(p), utf8(env, path).c_str(),
+                                    utf8(env, selectionJson).c_str(), uint32_t(rgba.empty() ? 0 : thumbnailSize),
+                                    rgba.empty() ? nullptr : rgba.data()));
+}
+
+/** What opening the last published 3MF could not apply as authored, as JSON. */
+JNI_FN(jstring, projectPublishNotes)(JNIEnv *env, jobject, jlong pl)
+{
+    orca_owned_string json{};
+    return take_json(env, orca_project_publish_notes(plater_of(pl), &json), json);
 }
 
 // --- height range modifiers -------------------------------------------------

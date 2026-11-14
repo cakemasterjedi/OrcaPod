@@ -60,6 +60,9 @@ import org.orcapod.app.engine.InstanceTransform
 import org.orcapod.app.engine.OrcaException
 import org.orcapod.app.engine.PresetEntry
 import org.orcapod.app.engine.PresetKind
+import org.orcapod.app.engine.PublishNotes
+import org.orcapod.app.engine.PublishOptions
+import org.orcapod.app.engine.PublishSelection
 import org.orcapod.app.engine.CalibrationSetup
 import org.orcapod.app.engine.CalibrationTest
 import org.orcapod.app.engine.PlateSettings
@@ -1054,17 +1057,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun openProjectFile(e: Engine, file: File, uri: Uri) {
-        e.openProject(file.path)
+        val published = e.openProject(file.path)
         refreshPresets()
         selection = null
         selectedVolume = null
         val name = ProjectStore.projectName(file.name)
         projectName = name
-        projectUri = uri.takeIf { keepAccess(it) }
+        // Like desktop, a published 3MF opens as a new project: "Save" asks where to write it.
+        projectUri = if (published) null else uri.takeIf { keepAccess(it) }
         val thumbnail = withContext(Dispatchers.IO) { ProjectStore.thumbnailOf(file) }
         if (projectUri != null) remember(uri, name, thumbnail)
         projects.clearRecovery()
         recovery = null
+        if (published) _messages.tryEmit(publishedOpenMessage(e.publishNotes()))
+    }
+
+    private fun publishedOpenMessage(notes: PublishNotes): String {
+        val lines = mutableListOf("Applied the published settings on top of your printer and filaments")
+        if (notes.skipped.isNotEmpty())
+            lines += "Not applied: " + notes.skipped.joinToString(", ") { publishKeyTitle(it) }
+        lines += notes.replaced
+        return lines.joinToString("\n")
+    }
+
+    /** A setting of the publish sheet by name; "key#N" is one extruder's value. */
+    fun publishKeyTitle(key: String): String {
+        val base = key.substringBefore('#')
+        val title = optionDefs[base]?.title ?: base
+        val index = key.substringAfter('#', "").toIntOrNull() ?: return title
+        return "$title (extruder ${index + 1})"
     }
 
     /** Starts an empty, unnamed project (desktop "New project"); keeps the selected presets. */
@@ -1242,6 +1263,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         e.exportProjectFor(machine, tmp.path, thumbnail?.size ?: 0, thumbnail?.rgba())
         copyFromFile(tmp, uri)
         _messages.tryEmit("Exported the plate as 3MF for $machine")
+    }
+
+    /** The Publish 3MF sheet's choices while it is open. */
+    var publishOptions by mutableStateOf<PublishOptions?>(null)
+        private set
+
+    /** Desktop "Publish 3MF": opens the sheet with the settings a published file can carry. */
+    fun startPublish() = engineAction { e -> publishOptions = e.publishOptions() }
+
+    fun cancelPublish() {
+        publishOptions = null
+    }
+
+    /**
+     * Writes the plate as a published 3MF: the plate with only the [selection]'s settings, which
+     * whoever opens it in OrcaSlicer or OrcaPod gets on top of their own printer and filaments.
+     */
+    fun publishProject(selection: PublishSelection, uri: Uri) = engineAction("Publishing…") { e ->
+        publishOptions = null
+        val thumbnail = renderThumbnail()
+        val tmp = File(getApplication<Application>().cacheDir, "publish.3mf")
+        e.publishProject(tmp.path, selection, thumbnail?.size ?: 0, thumbnail?.rgba())
+        copyFromFile(tmp, uri)
+        _messages.tryEmit("Published the plate as 3MF")
     }
 
     /** Geometry-only 3MF that any slicer reads. */

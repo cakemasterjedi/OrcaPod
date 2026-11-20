@@ -4,12 +4,14 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.opengl.GLSurfaceView
 import android.opengl.Matrix
+import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import org.orcapod.app.engine.Mesh
 import org.orcapod.app.engine.Scene
 import java.util.WeakHashMap
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.hypot
 
 /** What a tap or drag in the viewport asks the app to do. */
@@ -35,7 +37,10 @@ interface ViewportListener {
 
 /**
  * The 3D build plate: one finger on an object drags it over the bed, one
- * finger elsewhere orbits, two fingers pinch to zoom and pan.
+ * finger elsewhere orbits, two fingers pinch to zoom, pan and twist to turn
+ * the view. A mouse or trackpad (Samsung DeX, a keyboard cover) works as on
+ * the desktop: the left button as a finger, the right or middle button pans
+ * and the wheel zooms.
  */
 @SuppressLint("ViewConstructor")
 class PlateView(context: Context, private val listener: ViewportListener) : GLSurfaceView(context) {
@@ -83,7 +88,7 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
 
     // --- gestures ---
 
-    private enum class Mode { NONE, ORBIT, DRAG_OBJECT, MULTI, PAINT }
+    private enum class Mode { NONE, ORBIT, DRAG_OBJECT, MULTI, PAINT, MOUSE_PAN }
 
     private var mode = Mode.NONE
     private var lastX = 0f
@@ -96,6 +101,9 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
     private var dragPlaneZ = 0f
     private var lastFocusX = 0f
     private var lastFocusY = 0f
+    private var lastAngle: Float? = null // between the first two fingers, for the twist
+    private var twisting = false // the fingers have turned past TWIST_START_RAD since they came down
+    private var twist = 0f
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(detector: ScaleGestureDetector): Boolean {
@@ -105,6 +113,19 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
         }
     })
 
+    /** The mouse wheel or a two-finger trackpad scroll; [v] > 0 scrolls away from the user and zooms in. */
+    fun onWheel(v: Float) {
+        if (v == 0f) return
+        camera.zoom(1f / (1f - v.coerceIn(-4f, 4f) * 0.1f))
+        requestRender()
+    }
+
+    // Takes the mouse buttons' press and release, so that Android does not turn a right click into Back.
+    override fun onGenericMotionEvent(e: MotionEvent): Boolean =
+        if (e.isFromSource(InputDevice.SOURCE_CLASS_POINTER) &&
+            (e.actionMasked == MotionEvent.ACTION_BUTTON_PRESS || e.actionMasked == MotionEvent.ACTION_BUTTON_RELEASE)
+        ) true else super.onGenericMotionEvent(e)
+
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
         scaleDetector.onTouchEvent(e)
@@ -112,6 +133,12 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
             MotionEvent.ACTION_DOWN -> {
                 downX = e.x; downY = e.y; lastX = e.x; lastY = e.y
                 moved = false
+                if (e.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE &&
+                    e.buttonState and (MotionEvent.BUTTON_SECONDARY or MotionEvent.BUTTON_TERTIARY) != 0
+                ) {
+                    mode = Mode.MOUSE_PAN
+                    return true
+                }
                 val hit = pick(e.x, e.y)
                 val sel = state.selection
                 if (paintObject != null && hit != null && hit.selection.objectId == paintObject) {
@@ -133,6 +160,8 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
                 lastPaint = null
                 mode = Mode.MULTI
                 lastFocusX = focusX(e); lastFocusY = focusY(e)
+                lastAngle = angle(e)
+                twisting = false; twist = 0f
                 moved = true
             }
             MotionEvent.ACTION_MOVE -> {
@@ -161,6 +190,19 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
                         val fx = focusX(e); val fy = focusY(e)
                         camera.pan(fx - lastFocusX, fy - lastFocusY)
                         lastFocusX = fx; lastFocusY = fy
+                        val a = angle(e)
+                        // Turning the fingers clockwise turns the plate clockwise under them.
+                        // A pinch or a pan is never quite straight, so the twist starts after a clear turn.
+                        lastAngle?.let {
+                            val step = wrap(a - it)
+                            if (twisting) camera.yaw += step
+                            else { twist += step; if (abs(twist) > TWIST_START_RAD) twisting = true }
+                        }
+                        lastAngle = a
+                        requestRender()
+                    }
+                    Mode.MOUSE_PAN -> {
+                        camera.pan(e.x - lastX, e.y - lastY)
                         requestRender()
                     }
                     Mode.NONE -> Unit
@@ -171,11 +213,13 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
                 // Keep panning with the remaining fingers; after the last, nothing until a new touch.
                 if (e.pointerCount > 2) {
                     lastFocusX = focusX(e, e.actionIndex); lastFocusY = focusY(e, e.actionIndex)
+                    lastAngle = null // the twist resumes from the next move
                 } else {
                     mode = Mode.NONE
                 }
             }
             MotionEvent.ACTION_UP -> {
+                if (mode == Mode.MOUSE_PAN) { mode = Mode.NONE; return true }
                 if (mode == Mode.PAINT) { mode = Mode.NONE; lastPaint = null; listener.onPaintEnd(); return true }
                 if (!moved) tap(e.x, e.y)
                 else if (mode == Mode.DRAG_OBJECT) finishDrag()
@@ -202,6 +246,19 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
     }
 
     private val touchSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+
+    /** The angle of the line from the first finger to the second, in radians. */
+    private fun angle(e: MotionEvent): Float = atan2(e.getY(1) - e.getY(0), e.getX(1) - e.getX(0))
+
+    /** An angle step folded into -pi..pi, so crossing the axis does not spin the view. */
+    private fun wrap(a: Float): Float {
+        val pi = Math.PI.toFloat()
+        return when {
+            a > pi -> a - 2 * pi
+            a < -pi -> a + 2 * pi
+            else -> a
+        }
+    }
 
     private fun focusX(e: MotionEvent, skip: Int = -1): Float = focus(e, skip) { e.getX(it) }
     private fun focusY(e: MotionEvent, skip: Int = -1): Float = focus(e, skip) { e.getY(it) }
@@ -373,5 +430,7 @@ class PlateView(context: Context, private val listener: ViewportListener) : GLSu
     private companion object {
         /** Finger travel between brush dabs; each dab is one engine stroke. */
         const val PAINT_SPACING_PX = 24f
+        /** How far two fingers turn (about 12°) before the view turns with them. */
+        const val TWIST_START_RAD = 0.2f
     }
 }

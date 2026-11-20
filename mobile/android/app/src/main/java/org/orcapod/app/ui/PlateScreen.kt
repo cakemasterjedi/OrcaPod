@@ -8,6 +8,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,7 +21,9 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
@@ -28,53 +32,61 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.SnackbarDuration
-import androidx.compose.material3.FilledTonalIconButton
-import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.rememberDrawerState
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.style.TextAlign
-import kotlinx.coroutines.launch
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.launch
 import org.orcapod.app.data.VendorNames
 import org.orcapod.app.engine.PresetKind
 import org.orcapod.app.ui.viewport.PlateView
@@ -103,7 +115,12 @@ fun PlateScreen(vm: AppViewModel) {
     var layFlat by remember { mutableStateOf(false) }
     var viewRef by remember { mutableStateOf<PlateView?>(null) }
     val config = LocalConfiguration.current
-    val twoPane = usesTwoPane(config.screenWidthDp, config.screenHeightDp)
+    val fold = rememberFoldState()
+    val layout = plateLayout(config.screenWidthDp, config.screenHeightDp, fold.posture)
+    // Whether the controls live in a pane beside (or below) the viewport rather than over it.
+    val twoPane = layout != PlateLayout.PHONE
+    // Where the layout sits in the window, to place the hinge in its coordinates.
+    var layoutOrigin by remember { mutableStateOf(Offset.Zero) }
     // Closed for the rest of the session once dismissed; the Add button does the same job.
     var emptyCardClosed by rememberSaveable { mutableStateOf(false) }
     var paneTab by rememberSaveable { mutableStateOf(PaneTab.OBJECTS) }
@@ -201,6 +218,56 @@ fun PlateScreen(vm: AppViewModel) {
 
     val done = vm.slice as? SliceState.Done
     val previewing = vm.showPreview && done != null
+
+    // One 3D view that moves between the phone, two-pane and tabletop layouts
+    // when the device folds, unfolds or rotates, so it keeps its camera and
+    // its GPU buffers instead of being created again.
+    val latestDone by rememberUpdatedState(done)
+    val latestPreviewing by rememberUpdatedState(previewing)
+    val plateViewport = remember {
+        movableContentOf {
+            AndroidView(
+                // A mouse wheel or trackpad scroll reaches Compose, not the view: it zooms.
+                modifier = Modifier.fillMaxSize().pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (event.type == PointerEventType.Scroll) {
+                                viewRef?.onWheel(-event.changes.sumOf { it.scrollDelta.y.toDouble() }.toFloat())
+                                event.changes.forEach { it.consume() }
+                            }
+                        }
+                    }
+                },
+                factory = { ctx -> PlateView(ctx, listener).also { viewRef = it } },
+                update = { view ->
+                    val d = latestDone
+                    view.pickFaces = layFlat
+                    view.rayTaps = vm.cut?.placing == true
+                    view.lockDrag = vm.cut != null || vm.paint != null || vm.measure != null || vm.layerHeights != null
+                    view.paintObject = vm.paint?.objectId
+                    view.measureObject = vm.measure?.objectId
+                    view.state = ViewportState(
+                        scene = vm.scene,
+                        selection = vm.selection,
+                        toolpath = d?.toolpath,
+                        range = vm.previewRange,
+                        previewStyle = vm.previewStyle,
+                        showToolpath = latestPreviewing && d?.toolpath != null,
+                        toolpathPlate = d?.plate ?: 0,
+                        selectedVolume = vm.selectedVolume,
+                        filamentColours = vm.filamentSlots.map { it.colour },
+                        cutQuad = vm.cut?.quad(),
+                        cutPoints = vm.cut?.connectorPoints(),
+                        paintOverlay = if (vm.paint != null) vm.paintOverlay else null,
+                        measureLines = vm.measure?.lines(),
+                        measurePoints = vm.measure?.points(),
+                        clearance = vm.clearance.outlines,
+                    )
+                },
+            )
+        }
+    }
 
     val hasObjects = vm.scene.snapshot.objects.isNotEmpty()
     val drawer = rememberDrawerState(DrawerValue.Closed)
@@ -341,36 +408,7 @@ fun PlateScreen(vm: AppViewModel) {
                 )
             }
         }
-        val viewport: @Composable () -> Unit = {
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { ctx -> PlateView(ctx, listener).also { viewRef = it } },
-            update = { view ->
-                view.pickFaces = layFlat
-                view.rayTaps = vm.cut?.placing == true
-                view.lockDrag = vm.cut != null || vm.paint != null || vm.measure != null || vm.layerHeights != null
-                view.paintObject = vm.paint?.objectId
-                view.measureObject = vm.measure?.objectId
-                view.state = ViewportState(
-                    scene = vm.scene,
-                    selection = vm.selection,
-                    toolpath = done?.toolpath,
-                    range = vm.previewRange,
-                    previewStyle = vm.previewStyle,
-                    showToolpath = previewing && done?.toolpath != null,
-                    toolpathPlate = done?.plate ?: 0,
-                    selectedVolume = vm.selectedVolume,
-                    filamentColours = vm.filamentSlots.map { it.colour },
-                    cutQuad = vm.cut?.quad(),
-                    cutPoints = vm.cut?.connectorPoints(),
-                    paintOverlay = if (vm.paint != null) vm.paintOverlay else null,
-                    measureLines = vm.measure?.lines(),
-                    measurePoints = vm.measure?.points(),
-                    clearance = vm.clearance.outlines,
-                )
-            },
-        )
-        }
+        val viewport: @Composable () -> Unit = { plateViewport() }
         val status: @Composable () -> Unit = {
             // The phone shows the plate strip in its top row.
             if (!previewing && twoPane) PlateStrip(vm)
@@ -445,26 +483,86 @@ fun PlateScreen(vm: AppViewModel) {
                 }
             }
 
-        if (twoPane) {
-            Row(Modifier.fillMaxSize().padding(padding)) {
+        val density = LocalDensity.current
+        // The hinge in this layout's dp, while a half-open fold separates the screen.
+        val hinge = fold.hinge?.let { h ->
+            with(density) {
+                androidx.compose.ui.geometry.Rect(
+                    (h.left - layoutOrigin.x).toDp().value, (h.top - layoutOrigin.y).toDp().value,
+                    (h.right - layoutOrigin.x).toDp().value, (h.bottom - layoutOrigin.y).toDp().value,
+                )
+            }
+        }
+        val trackOrigin = Modifier.onGloballyPositioned { layoutOrigin = it.positionInWindow() }
+        val presetBar: @Composable () -> Unit = { PresetBar(vm, onFilaments = { filamentSlots = true }) { picker = it } }
+        val objectsTab: @Composable () -> Unit = {
+            ObjectsTab(vm, layFlat = layFlat, onLayFlat = { layFlat = !layFlat }, onEdit = { objectSheet = it })
+        }
+        val settingsTab: @Composable () -> Unit = { SettingsContent(vm, PresetKind.PROCESS, Modifier.fillMaxSize()) }
+        val paneControls: @Composable () -> Unit = {
+            controls(false, { paneTab = PaneTab.OBJECTS }, { paneTab = PaneTab.SETTINGS })
+        }
+        if (layout == PlateLayout.TABLETOP) {
+            BoxWithConstraints(Modifier.fillMaxSize().padding(padding).then(trackOrigin)) {
+                // The upright half shows the model, the half on the table the controls.
+                val fallback = maxHeight / 2
+                val viewportHeight = hinge?.top?.dp?.coerceIn(160.dp, maxHeight - 160.dp) ?: fallback
+                val gap = hinge?.height?.dp ?: 0.dp
+                Column(Modifier.fillMaxSize()) {
+                    Box(Modifier.fillMaxWidth().height(viewportHeight)) {
+                        viewport()
+                        emptyCard()
+                        Column(Modifier.fillMaxWidth().padding(8.dp)) { status() }
+                    }
+                    Spacer(Modifier.height(gap))
+                    HorizontalDivider()
+                    Row(Modifier.weight(1f).fillMaxWidth().navigationBarsPadding()) {
+                        Column(
+                            Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(8.dp),
+                        ) {
+                            presetBar()
+                            Spacer(Modifier.height(8.dp))
+                            paneControls()
+                        }
+                        VerticalDivider()
+                        SidePane(
+                            tab = paneTab,
+                            onTab = { paneTab = it },
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                            header = null,
+                            objects = objectsTab,
+                            settings = settingsTab,
+                            footer = null,
+                        )
+                    }
+                }
+            }
+        } else if (twoPane) {
+            Row(Modifier.fillMaxSize().padding(padding).then(trackOrigin)) {
                 Box(Modifier.weight(1f).fillMaxHeight()) {
                     viewport()
                     emptyCard()
                     Column(Modifier.fillMaxWidth().padding(8.dp)) { status() }
                 }
                 VerticalDivider()
+                // Held like a book, the pane fills the half right of the hinge.
+                val paneWidth = if (fold.posture == Posture.BOOK) {
+                    bookPaneWidth(config.screenWidthDp, hinge?.right?.toInt())
+                } else {
+                    sidePaneWidth(config.screenWidthDp)
+                }
                 SidePane(
                     tab = paneTab,
                     onTab = { paneTab = it },
-                    modifier = Modifier.width(sidePaneWidth(config.screenWidthDp)).fillMaxHeight().navigationBarsPadding(),
-                    header = { PresetBar(vm, onFilaments = { filamentSlots = true }) { picker = it } },
-                    objects = { ObjectsTab(vm, layFlat = layFlat, onLayFlat = { layFlat = !layFlat }, onEdit = { objectSheet = it }) },
-                    settings = { SettingsContent(vm, PresetKind.PROCESS, Modifier.fillMaxSize()) },
-                    footer = { controls(false, { paneTab = PaneTab.OBJECTS }, { paneTab = PaneTab.SETTINGS }) },
+                    modifier = Modifier.width(paneWidth).fillMaxHeight().navigationBarsPadding(),
+                    header = presetBar,
+                    objects = objectsTab,
+                    settings = settingsTab,
+                    footer = paneControls,
                 )
             }
         } else {
-            Box(Modifier.fillMaxSize().padding(padding)) {
+            Box(Modifier.fillMaxSize().padding(padding).then(trackOrigin)) {
                 viewport()
                 if (!hasObjects && !previewing && vm.busy == null) {
                     Text(

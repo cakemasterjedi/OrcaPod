@@ -160,6 +160,7 @@ dependencies {
     implementation(libs.androidx.media3.exoplayer.rtsp)
     implementation(libs.androidx.media3.ui)
     implementation(libs.coil.compose)
+    implementation(libs.androidx.window)
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation(libs.junit)
     // Android's org.json is a stub on the JVM; the library's parsers are tested against the real one.

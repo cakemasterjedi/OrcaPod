@@ -4,6 +4,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
+import android.view.inputmethod.InputMethodManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -41,6 +43,29 @@ class MainActivity : ComponentActivity() {
             pending.clear()
         }
     }
+
+    // A hardware keyboard (DeX, a keyboard cover): Ctrl+Z undoes, Ctrl+Y or
+    // Ctrl+Shift+Z redoes, on the plate and while no text field takes the keys.
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN && event.isCtrlPressed && viewModel.phase == Phase.Ready &&
+            viewModel.library == null && !typing()
+        ) {
+            val undos = viewModel.scene.snapshot
+            when {
+                event.keyCode == KeyEvent.KEYCODE_Z && !event.isShiftPressed -> {
+                    if (undos.undoCount > 0) viewModel.undo()
+                    return true
+                }
+                event.keyCode == KeyEvent.KEYCODE_Y || (event.keyCode == KeyEvent.KEYCODE_Z && event.isShiftPressed) -> {
+                    if (undos.redoCount > 0) viewModel.redo()
+                    return true
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    private fun typing(): Boolean = getSystemService(InputMethodManager::class.java)?.isAcceptingText == true
 
     override fun onStop() {
         super.onStop()

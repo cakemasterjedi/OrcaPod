@@ -428,22 +428,45 @@ Print bar, with the full preview controls one tap away. Tools that need a
 whole panel (cut, measure, layer heights) take the bottom area while they
 are open. A
 window that is at least 840 dp wide, or at
-least 600 dp wide in landscape, and at least 480 dp tall (tablets, unfolded
-foldables, desktop-mode windows) puts the viewport next to a fixed side pane
-instead, so the controls don't cover the model: presets on top, an Objects
+least 600 dp wide and landscape or nearly square (width at least 85% of the
+height), and at least 480 dp tall (tablets, the inner screen of a book-style
+foldable held either way, desktop-mode windows) puts the viewport next to a
+fixed side pane instead, so the controls don't cover the model: presets on top, an Objects
 tab (the selected object's controls above the object list, tap an object to
 select it) or a Settings tab (the same settings as the dialog), and the
 slice, preview and tool panels at the bottom. The choice follows the
 window's current size, so it switches on rotation, fold and split screen. A
 phone in landscape keeps the phone layout because a
-pane under 480 dp tall cannot hold its tabs and controls.
+pane under 480 dp tall cannot hold its tabs and controls, and a tall medium
+window (a small tablet in portrait) does too, where a side pane would leave
+the viewport a narrow strip.
+
+On a foldable the posture also counts, read from Jetpack WindowManager's
+folding feature. Half open with a horizontal hinge (tabletop), the viewport
+fills the upright half and the half on the table holds the presets and slice
+controls in one column and the Objects / Settings tabs in another. Half open
+with a vertical hinge (book), the window keeps two panes and the side pane
+fills the half right of the hinge, so the fold never runs through the model
+or a control. A fold lying flat changes nothing.
+
+The activity handles size, density, keyboard and fold changes itself instead
+of being recreated, and the 3D view is one movable piece of composition that
+moves between the layouts, so folding or unfolding keeps the camera, the GPU
+buffers, open sheets and the tool in use. While the user has not zoomed or
+panned since the plate was framed, a resized view frames the bed again, and a
+view narrower than it is tall backs off until the bed's width fits.
 
 ## Viewport
 
 The plate is drawn in engine coordinates (z-up millimetres). Gestures:
 a finger on the selected object drags it over a plane at the touched height,
 and the move is committed to the engine on release; a finger elsewhere
-orbits; two fingers pinch to zoom and pan. Taps are resolved by a CPU ray
+orbits; two fingers pinch to zoom, pan and, once they have turned past
+about 12°, twist to turn the view. A mouse or trackpad (Samsung DeX, a
+keyboard cover) works as on the desktop: the left button acts as a finger,
+the right or middle button pans, the wheel zooms, and a right click is not
+taken as Back. On a hardware keyboard Ctrl+Z undoes and Ctrl+Y or
+Ctrl+Shift+Z redoes while no text field has the keys. Taps are resolved by a CPU ray
 cast against the instance meshes, which also gives the tapped face's normal
 for "Lay on face".
 

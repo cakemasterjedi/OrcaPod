@@ -26,17 +26,30 @@ class Camera {
     var height = 1
         private set
 
+    /** The bed size of the last [frame] while the user has not zoomed or panned since. */
+    @Volatile private var fitSize: Float? = null
+
     fun resize(w: Int, h: Int) {
         width = max(w, 1)
         height = max(h, 1)
+        // Folding, unfolding or rotating changes the shape of the view: keep a framed bed in view.
+        fitSize?.let { distance = fitDistance(it) }
     }
+
+    /**
+     * The distance that shows a bed of [size] whole. The field of view is
+     * vertical, so a viewport narrower than it is tall (a phone or a
+     * foldable's cover screen held upright) backs off until the width fits.
+     */
+    private fun fitDistance(size: Float): Float = size * 1.9f * max(1f, 0.8f * height / width)
 
     /** Frames a bed of the given size, looking at its centre from the front-left. */
     fun frame(cx: Float, cy: Float, size: Float) {
         targetX = cx
         targetY = cy
         targetZ = 0f
-        distance = size * 1.9f
+        fitSize = size
+        distance = fitDistance(size)
         yaw = Math.toRadians(-90.0).toFloat()
         pitch = Math.toRadians(40.0).toFloat()
     }
@@ -47,11 +60,13 @@ class Camera {
     }
 
     fun zoom(factor: Float) {
+        fitSize = null
         distance = (distance / factor).coerceIn(10f, 5000f)
     }
 
     /** Pans so the target follows the fingers in the view plane. */
     fun pan(dxPixels: Float, dyPixels: Float) {
+        fitSize = null
         val worldPerPixel = 2f * distance * tan(Math.toRadians(fovY / 2.0).toFloat()) / height
         val rightX = -sin(yaw)
         val rightY = cos(yaw)

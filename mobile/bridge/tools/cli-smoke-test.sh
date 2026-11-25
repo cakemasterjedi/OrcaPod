@@ -53,6 +53,8 @@ cube "$WORK/cube.stl"
 # printer|process: the process is named so the test does not depend on which
 # process a printer's profile picks by default
 for pair in "Bambu Lab X1 Carbon 0.4 nozzle|0.20mm Standard @BBL X1C" \
+            "Bambu Lab H3C 0.4 nozzle|0.20mm Standard @BBL H3C" \
+            "Bambu Lab P3C 0.4 nozzle|0.20mm Standard @BBL P3C" \
             "Prusa MK4 0.4 nozzle|0.20mm Standard @MK4"; do
     printer="${pair%%|*}"
     process="${pair#*|}"

@@ -3772,6 +3772,9 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
     this->placeholder_parser().set("initial_filament_id", (int) initial_extruder_id);
     this->placeholder_parser().set("initial_no_support_filament_id", (int) initial_non_support_extruder_id);
     this->placeholder_parser().set("initial_nozzle_id", first_nozzle_id_for_gcode_placeholder(group_result, (int) initial_extruder_id, extruder_id));
+    this->placeholder_parser().set("initial_no_support_nozzle_id",
+        first_nozzle_id_for_gcode_placeholder(group_result, (int) initial_non_support_extruder_id,
+                                              (int) get_extruder_id(initial_non_support_extruder_id)));
     this->placeholder_parser().set("nozzle_diameter_at_nozzle_id", new ConfigOptionFloats(get_nozzle_diameters_by_nozzle_id(group_result.get())));
     this->placeholder_parser().set("nozzle_volume_types", new ConfigOptionStrings(get_nozzle_volume_types_by_nozzle_id(group_result.get())));
     //Orca: set the key for compatibilty, scalar values for the initial extruder (variant-aware)

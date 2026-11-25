@@ -3624,6 +3624,16 @@ void PrintConfigDef::init_fff_params()
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionInts{ 100 });
 
+    // BBS: safe hotend temperature for fin extrusion, read by the H3C/P3C custom G-code.
+    def = this->add("fins_extrude_safe_temp", coInts);
+    def->label = L("Fin extrusion safe temperature");
+    def->tooltip = L("Safe hotend temperature for fin extrusion. 0 means disabled. Custom G-code reads it as fins_extrude_safe_temp.");
+    def->sidetext = L(u8"\u2103" /* °C */);	// degrees Celsius, CIS languages need translation
+    def->mode = comAdvanced;
+    def->min = 0;
+    def->max = 350;
+    def->set_default_value(new ConfigOptionInts{ 0 });
+
     def = this->add("filament_cost", coFloats);
     def->label = L("Price");
     def->tooltip = L("Filament price, for statistical purposes only.");
